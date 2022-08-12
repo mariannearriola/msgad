@@ -91,14 +91,17 @@ AD_dataset_list = ['BlogCatalog', 'Flickr']
 Citation_dataset_list = ['cora', 'citeseer', 'pubmed']
 
 # Set hyperparameters of disturbing
-dataset_str = "BlogCatalog"  #'BlogCatalog'  'Flickr' 'cora'  'citeseer'  'pubmed'
+dataset_str = "cora"  #'BlogCatalog'  'Flickr' 'cora'  'citeseer'  'pubmed'
 seed = 1
 m = 15  #num of fully connected nodes  #10 15 20   5 (clique size)
 k = 50
 s = 3 # number of scales
 scale_sizes = np.array([1,15,45])
 n = np.array([2,1,1])
+# n = np.array([0,0,0])
 attr_scales = np.array([3,1,1,1])
+# attr_scales = np.array([1,1])
+# attr_scales = np.array([])
 '''
 if args.n is None:
     if dataset_str == 'cora' or dataset_str == 'citeseer':
@@ -111,7 +114,7 @@ if args.n is None:
         n = 20
 else:
     n = args.n
-
+ 
 '''
 '''
 if dataset_str == 'cora' or dataset_str == 'citeseer':
@@ -186,10 +189,23 @@ for ind,n_ in enumerate(n):
             start_ind += np.sum(num_anom[:ind])
         end_ind = start_ind+scale_sizes[ind]
         current_nodes = structure_anomaly_idx[start_ind:end_ind]
-        for i in current_nodes:
-            for j in current_nodes:
-                adj_dense[i, j] = 1.
-
+        except_nodes = np.setdiff1d(structure_anomaly_idx,current_nodes)
+        print('for scale',scale_sizes[ind])
+        print(current_nodes)
+        # connect anom nodes into cluster
+        for ind,i in enumerate(current_nodes):
+            for jind,j in enumerate(current_nodes):
+                if jind > ind:
+                    break
+                if np.random.rand() > .3:
+                    adj_dense[i, j] = 1.
+                    adj_dense[j, i]  = 1.
+            for jind_,j_ in enumerate(except_nodes):
+                if jind_ > ind:
+                    break
+                if np.random.rand() > .05:
+                    adj_dense[i, j_] = 0.
+                    adj_dense[j_, i] = 0
         adj_dense[current_nodes,current_nodes] = 0.
 
 num_add_edge = np.sum(adj_dense) - ori_num_edge
@@ -219,7 +235,7 @@ for ind,n_ in enumerate(n):
                     #max_idx = j_
 
             anom_attr_scale = attr_scales[ind2+np.sum(n[:ind])]
-            closest = 0
+            closest,closest_idx = 0,picked_list[0]
             # max_dist/3, max_dist/2, max_dist/1
             for j_ in picked_list:
                 #cur_dist = euclidean(attribute_dense[i_],attribute_dense[j_])
@@ -240,7 +256,7 @@ adj = dense_to_sparse(adj_dense)
 savedir = 'anom_data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
-sio.savemat('anom_data/{}.mat'.format(dataset_str),\
+sio.savemat('anom_data/{}_sparse_anoms.mat'.format(dataset_str),\
             {'Network': adj, 'Label': label, 'Attributes': attribute,\
              'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label})
 print('Done. The file is save as: anom_data/{}.mat \n'.format(dataset_str))
