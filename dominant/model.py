@@ -15,7 +15,8 @@ class Encoder(nn.Module):
     #def forward(self, x, adj):
     def forward(self, x, w):
         #x = F.relu(self.gc1(x, adj))
-        x = F.relu(self.gc1(x, w))
+        x = F.leaky_relu(self.gc1(x, w),negative_slope=0.1)
+        #x = self.gc1(x, w)
         x = F.dropout(x, self.dropout, training=self.training)
         #x = F.relu(self.gc2(x, adj))
 
@@ -47,10 +48,8 @@ class Structure_Decoder(nn.Module):
 
     #def forward(self, x, adj):
     def forward(self, x):
-        #x = F.relu(self.gc1(x, adj))
-        #x = F.dropout(x, self.dropout, training=self.training)
         x = x @ x.T
-
+        x = torch.sigmoid(x)
         return x
 
 class Dominant(nn.Module):
@@ -67,15 +66,8 @@ class Dominant(nn.Module):
     #def forward(self, x, adj):
     def forward(self, x, w):
         # encode
-        #x = self.shared_encoder(x, adj)
         x = self.shared_encoder(x, w)
-        # decode feature matrix
-        #x_hat = self.attr_decoder(x, adj)
-        # decode adjacency matrix
-        #struct_reconstructed = self.struct_decoder(x, adj)
         struct_reconstructed = self.struct_decoder(x)
-        # return reconstructed matrices
-        #return struct_reconstructed, x_hat
         return struct_reconstructed, x
 
 def glorot_init(in_size, out_size):
@@ -88,13 +80,17 @@ def glorot_init(in_size, out_size):
     return resh_initial.cuda()
 
 class EGCN(nn.Module):
-    def __init__(self, in_size, out_size):
+    def __init__(self, in_size, out_size, scales):
         super(EGCN, self).__init__()
         self.in_size = in_size
         self.out_size = out_size
         #self.weight = nn.Parameter(torch.FloatTensor(in_size, out_size))
-        self.weight = glorot_init(in_size, out_size)
+        self.weights = []
+        for scale in range(scales):
+            self.weights.append(glorot_init(in_size, out_size))
+            self.weights[-1].requires_grad = False
         self.reset_parameters()
+
         self.gru = torch.nn.GRU(input_size=self.in_size, hidden_size=self.out_size, num_layers=1)
         for param in self.gru.parameters():
             param.requires_grad = True
@@ -102,18 +98,26 @@ class EGCN(nn.Module):
 
     def reset_parameters(self):
         import math
-        stdv = 1. / math.sqrt(self.weight.size(1))
-        self.weight.data.uniform_(-stdv, stdv)
+        stdv = 1. / math.sqrt(self.weights[0].size(1))
+        for weight_ind in range(len(self.weights)):
+            self.weights[weight_ind].data.uniform_(-stdv, stdv)
 
-    def forward(self, x, w):
-        if w is not None:
-            self.weight = w
-            #self.weight = w[None, :, :]
-        #print(self.weight.shape)
-        #import ipdb ; ipdb.set_trace()
-        #_, w_out = self.gru(self.weight.reshape(1,self.out_size,self.in_size))#,self.weight)
-        _, w_out = self.gru(self.weight)#,self.weight)
-        A_hat, X_hat = self.conv(x, w_out[0])
-        #import ipdb ; ipdb.set_trace() 
-        
-        return A_hat, X_hat, w_out
+    def forward(self, x):
+        A_hat_scales = []
+        for weight_ind in range(len(self.weights)):
+            if weight_ind == 0:
+                _, w_out = self.gru(self.weights[weight_ind])
+            else:
+                _, w_out = self.gru(self.weights[weight_ind],self.weights[weight_ind])
+            A_hat, X_hat = self.conv(x[weight_ind], w_out[0])
+
+            A_hat_scales.append(A_hat)
+            # first scale: uses its own gru, then produces weights for next scale using another gru
+            if weight_ind == 0:
+                self.weights[0] = w_out
+                _, w_out = self.gru(w_out,w_out)
+            if weight_ind != len(self.weights)-1:
+                self.weights[weight_ind+1] = w_out
+        for weight_ind in range(len(self.weights)):
+            self.weights[weight_ind] = self.weights[weight_ind].detach()
+        return A_hat_scales, X_hat

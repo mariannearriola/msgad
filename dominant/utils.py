@@ -6,15 +6,14 @@ import random
 
 
 def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
-    
-    #data_mat = sio.loadmat(f'{datadir}/{dataset}.mat')
-    if sc == -1:
-        data_mat = sio.loadmat(f'data/cora.mat')
-    else:    
-        data_mat = sio.loadmat(f'../smoothed_graphs/{sc}_cora.mat')
+    data_mat = sio.loadmat(f'data/{dataset}.mat')
+    feats = [torch.FloatTensor(data_mat['Attributes'].toarray())]
+    #feats = []
+    for scales in range(sc):
+        feats.append(torch.FloatTensor(sio.loadmat(f'../smoothed_graphs/{sc}_{dataset}.mat')['Attributes'].toarray()))
 
     adj = data_mat['Network']
-    feat = data_mat['Attributes']
+    #feat = data_mat['Attributes']
     truth = data_mat['Label']
     truth = truth.flatten()
 
@@ -22,8 +21,8 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
     adj_norm = adj_norm.toarray()
     adj = adj + sp.eye(adj.shape[0])
     adj = adj.toarray()
-    feat = feat.toarray()
-    return adj_norm, feat, truth, adj
+    #feat = feat.toarray()
+    return adj_norm, feats, truth, adj
 
 
 
