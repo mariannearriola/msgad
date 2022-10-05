@@ -56,13 +56,13 @@ def sgc_precompute(features, adj, degree, mp_weights):
     print('time to compute',precompute_time)
     return features, precompute_time
 
-ks = [1,2,3]
-mp_weights = [1.,.7,.3]
+ks = [1,2,3,4]
+mp_weights = [1,1,1,1]
 
-savedir = 'anom_data/'
+savedir = 'ms_dominant/data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
-matfile = 'cora_sparse_anoms.mat'
+matfile = 'cora_triple_anom.mat'
 path = savedir + matfile
 
 smoothdir = 'smoothed_graphs/'

@@ -96,40 +96,13 @@ seed = 1
 m = 15  #num of fully connected nodes  #10 15 20   5 (clique size)
 k = 50
 s = 3 # number of scales
-scale_sizes = np.array([1,15,45])
-n = np.array([2,1,1])
-# n = np.array([0,0,0])
-attr_scales = np.array([3,1,1,1])
-# attr_scales = np.array([1,1])
-# attr_scales = np.array([])
-'''
-if args.n is None:
-    if dataset_str == 'cora' or dataset_str == 'citeseer':
-        n = 5
-    elif dataset_str == 'BlogCatalog':
-        n = 10
-    elif dataset_str == 'Flickr':
-        n = 15
-    elif dataset_str == 'pubmed':
-        n = 20
-else:
-    n = args.n
- 
-'''
-'''
-if dataset_str == 'cora' or dataset_str == 'citeseer':
-    n = 5
-elif dataset_str == 'BlogCatalog':
-    n = 10
-elif dataset_str == 'Flickr':
-    n = 15
-elif dataset_str == 'pubmed':
-    n = 20
-#else:
-#    n = args.n
-'''
+#scale_sizes = np.array([3,15,45])
+#n = np.array([2,1,1])
+scale_sizes = np.array([5,10,15])
+n = np.array([1,1,1])
+#attr_scales = np.array([3,1,1,1])
+attr_scales = np.array([1,1,1])
 
-    
 # Set seed
 print('Random seed: {:d}. \n'.format(seed))
 np.random.seed(seed)
@@ -190,18 +163,20 @@ for ind,n_ in enumerate(n):
         end_ind = start_ind+scale_sizes[ind]
         current_nodes = structure_anomaly_idx[start_ind:end_ind]
         except_nodes = np.setdiff1d(structure_anomaly_idx,current_nodes)
+        #import ipdb ; ipdb.set_trace()
+        #print(ind)
         print('for scale',scale_sizes[ind])
         print(current_nodes)
         # connect anom nodes into cluster
-        for ind,i in enumerate(current_nodes):
+        for ind_,i in enumerate(current_nodes):
             for jind,j in enumerate(current_nodes):
-                if jind > ind:
+                if jind > ind_:
                     break
-                if np.random.rand() > .3:
+                if np.random.rand() > .1:
                     adj_dense[i, j] = 1.
                     adj_dense[j, i]  = 1.
             for jind_,j_ in enumerate(except_nodes):
-                if jind_ > ind:
+                if jind_ > ind_:
                     break
                 if np.random.rand() > .05:
                     adj_dense[i, j_] = 0.
@@ -211,17 +186,21 @@ for ind,n_ in enumerate(n):
 num_add_edge = np.sum(adj_dense) - ori_num_edge
 print('Done. {:d} structured nodes are constructed. ({:.0f} edges are added) \n'.format(len(structure_anomaly_idx),num_add_edge))
 
+# TODO: store scale anomalies
 # Disturb attribute
     # Every node in each clique is anomalous; no attribute anomaly scale (can be added)
 print('Constructing attributed anomaly nodes...')
 #for ind,i_ in enumerate(attribute_anomaly_idx):
+all_anom_sc = []
 for ind,n_ in enumerate(n):
+    anom_sc = []
     for ind2,n__ in enumerate(range(n_)):
         start_ind = n__*scale_sizes[ind]
         if ind != 0:
             start_ind += np.sum(num_anom[:ind])
         end_ind = start_ind+scale_sizes[ind]
         current_nodes = structure_anomaly_idx[start_ind:end_ind]
+        anom_sc.append(current_nodes)
         for cur in current_nodes:
 
             picked_list = random.sample(all_idx, k)
@@ -246,6 +225,7 @@ for ind,n_ in enumerate(n):
             # copies attribute from node with highest euclidian distance of randomly sampled node
             #attribute_dense[i_] = attribute_dense[max_idx]
             attribute_dense[cur] = attribute_dense[closest_idx]
+    all_anom_sc.append(anom_sc)
 print('Done. {:d} attributed nodes are constructed. \n'.format(len(attribute_anomaly_idx)))
 
 # Pack & save them into .matip
@@ -253,10 +233,13 @@ print('Saving mat file...')
 attribute = dense_to_sparse(attribute_dense)
 adj = dense_to_sparse(adj_dense)
 
-savedir = 'anom_data/'
+#savedir = 'anom_data/'
+#savedir = './pygod/pygod/data'
+savedir = './ms_dominant/data'
+#savedir = './dominant/GCN_AnomalyDetection_pytorch/data'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
-sio.savemat('anom_data/{}_sparse_anoms.mat'.format(dataset_str),\
+sio.savemat('{}/{}_triple_anom.mat'.format(savedir,dataset_str),\
             {'Network': adj, 'Label': label, 'Attributes': attribute,\
-             'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label})
+            'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label, 'scale_anomaly_label': all_anom_sc})
 print('Done. The file is save as: anom_data/{}.mat \n'.format(dataset_str))
