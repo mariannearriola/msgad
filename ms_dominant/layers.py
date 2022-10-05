@@ -18,6 +18,7 @@ class GraphConvolution(Module):
         super(GraphConvolution, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self.act = torch.sigmoid
         '''
         self.weight = Parameter(torch.FloatTensor(in_features, out_features))
         if bias:
@@ -33,10 +34,14 @@ class GraphConvolution(Module):
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
     '''
-    #def forward(self, input, adj):
-    def forward(self, input, w):
+    def forward(self, input, adj, w,bias):
+        #def forward(self, input, w):
         #output = torch.mm(input, self.weight)
-        output = torch.mm(input, w)
+        #import ipdb ; ipdb.set_trace()
+        #try:
+        #output = torch.mm(input, w)
+        output = F.relu(torch.mm(torch.mm(adj,input),w)+bias)
+        #output = self.act(torch.mm(input,w))
         #output = torch.spmm(adj, support)
         '''
         if self.bias is not None:

@@ -13,11 +13,12 @@ class Encoder(nn.Module):
         self.dropout = dropout
 
     #def forward(self, x, adj):
-    def forward(self, x, w):
+    def forward(self, x, adj, w,bias):
         #x = F.relu(self.gc1(x, adj))
-        x = F.leaky_relu(self.gc1(x, w),negative_slope=0.1)
+        #x = F.leaky_relu(self.gc1(x, w),negative_slope=0.1)
+        x = self.gc1(x,adj,w,bias)
         #x = self.gc1(x, w)
-        x = F.dropout(x, self.dropout, training=self.training)
+        #x = F.dropout(x, self.dropout, training=self.training)
         #x = F.relu(self.gc2(x, adj))
 
         # added
@@ -101,16 +102,18 @@ class Dominant(nn.Module):
             param.requires_grad = False
         
         self.shared_encoder = Encoder(feat_size, hidden_size, dropout)
-        #self.attr_decoder = Attribute_Decoder(feat_size, hidden_size, dropout)
+        self.attr_decoder = Attribute_Decoder(feat_size, hidden_size, dropout)
         self.struct_decoder = Structure_Decoder(hidden_size, dropout)
     
-    #def forward(self, x, adj):
-    def forward(self, x, w):
+    def forward(self, x, adj, w_feat,bias):
         # encode
+        x = self.shared_encoder(x, adj, w_feat,bias)
         #import ipdb ; ipdb.set_trace()
-        x = self.shared_encoder(x, w)
-        struct_reconstructed = self.struct_decoder(x)
-        return struct_reconstructed, x
+        #x_hat = self.attr_decoder(x)
+        return x, x
+        #struct_reconstructed = self.struct_decoder(x)
+        
+        #return struct_reconstructed, x
 
 def glorot_init(in_size, out_size):
     import numpy as np
@@ -126,41 +129,52 @@ class EGCN(nn.Module):
         super(EGCN, self).__init__()
         self.in_size = in_size
         self.out_size = out_size
-        #self.weight = nn.Parameter(torch.FloatTensor(in_size, out_size))
-        self.weights = []
-        for scale in range(scales):
-            self.weights.append(glorot_init(in_size, out_size))
-            self.weights[-1].requires_grad = False
-        self.reset_parameters()
-
-        self.gru = torch.nn.GRU(input_size=self.in_size, hidden_size=self.out_size, num_layers=1)
-        for param in self.gru.parameters():
-            param.requires_grad = True
-        self.conv = Dominant(self.in_size, self.out_size, 0.3)
-
+        #self.struc_weights, self.feat_weights = [], []
+        #self.struc_weights=glorot_init(in_size, out_size)
+        hidden_size = 64
+        self.feat_weights=torch.nn.Parameter(glorot_init(in_size, hidden_size))
+        self.feat_weights2=torch.nn.Parameter(glorot_init(hidden_size, out_size))
+        self.bias=torch.nn.Parameter(torch.FloatTensor(2708,hidden_size))
+        self.bias2=torch.nn.Parameter(torch.FloatTensor(2708,out_size))
+        self.bias.data.fill_(0.0)
+        self.bias2.data.fill_(0.0)
+        self.scales = 1
+        #self.struc_weights.requires_grad, self.feat_weights.requires_grad = True, True
+        self.feat_weights.requires_grad = True
+        self.feat_weights2.requires_grad = True
+        self.bias.requires_grad = True
+        self.bias2.requires_grad = True
+        #self.reset_parameters()
+        #self.struc_gru = torch.nn.GRU(input_size=self.in_size, hidden_size=self.out_size, num_layers=scales)
+        #self.feat_gru = torch.nn.GRU(input_size=self.in_size, hidden_size=self.out_size, num_layers=scales)
+        #for param in self.feat_gru.parameters():
+        #    param.requires_grad = True
+        self.conv = Dominant(self.in_size, hidden_size, 0.3)
+        self.conv2 = Dominant(hidden_size, self.out_size, 0.3)
+    
+    '''
     def reset_parameters(self):
         import math
         stdv = 1. / math.sqrt(self.weights[0].size(1))
         for weight_ind in range(len(self.weights)):
             self.weights[weight_ind].data.uniform_(-stdv, stdv)
-
-    def forward(self, x):
+    '''
+    def forward(self, x, adj):
+        # updating first set of weights?
         A_hat_scales = []
-        for weight_ind in range(len(self.weights)):
-            #import ipdb ; ipdb.set_trace()
+        #_, w_out_struc = self.struc_gru(self.struc_weights)
+        if self.scales > 1:
+            _, w_out_feat = self.feat_gru(self.feat_weights)
+        #import ipdb ; ipdb.set_trace()
+        for weight_ind in range(self.scales):
             if weight_ind == 0:
-                _, w_out = self.gru(self.weights[weight_ind])
-            else:
-                _, w_out = self.gru(self.weights[weight_ind],self.weights[weight_ind])
-            A_hat, X_hat = self.conv(x[weight_ind], w_out[0])
-
+                A_hat, X_hat = self.conv(x, adj, self.feat_weights[0],self.bias)#, self.feat_weights)
+                A_hat, X_hat = self.conv2(A_hat, adj, self.feat_weights2[0],self.bias2)
+            #else:
+            #    A_hat, X_hat = self.conv(x[weight_ind], w_out_feat[weight_ind])#, w_out_feat[weight_ind][0])
             A_hat_scales.append(A_hat)
-            # first scale: uses its own gru, then produces weights for next scale using another gru
-            if weight_ind == 0:
-                self.weights[0] = w_out
-                _, w_out = self.gru(w_out,w_out)
-            if weight_ind != len(self.weights)-1:
-                self.weights[weight_ind+1] = w_out
-        for weight_ind in range(len(self.weights)):
-            self.weights[weight_ind] = self.weights[weight_ind].detach()
+            #X_hat_scales.append(X_hat)
+        # ???
+        #for weight_ind in range(len(self.weights)):
+        #    self.weights[weight_ind] = self.weights[weight_ind].detach()
         return A_hat_scales, X_hat

@@ -8,6 +8,7 @@ import scipy.io
 from sklearn.metrics import roc_auc_score
 from datetime import datetime
 import argparse
+import scipy
 
 #from model import Dominant
 from model import EGCN
@@ -21,16 +22,22 @@ def loss_func(adj, A_hat_scales, attrs, X_hat, alpha, weight=None):
     # structure reconstruction loss
     all_costs, all_structure_costs = None, None
     for ind, A_hat in enumerate(A_hat_scales):
+        if ind > 0:
+            break
         #diff_structure = torch.pow(A_hat - adj, 2)
         #structure_reconstruction_errors = torch.sqrt(torch.sum(diff_structure, 1))
         weight = None
+        #import ipdb ; ipdb.set_trace()
         if weight is not None:
-            structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten(), weight = weight)
+            #structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten(), weight = weight)
+            structure_reconstruction_errors = F.mse_loss(A_hat, attrs, weight = weight, reduction="none")
         else:
-            structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten())
-        #structure_reconstruction_errors = F.mse_loss(A_hat, adj)
+            #structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten())
+            structure_reconstruction_errors = F.mse_loss(A_hat, attrs, reduction="none")
         
-        structure_cost = torch.mean(structure_reconstruction_errors)
+        #structure_reconstruction_errors = F.mse_loss(A_hat, adj)
+        #import ipdb ; ipdb.set_trace()
+        structure_cost = torch.mean(torch.mean(structure_reconstruction_errors,axis=1))
         #structure_reconstruction_errors = F.mse_loss(A_hat,adj)
         
         #if ind == 2:
@@ -86,11 +93,7 @@ def train_dominant(args):
     adj, attrs_det, label, adj_label, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     adj = torch.FloatTensor(adj)
     adj_label = torch.FloatTensor(adj_label)
-    #attrs = torch.FloatTensor(attrs)
-
     model = EGCN(in_size = attrs_det[0].size(1), out_size = args.hidden_dim, scales = len(attrs_det))
-    #model = Dominant(feat_size = attrs.size(1), hidden_size = args.hidden_dim, dropout = args.dropout)
-
     if args.device == 'cuda':
         device = torch.device(args.device)
         adj = adj.to(device)
@@ -108,21 +111,24 @@ def train_dominant(args):
     weight_tensor[weight_mask] = pos_weight
     
     #weight_tensor = 0
-    
+    #import ipdb ; ipdb.set_trace() 
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
     
     best_loss = torch.tensor(float('inf')).cuda()
+    model.train()
     for epoch in range(args.epoch):
-        model.train()
         optimizer.zero_grad()
+        #import ipdb ; ipdb.set_trace()
         #A_hat, X_hat = model(attrs, adj)
-        A_hat_scales, X_hat = model(attrs)
+        A_hat_scales, X_hat = model(attrs[0],adj)
         loss, struct_loss, feat_loss = loss_func(adj_label, A_hat_scales, attrs[0], X_hat, args.alpha, weight_tensor)
         #import ipdb ; ipdb.set_trace()
         l = torch.mean(loss)
+        '''
         if l < best_loss:
             best_loss = l
             torch.save(model,'best_model.pt')
+        '''
         l.backward()
         optimizer.step() 
         print("Epoch:", '%04d' % (epoch), "train_loss=", "{:.5f}".format(l.item()), "train/struct_loss=", "{:.5f}".format(struct_loss.item()),"train/feat_loss=", "{:.5f}".format(feat_loss.item()))
@@ -131,15 +137,14 @@ def train_dominant(args):
         if epoch == args.epoch-1:
             model.eval()
             #A_hat, X_hat = model(attrs, adj)
-            A_hat_scales, X_hat = model(attrs)
-            loss, struct_loss, feat_loss = loss_func(adj_label, A_hat_scales, attrs[-1], X_hat, args.alpha, weight_tensor)
+            A_hat_scales, X_hat = model(attrs[0],adj)
+            loss, struct_loss, feat_loss = loss_func(adj_label, A_hat_scales, attrs[0], X_hat, args.alpha, weight_tensor)
             score = loss.detach().cpu().numpy()
             print("Epoch:", '%04d' % (epoch))#, 'Auc', roc_auc_score(label, score))
 
     print('best loss:', best_loss)
     adj, attrs_det, label, adj_label, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     adj = torch.FloatTensor(adj)
-    import ipdb ; ipdb.set_trace()
     adj_label = torch.FloatTensor(adj_label)
     #attrs = torch.FloatTensor(attrs)
 
@@ -164,21 +169,18 @@ def train_dominant(args):
     #torch.save(model,'model.pt')
     #model = torch.load('model.pt')
     model.eval()
-    A_hat_scales, X_hat = model(attrs)
+    A_hat_scales, X_hat = model(attrs[0],adj)
 
     loss, struct_loss, feat_loss = loss_func(adj_label, A_hat_scales, attrs[0], X_hat, args.alpha)
-    #score = loss.detach().cpu().numpy()
     scores = loss.detach().cpu().numpy()
-    import scipy
-    import torch.nn.functional as F
- 
-
+    
+    import ipdb ; ipdb.set_trace()
     # anomaly evaluation
     for sc, A_hat in enumerate(A_hat_scales):
-        recons_errors = F.mse_loss(A_hat.detach().cpu(), adj_label.detach().cpu(),reduction="none")
-        scores = scipy.stats.skew(recons_errors.numpy(),axis=0)
-        
-        sorted_errors = np.argsort(scores)
+        recons_errors = F.mse_loss(A_hat.detach().cpu(), attrs[0].detach().cpu(),reduction="none")
+        #scores = scipy.stats.skew(recons_errors.numpy(),axis=0)
+        scores = np.mean(recons_errors.numpy(),axis=1)
+        sorted_errors = np.argsort(-scores)
         rankings = []
         for error in sorted_errors:
             rankings.append(label[error])
@@ -201,7 +203,7 @@ def train_dominant(args):
         #df = pd.DataFrame({'AD-GCA':reconstruction_errors})
         df = pd.DataFrame({'AD-GCA':scores})
         df.to_csv('output/{}-scores_{}.csv'.format(args.dataset, sc), index=False, sep=',')
-    
+    ''' 
     import ipdb ; ipdb.set_trace() 
     import MADAN.Plotters as Plotters
     from MADAN._cython_fast_funcs import sum_Sto, sum_Sout, compute_S, cython_nmi, cython_nvi
@@ -216,12 +218,12 @@ def train_dominant(args):
     madan.compute_context_for_anomalies()
     print(madan.interp_com)
     print(' ------------')
-
+    '''
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='cora_triple_anom', help='dataset name: Flickr/ACM/BlogCatalog')
     parser.add_argument('--hidden_dim', type=int, default=1433, help='dimension of hidden embedding (default: 64)')
-    parser.add_argument('--epoch', type=int, default=100, help='Training epoch')
+    parser.add_argument('--epoch', type=int, default=80, help='Training epoch')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--dropout', type=float, default=0.3, help='Dropout rate')
     parser.add_argument('--alpha', type=float, default=0, help='balance parameter')
