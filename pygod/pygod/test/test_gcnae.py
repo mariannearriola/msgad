@@ -10,8 +10,12 @@ import torch
 
 from pygod.models import GCNAE
 from pygod.utils.metric import eval_roc_auc
+from pygod.utils.utility import load_data
 import scipy.io as sio
 import scipy.sparse as sp
+import scipy
+from scipy import stats
+from sklearn.metrics import average_precision_score
 #seed_everything(42)
 
 
@@ -24,52 +28,97 @@ class TestGCNAE(unittest.TestCase):
         self.roc_floor = 0.60
 
         #test_graph = torch.load(os.path.join('pygod', 'test', 'test_graph.pt'))
-        dataset = 'cora_triple_anom'
+        dataset = 'weibo'
         data_mat = sio.loadmat(f'../data/{dataset}.mat')
-        feats = torch.FloatTensor(data_mat['Attributes'].toarray())
+        ''' 
+        data = load_data('inj_cora')
+        import ipdb ; ipdb.set_trace()
+        '''
+        feats = torch.FloatTensor(data_mat['Attributes'])#.toarray())
         #feats = []
         #for scales in range(1,sc+1):
         #    feats.append(torch.FloatTensor(sio.loadmat(f'../smoothed_graphs/{scales}_{dataset}.mat')['Attributes'].toarray()))
         #import ipdb ; ipdb.set_trace()
-        adj = data_mat['Network']
+        self.adj = data_mat['Network']
         #feat = data_mat['Attributes']
         truth = data_mat['Label']
         truth = truth.flatten()
         label = data_mat['scale_anomaly_label']
         self.truth = truth
         #import ipdb ; ipdb.set_trace()
-        adj_norm = self.normalize_adj(adj + sp.eye(adj.shape[0]))
-        adj_norm = adj_norm.toarray()
-        adj = adj + sp.eye(adj.shape[0])
-        adj = adj.toarray()
+        adj_norm = self.normalize_adj(self.adj + sp.eye(self.adj.shape[0]))
+        adj_norm = adj_norm#.toarray()
+        sp_adj = self.adj + sp.eye(self.adj.shape[0])
+        adj = self.adj#.toarray()
+        
         #import ipdb ; ipdb.set_trace() 
         test_graph=adj
         self.graph = test_graph
         self.feat = feats
-        self.model = GCNAE()
+        
+        start,end=1,4
+        
+        self.model = GCNAE(start=start,end=end,hid_dim=128,adj=sp_adj)
         self.data={'graph':self.graph,'feat':self.feat,'truth':self.truth}
         self.model.fit(self.data)
         
-        
         outlier_scores = self.model.decision_scores_
         outlier_scores = self.model.decision_function(self.data)
-        anom_rankings = np.argsort(-outlier_scores)
-        # TODO: get anomaly labels
-        print(self.detect_anom(anom_rankings,label,.5))
-        print(self.detect_anom(anom_rankings,label,.75))
-        print(self.detect_anom(anom_rankings,label,1))
-        
-    def detect_anom(self,sorted_errors, label, top_nodes_perc):
-          
-        anom_sc1 = label[0][0][0]
-        anom_sc2 = label[1][0][0]
-        anom_sc3 = label[2][0][0]
-        all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
-        
-        true_anoms = 0
+        outlier_scores=[outlier_scores]
         #import ipdb ; ipdb.set_trace()
+        for ind,outlier_score in enumerate(outlier_scores):
+            print(f'scale {ind+1}')
+            anom_rankings = np.argsort(-outlier_score)
+            print('AP',self.detect_anom_ap(outlier_score,truth))
+            # TODO: get anomaly labels
+            
+            #print(self.detect_anom(anom_rankings,label,.5,start,end,outlier_score[anom_rankings]))
+            #print(self.detect_anom(anom_rankings,label,.75,start,end,outlier_score[anom_rankings]))
+            print(self.detect_anom(anom_rankings,label.T,1,start,end,outlier_score[anom_rankings],ind))
+            print('---------------------')
+        
+    from sklearn.metrics import average_precision_score   
+    def detect_anom_ap(self,errors,label):
+        #import ipdb ;ipdb.set_trace()
+        return average_precision_score(label,errors)
+    
+    def detect_anom(self,sorted_errors, label, top_nodes_perc,start,end,scores,scale):
+         
+        anom_sc1 = label[0][0][0]
+        anom_sc2 = label[2][0][0]
+        anom_sc3 = label[3][0][0]
+        all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
+        anom_scores = []
+        norm_scores = []
+        for ind,error in enumerate(sorted_errors):
+            if error in all_anom:
+                anom_scores.append(scores[ind])
+            else:
+                norm_scores.append(scores[ind])
+        anom_scores = np.array(anom_scores)
+        norm_scores = np.array(norm_scores)
+        skew = False
+        # need to redo now :)
+        thresh=[2.0,2.0,2.0]
+        if skew:
+            z=stats.zscore(scores)
+            #z=z[np.where(z<0)]
+            thresh=-thresh
+            top_anom=sorted_errors[np.where(z<thresh[scale])]
+        else:
+            z=stats.zscore(scores)
+            #z=z[np.where(z>0)]
+            top_anom=sorted_errors[np.where(z>thresh[scale])]
+        #import ipdb ; ipdb.set_trace()
+        top_sc3=np.intersect1d(top_anom,anom_sc3).shape[0]
+        top_sc2=np.intersect1d(top_anom,anom_sc2).shape[0]
+        top_sc1=np.intersect1d(top_anom,anom_sc1).shape[0]
+        if top_nodes_perc == 1:
+            print('top scales found from deviation',top_sc1,top_sc2,top_sc3)
+        true_anoms = 0
         cor_1, cor_2, cor_3 = 0,0,0
-        for ind,error in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
+        anom_inds1,anom_inds2,anom_inds3=[],[],[]
+        for ind,error in enumerate(sorted_errors[:int(all_anom.shape[0])]):
             '''
             if label[ind] == 1:
                 true_anoms += 1
@@ -77,14 +126,33 @@ class TestGCNAE(unittest.TestCase):
             if error in all_anom:
                 true_anoms += 1
             if error in anom_sc1:
+                print(ind,error)
+                #all_inds.append(ind)
+                anom_inds1.append(ind)
                 cor_1 += 1
             if error in anom_sc2:
+                anom_inds2.append(ind)
                 cor_2 += 1
             if error in anom_sc3:
+                anom_inds3.append(ind)
                 cor_3 += 1
-            if error in all_anom:
-                print(ind)
-        return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
+            #if error in all_anom:
+            #    print(ind)
+        #import ipdb ; ipdb.set_trace()
+        if False:
+            import ipdb ; ipdb.set_trace()
+            import matplotlib.pyplot as plt
+            plt.figure()
+            #skew1=round(scipy.stats.skew(anom_inds1),.5)
+            #skew2=round(scipy.stats.skew(anom_inds2),.75)
+            skew3=round(scipy.stats.skew(anom_inds3),1)
+            plt.hist(anom_inds1,color='r',alpha=1,range=(0,200),bins=200)
+            plt.hist(anom_inds2,color='g',alpha=1,range=(0,200),bins=200)
+            plt.hist(anom_inds3,color='b',alpha=1,range=(0,200),bins=200)
+            plt.title(f'{skew1},{skew2},{skew3}')
+            plt.savefig(f'dists_{start}_{end}')
+
+        return true_anoms/int(all_anom.shape[0]), cor_1, cor_2, cor_3, true_anoms
         
     def normalize_adj(self,adj):
         """Symmetrically normalize adjacency matrix."""
