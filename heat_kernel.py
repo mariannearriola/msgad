@@ -44,25 +44,19 @@ def sgc_precompute(features, adj, degree, mp_weights):
     print('started...')
     for i in range(degree):
         print('started degree',i)
-        # weight = torch.diag(torch.diag(torch.full((features.shape[1],features.shape[1]),mp_weights[i],dtype=torch.float64)))
-        # x = torch.spmm(features,weight)
-        # print('features',features)
-        # print('x',x)
-        # print(torch.equal(features,x))
-        # new_adj = torch.spmm(adj,weight)
-        features = torch.spmm(adj, features)
-        
+        features = torch.spmm(adj, features) 
     precompute_time = time.perf_counter()-t
     print('time to compute',precompute_time)
     return features, precompute_time
 
-ks = [1,2,3,4]
-mp_weights = [1,1,1,1]
+ks = [1,2,3,4,5,6,7,8]#,6,7,8,9,10,11,12,13,14,15]
+mp_weights = [1,1,1,1,1]#,1,1,1,1,1,1,1,1,1,1]
 
 savedir = 'ms_dominant/data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
-matfile = 'cora_triple_anom.mat'
+matfile = 'cora_triple_30_2.mat'
+#matfile = 'weibo.mat'
 path = savedir + matfile
 
 smoothdir = 'smoothed_graphs/'
