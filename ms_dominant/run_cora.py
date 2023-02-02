@@ -19,7 +19,7 @@ from utils import *
 from scipy.spatial.distance import euclidean
 from sklearn.neighbors import KernelDensity
 import random 
-from unidip import UniDip
+#from unidip import UniDip
 
 def calc_lipschitz(a, a_pert, x, x_pert, embed, embed_pert, weights, node):
     norm_weights = [0]
@@ -71,50 +71,23 @@ def loss_func(adj, A_hat_scales, attrs, X_hat, alpha, recons, weight=None):
     # structure reconstruction loss
     all_errors= []
     all_costs, all_structure_costs = None, None
-    #import ipdb ; ipdb.set_trace()
     for ind, A_hat in enumerate(A_hat_scales): 
-        #diff_structure = torch.pow(A_hat - adj, 2)
-        #structure_reconstruction_errors = torch.sqrt(torch.sum(diff_structure, 1))
         weight = None
         if weight is not None:
             if recons == 'struct':
                 import ipdb ; ipdb.set_trace()
-                structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten(), weight=weight)
-                #import ipdb ; ipdb.set_trace()
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat[torch.where(A_hat > 0.5)].flatten(), adj[torch.where(A_hat > 0.5)].flatten(), weight=weight)
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat, adj,reduction='none', weight = weight)
+                structure_reconstruction_errors = F.binary_cross_entropy(A_hat, adj, weight=weight)
             elif recons == 'feat':
                 structure_reconstruction_errors = F.mse_loss(A_hat, attrs[0], reduction='none', weight= weight)
         else:
-            #structure_reconstruction_errors = F.mse_loss(A_hat.flatten(), adj.flatten(), reduction="none")
-            #import ipdb ; ipdb.set_trace()
             if recons == 'struct':
-                #import ipdb ; ipdb.set_trace()
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat[torch.where(A_hat > 0.5)].flatten(), adj[torch.where(A_hat > 0.5)].flatten())
-                structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(),adj.flatten())
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat, adj,reduction='none') 
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten())
+                structure_reconstruction_errors = F.binary_cross_entropy(A_hat,adj)
             elif recons == 'feat':
                 structure_reconstruction_errors = F.mse_loss(A_hat, attrs[0], reduction='none')
         
-        #structure_reconstruction_errors = F.mse_loss(A_hat, adj)
-        #import ipdb ; ipdb.set_trace()
-        #structure_cost = torch.mean(torch.mean(structure_reconstruction_errors,axis=1))
         structure_cost = torch.mean(structure_reconstruction_errors)
-        #structure_reconstruction_errors = F.mse_loss(A_hat,adj)
-        #if ind == 0:
         structure_reconstruction_errors /= (ind+1)
         structure_cost /= (ind+1)
-        #if ind == 2:
-        '''
-        if ind == 3:
-        #if ind == len(A_hat_scales)-1:
-            structure_reconstruction_errors *= 1
-            structure_cost *= 1
-        else:
-            structure_reconstruction_errors *= 0
-            structure_cost *= 0
-        '''
         if all_costs is None:
             all_costs = structure_reconstruction_errors
             all_structure_costs = structure_cost
@@ -124,7 +97,6 @@ def loss_func(adj, A_hat_scales, attrs, X_hat, alpha, recons, weight=None):
         all_errors.append(structure_cost)
     #cost =  alpha * attribute_reconstruction_errors + (1-alpha) * structure_reconstruction_errors
 
-    #return cost, structure_cost, attribute_cost
     return all_costs, all_structure_costs, attribute_cost,all_errors
 
 from sklearn.metrics import average_precision_score   
@@ -137,7 +109,6 @@ def detect_anom(sorted_errors, label, top_nodes_perc,scores,thresh):
     anom_sc2 = label[0][1]#[0]
     anom_sc3 = label[0][2]#[0]
     def redo(anom):
-        #import ipdb ; ipdb.set_trace()
         for ind,i in enumerate(anom):
             if ind == 0:
                 ret_anom = np.array(i)
@@ -257,35 +228,7 @@ def detect_anom(sorted_errors, label, top_nodes_perc,scores,thresh):
         plt.savefig(f'dists_{start}_{end}')
 
     return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms# cor_4, true_anoms
-'''
-def detect_anom(sorted_errors, label, top_nodes_perc):
-    anom_sc1 = label[0][0]
-    anom_sc2 = label[1][0]
-    #anom_sc3 = label[2][0]
-    anom_sc3 = []
-    all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
-    anom_found = []
-    true_anoms = 0
-    #import ipdb ; ipdb.set_trace()
-    cor_1, cor_2, cor_3 = 0,0,0
-    for ind,error in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
-        
-        #if label[ind] == 1:
-        #    true_anoms += 1
-        
-        if error in all_anom:
-            true_anoms += 1
-            anom_found.append(error)
-        if error in anom_sc1:
-            cor_1 += 1
-        if error in anom_sc2:
-            cor_2 += 1
-        if error in anom_sc3:
-            cor_3 += 1
-        #if error in anom_sc1:
-        #    print(error)
-    return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms#,anom_found
-'''
+
 def train_dominant(args):
 
     adj, attrs_det, label, adj_label, sc_label, adj_train, attrs_train, adj_val, attrs_val = load_anomaly_detection_dataset(args.dataset, args.scales, args.mlp, args.parity)
@@ -314,10 +257,7 @@ def train_dominant(args):
     pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
     weight_tensor[weight_mask] = pos_weight
     
-    #weight_tensor = 0
-    #import ipdb ; ipdb.set_trace() 
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
-    #import ipdb ; ipdb.set_trace()
 
     score = None
     #adj=torch_geometric.utils.to_dense_adj(edge_index)[0]
@@ -330,7 +270,6 @@ def train_dominant(args):
         optimizer.zero_grad()
         #A_hat, X_hat = model(attrs, adj)
         #A_hat_scales, X_hat = model(attrs_train,adj_train,sc_label)
-        #import ipdb ; ipdb.set_trace()
         X_hat,A_hat_scales = model(attrs,adj,sc_label)
         #A_hat_scales_val, X_hat_val = model(attrs_val,adj_val,sc_label)
         
@@ -556,8 +495,8 @@ def train_dominant(args):
         #kde = kde.score(scores[:,sc].reshape(-1,1))
         #kdes.append(kde)
         #print(kde)
-        intervals = UniDip(scores_recons[rev_sorted_errors],mrg_dst=0.00001).run()
-        kdes.append(len(intervals)) 
+        #intervals = UniDip(scores_recons[rev_sorted_errors],mrg_dst=0.00001).run()
+        #kdes.append(len(intervals)) 
         '''
         scores_dens = kde.score_samples(scores[:,sc].reshape(-1,1))
         scores_dens = scipy.stats.tstd(scores_dens)
@@ -603,7 +542,7 @@ def train_dominant(args):
         print('')
         '''
         #import ipdb ; ipdb.set_trace()
-    print(kdes)
+    #print(kdes)
     print('avg scores anoms',torch.mean(scores[anom_idx,:],dim=0))
     print('avg scores norm',torch.mean(scores[norm_idx,:],dim=0))
     '''
