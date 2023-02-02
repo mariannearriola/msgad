@@ -17,32 +17,18 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
             feats = [torch.FloatTensor(data_mat['Attributes'])]
     else:
         feats = [] 
-    if parity is None and dataset != 'weibo':
-        scales=[1,2,3,4,5,6]
-    elif parity=='even':
-        scales=[2,4,6]
-    elif parity=='odd':
-        scales=[1,3,5]
-    else:
-        scales=[]
-    
-    #for scales in scales:
-    #    feats.append(torch.FloatTensor(sio.loadmat(f'../smoothed_graphs/{scales}_{dataset}.mat')['Attributes'].toarray()))
     
     adj = data_mat['Network']
-    #feat = data_mat['Attributes']
     truth = data_mat['Label']
     truth = truth.flatten()
     adj_no_loop = copy.deepcopy(adj)
-    data_mat = sio.loadmat(f'data/cora_triple_sc_all.mat')
     if dataset != 'weibo':
         sc_label = data_mat['scale_anomaly_label']
     else:
         sc_label = data_mat['scale_anomaly_label'][0]
-    #import ipdb ; ipdb.set_trace()
+    import ipdb ; ipdb.set_trace()
     adj_norm = normalize_adj(adj + sp.eye(adj.shape[0]))
-    adj_norm = adj_norm.toarray()
-    adj = adj_no_loop# + sp.eye(adj_no_loop.shape[0])
+    adj = adj_no_loop + sp.eye(adj_no_loop.shape[0])
     if dataset == 'weibo':
         adj = adj.toarray()
     edge_list = Graph.Adjacency(adj_no_loop.toarray()).get_edgelist()
@@ -63,15 +49,12 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
     #val_graph = nx.from_edgelist(edges_rem)
     val_graph = copy.deepcopy(train_graph)
     val_graph.remove_edges_from(edges_keep)
-    #train_graph.remove_edges_from(edges_rem)
-    #import ipdb ; ipdb.set_trace()
-    #val_adj, train_adj = dgl.from_networkx(val_graph), dgl.from_networkx(train_graph)
-
+    train_graph.remove_edges_from(edges_rem)
     val_adj = nx.adjacency_matrix(val_graph).todense()
     train_adj = nx.adjacency_matrix(train_graph).todense()
     val_adj = val_adj + np.eye(val_adj.shape[0])
-    #train_adj = train_adj + np.eye(train_adj.shape[0])
-    #train_adj = train_adj[nodes_train][:,nodes_train]
+    train_adj = train_adj + np.eye(train_adj.shape[0])
+    train_adj = train_adj[nodes_train][:,nodes_train]
     val_adj = val_adj[nodes_val][:,nodes_val]
     val_feats = [feats[0][nodes_val]]
     train_feats = [feats[0][nodes_train]]
@@ -170,13 +153,6 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
 
     '''
 
-def spectral_norm(w):
-    evals,_ = torch.eig(torch.mm(w.T,w))
-    w_eval = torch.max(evals)
-    assert(w_eval >= 0)
-    norm_w = w / torch.sqrt(w_eval)
-    return norm_w
-
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""
     adj = sp.coo_matrix(adj)
@@ -185,4 +161,3 @@ def normalize_adj(adj):
     d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
     d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
-
