@@ -6,6 +6,26 @@ import scipy
 import networkx as nx
 from layers import GraphConvolution
 import numpy as np
+from torch_geometric.nn import GATConv
+
+class AnomalyDAE(nn.Module):
+    def __init__(self,in_node_dim,embed_dim,out_dim,dropout=0.2,act=nn.LeakyReLU()):
+        super(AnomalyDAE, self).__init__()
+        self.dense=nn.Linear(in_node_dim,embed_dim)
+        self.attention_layer=GATConv(embed_dim, out_dim)
+        self.dropout = dropout
+        self.act = act
+
+    def forward(self,x,adj):
+        x = self.act(self.dense(x))
+        #x = self.dense(x)
+        #x = F.dropout(x,self.dropout)
+        x = self.attention_layer(x,adj.nonzero().t().contiguous())
+        #ret_x = torch.sigmoid(x@x.T)
+        embed_x = x
+        return [embed_x],[embed_x]
+
+
 class BWGNN(nn.Module):
     def __init__(self, in_feats, h_feats, out_feats, d=4):
         super(BWGNN, self).__init__()
@@ -17,7 +37,6 @@ class BWGNN(nn.Module):
         #self.linear2 = nn.Linear(h_feats, h_feats)
         #self.linear3 = nn.Linear(h_feats*len(self.conv),h_feats*len(self.conv))
         #self.linear4 = nn.Linear(h_feats, 64)
-        #self.gru = torch.nn.GRU(input_size=400,hidden_size=128,num_layers=2)
         
         #self.act = nn.ReLU()
         self.act = nn.LeakyReLU()#negative_slope=0.01)
@@ -42,7 +61,7 @@ class BWGNN(nn.Module):
                 all_h = h0
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
-                
+        #all_h = self.linear3(all_h)        
                 
         return all_h,h
         
@@ -93,10 +112,7 @@ class PolyConv(nn.Module):
         #w /= scipy.special.beta(self._i+1,self._d+1-self._i)
         
         feat=in_feat
-        try:
-            h = self.theta[0]*(adj@feat)
-        except:
-            import ipdb ; ipdb.set_trace()
+        h = self.theta[0]*(adj@feat)
         for theta in self.theta[1:]:
             '''   
             #for ind,theta in enumerate(self.theta):    
@@ -122,11 +138,11 @@ def calculate_theta2(d):
     eval_max=2
     x = sympy.symbols('x')
     offset=0
-    for i in range(offset,d+1+offset,1):
+    for i in range(offset,d+offset,1):
         f = sympy.poly((x/eval_max) ** i * (1 - x/eval_max) ** (d-i+offset) / (eval_max*scipy.special.beta(i+1, d+1-i+offset)))
         coeff = f.all_coeffs()
         inv_coeff = []
-        for i in range(0,d+1+offset,1):
+        for i in range(0,d+offset,1):
             inv_coeff.append(float(coeff[d-i+offset]))
         thetas.append(inv_coeff)
     return thetas
@@ -309,9 +325,10 @@ class EGCN(nn.Module):
             in_size = 1433
             out_size = 1433
         self.final_size=64
-        self.linear = torch.nn.Linear(hidden_size*(self.d+1),hidden_size*2)#*(self.d+1))
-        #self.linear2 = torch.nn.Linear(hidden_size*2,hidden_size)
+        #self.linear = torch.nn.Linear(hidden_size*(self.d+1),hidden_size*2)#*(self.d+1))
+        #self.linear2 = torch.nn.Linear(hidden_size*(self.d+1),hidden_size)
         self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d)
+        #self.conv = AnomalyDAE(in_size,hidden_size,out_size)
         self.act = nn.LeakyReLU()
     '''
     def reset_parameters(self):
@@ -324,19 +341,24 @@ class EGCN(nn.Module):
         A_hat_scales = []
         A_hat_scales,h = self.conv(x[0],adj)
         
-        A_hat_ret = self.linear(self.act(A_hat_scales))
+        #A_hat_ret = self.linear(self.act(A_hat_scales))
+        A_hat_ret = []
         sp_size=self.hidden_size
         A_hat_emb = [A_hat_scales[:,:sp_size]]
-        for i in range(1,self.d+1):
+        for i in range(1,self.d):
             A_hat_emb.append(A_hat_scales[:,i*sp_size:(i+1)*sp_size])
-
-        A_hat_scales = [A_hat_ret]
+        
+        #A_hat_emb = h
+        #import ipdb ; ipdb.set_trace()
+        #A_hat_scales = [A_hat_ret]
         A_hat_ret = []
-         
+        #A_hat_scales = [self.linear2(A_hat_scales)] 
         recons,embs = [],[]
         for A_hat in A_hat_scales:
             A_hat_ret.append(torch.sigmoid(A_hat@A_hat.T))
         for A_hat in A_hat_emb:
             embs.append(A_hat)
             recons.append(torch.sigmoid(A_hat@A_hat.T))
-        return h,recons
+        #return recons,A_hat_ret
+        #return A_hat_ret,A_hat_ret
+        return recons, recons

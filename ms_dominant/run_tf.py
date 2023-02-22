@@ -14,8 +14,8 @@ import torch_geometric
 from torch.utils.data import DataLoader
 from scipy import stats
 #from model import Dominant
-from model_gru_light_tf import EGCN
-from utils_tf import load_anomaly_detection_dataset
+from model_tf import EGCN
+from utils_tf import *
 from scipy.spatial.distance import euclidean
 import random 
 
@@ -103,65 +103,28 @@ def perturb_adj(attribute_dense,adj,attr_scale,adj_prob):
     factor_pert = dists_adj
     return attribute_dense,adj_dense,factor_pert
 
-
-def loss_func(adj, A_hat_scales, attrs, X_hat, alpha, recons, weight=None):
+def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, alpha, recons, weight=None):
     attribute_cost = torch.tensor(0., dtype=torch.float32).cuda()
-
-    # structure reconstruction loss
     all_errors= []
     all_costs, all_structure_costs = None, None
-    #import ipdb ; ipdb.set_trace()
     for ind, A_hat in enumerate(A_hat_scales): 
-        #diff_structure = torch.pow(A_hat - adj, 2)
-        #structure_reconstruction_errors = torch.sqrt(torch.sum(diff_structure, 1))
-        weight = None
-        if weight is not None:
-            if recons == 'struct':
-                import ipdb ; ipdb.set_trace()
-                structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten(), weight=weight)
-                #import ipdb ; ipdb.set_trace()
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat[torch.where(A_hat > 0.5)].flatten(), adj[torch.where(A_hat > 0.5)].flatten(), weight=weight)
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat, adj,reduction='none', weight = weight)
-            elif recons == 'feat':
-                structure_reconstruction_errors = F.mse_loss(A_hat, attrs[0], reduction='none', weight= weight)
-        else:
-            #structure_reconstruction_errors = F.mse_loss(A_hat.flatten(), adj.flatten(), reduction="none")
-            #import ipdb ; ipdb.set_trace()
-            if recons == 'struct':
-                #import ipdb ; ipdb.set_trace()
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat[torch.where(A_hat > 0.5)].flatten(), adj[torch.where(A_hat > 0.5)].flatten())
-                structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(),adj.flatten())
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat, adj,reduction='none') 
-                #structure_reconstruction_errors = F.binary_cross_entropy(A_hat.flatten(), adj.flatten())
-            elif recons == 'feat':
-                structure_reconstruction_errors = F.mse_loss(A_hat, attrs[0], reduction='none')
-        
-        #structure_reconstruction_errors = F.mse_loss(A_hat, adj)
-        #import ipdb ; ipdb.set_trace()
-        #structure_cost = torch.mean(torch.mean(structure_reconstruction_errors,axis=1))
-        structure_cost = torch.mean(structure_reconstruction_errors)
-        #structure_reconstruction_errors = F.mse_loss(A_hat,adj)
-        
-        #if ind == 2:
-        '''
-        if ind == 3:
-        #if ind == len(A_hat_scales)-1:
-            structure_reconstruction_errors *= 1
-            structure_cost *= 1
-        else:
-            structure_reconstruction_errors *= 0
-            structure_cost *= 0
-        '''
+        for row_ind,row in enumerate(adj.adjacency_matrix().to_dense().cuda()): 
+            edge_count = torch.where(row==1)[0].shape[0]
+            non_edges = row[torch.where(row==0)]
+            non_edges_score = torch.randint(row.shape[0],(edge_count,))
+            all_edges_score = torch.cat((torch.where(row==1)[0],non_edges_score.cuda()))
+
+            recons_error=torch.nn.functional.binary_cross_entropy(A_hat[row_ind][all_edges_score],row[all_edges_score].cuda())
+            if row_ind == 0:
+                structure_reconstruction_errors=recons_error.unsqueeze(-1)
+            else:
+                structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
         if all_costs is None:
             all_costs = structure_reconstruction_errors
-            all_structure_costs = structure_cost
+            all_structure_costs = (structure_reconstruction_errors).unsqueeze(-1)
         else:
             all_costs = torch.add(all_costs,structure_reconstruction_errors)
-            all_structure_costs = torch.add(all_structure_costs,structure_cost)
-        all_errors.append(structure_cost)
-    #cost =  alpha * attribute_reconstruction_errors + (1-alpha) * structure_reconstruction_errors
-
-    #return cost, structure_cost, attribute_cost
+            all_structure_costs = torch.cat((all_structure_costs,(structure_reconstruction_errors).unsqueeze(-1)),dim=-1)
     return all_costs, all_structure_costs, attribute_cost,all_errors
 
 from sklearn.metrics import average_precision_score   
@@ -326,47 +289,59 @@ def detect_anom(sorted_errors, label, top_nodes_perc):
 def train_dominant(args):
 
     adj, attrs_det, label, adj_label, sc_label, adj_train, attrs_train, adj_val, attrs_val = load_anomaly_detection_dataset(args.dataset, args.scales, args.mlp, args.parity)
-    #import ipdb ; ipdb.set_trace()
-    adj, adj_train, adj_val = torch.FloatTensor(adj), torch.FloatTensor(adj_train), torch.FloatTensor(adj_val)
-    adj_label = torch.FloatTensor(adj_label)
-    #adj = adj_label
+    adj, adj_label = sparse_matrix_to_tensor(adj,attrs_det[0]), sparse_matrix_to_tensor(adj_label,attrs_det[0])
     model = EGCN(in_size = attrs_det[0].size(1), out_size = args.hidden_dim, scales = args.scales, recons = args.recons, mlp = args.mlp, d = args.d)
     if args.device == 'cuda':
         device = torch.device(args.device)
         adj = adj.to(device)
-        adj_train = adj_train.to(device)
-        adj_val = adj_val.to(device)
         adj_label = adj_label.to(device)
-        attrs_train[0] = attrs_train[0].to(device)
-        attrs_val[0] = attrs_val[0].to(device)
-        attrs = []
-        for attr in attrs_det:
-            attrs.append(attr.to(device))
         model = model.cuda()
 
+    '''
     # weigh positive edges for loss calculation
     weight_mask = torch.where(adj_train.flatten() == 1)[0]
     weight_tensor = torch.ones(adj_train.flatten().shape).to(device)
     pos_weight = float(adj_train.shape[0] * adj_train.shape[0] - adj_train.sum()) / adj_train.sum()
     weight_tensor[weight_mask] = pos_weight
+    '''
     
-    #weight_tensor = 0
-    #import ipdb ; ipdb.set_trace() 
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
-    import ipdb ; ipdb.set_trace()
-
-    data_loader = DataLoader(torch.arange(attrs[0].shape[0]), batch_size=1681,shuffle=True) 
+    data_loader = DataLoader(torch.arange(adj.num_edges()), batch_size=args.batch_size,shuffle=True) 
     score = None
-    #adj=torch_geometric.utils.to_dense_adj(edge_index)[0]
-    nx_graph = nx.from_numpy_matrix(adj_label.detach().cpu().numpy())
     
     best_loss = torch.tensor(float('inf')).cuda()
     model.train()
     for epoch in range(args.epoch):
-        
         for iter, bg in enumerate(data_loader):
-            print(iter)
-            
+            pos_edges = adj.find_edges(bg.cuda())
+            pos_edge_weights = adj.edata['w'][bg.cuda()]
+
+            sel_nodes = torch.unique(torch.cat((pos_edges[0],pos_edges[1])))
+            neg_edges = None
+            for idx, a in enumerate(sel_nodes):
+                for b in sel_nodes[idx+1:]:
+                    idx_a1, idx_a2 = torch.where(a==pos_edges[0])[0], torch.where(a==pos_edges[1])[0]
+                    idx_b1, idx_b2 = torch.where(b==pos_edges[0])[0], torch.where(b==pos_edges[1])[0]
+                    if find_intersection(idx_a1,idx_b2).shape[0] > 0 or find_intersection(idx_a2,idx_b1).shape[0] > 0:
+                        continue
+                    if neg_edges is None:
+                        neg_edges = torch.cat((a.expand(1,1),b.expand(1,1)))
+                    else:
+                        neg_edges = torch.cat((neg_edges,torch.cat((a.expand(1,1),b.expand(1,1)))),dim=1)
+            neg_edges_backprop = neg_edges[:,:args.batch_size].T
+            pos_edges_= torch.cat((pos_edges[0].unsqueeze(-1),pos_edges[1].unsqueeze(-1)),dim=1)
+            batch_feats = adj.ndata['feature'][sel_nodes]
+            batch_dict_for,batch_dict_rev = {k.item():v.item() for k,v in zip(sel_nodes,torch.arange(sel_nodes.shape[0]))},{k:v for k,v in zip(torch.arange(sel_nodes.shape[0]),sel_nodes)}
+            for ind,i in enumerate(pos_edges_):
+                pos_edges_[ind][0],pos_edges_[ind][1] = batch_dict_for[i[0].item()],batch_dict_for[i[1].item()]
+            for ind,i in enumerate(neg_edges_backprop):
+                neg_edges_backprop[ind][0],neg_edges_backprop[ind][1] = batch_dict_for[i[0].item()],batch_dict_for[i[1].item()]
+            batch_adj = dgl.graph((pos_edges_[:,0],pos_edges_[:,1]))
+            batch_adj.ndata['feature'] = batch_feats
+            batch_adj.edata['w'] = pos_edge_weights
+            A_hat_scales, X_hat = model(batch_adj,sc_label)
+            loss, struct_loss, feat_loss,all_errors = loss_func(batch_adj, A_hat_scales, pos_edges_,neg_edges_backprop, args.alpha, args.recons)
+            '''
             #self.linear.train()
             batched_x, batched_edges = attrs[0][bg].cuda(),list(nx_graph.edges(bg.numpy()))
             #import ipdb ; ipdb.set_trace()
@@ -402,15 +377,10 @@ def train_dominant(args):
                 for i in torch.where(batched_adj==2)[0]:
                     batched_adj[i][i]=1
                 #import ipdb ; ipdb.set_trace()
+            '''
             optimizer.zero_grad()
-            #A_hat, X_hat = model(attrs, adj)
-            #A_hat_scales, X_hat = model(attrs_train,adj_train,sc_label)
-            #import ipdb ; ipdb.set_trace()
-            A_hat_scales, X_hat = model([batched_x],batched_adj,sc_label)
-            #A_hat_scales_val, X_hat_val = model(attrs_val,adj_val,sc_label)
             
             #import ipdb ; ipdb.set_trace()
-            loss, struct_loss, feat_loss,all_errors = loss_func(batched_adj, A_hat_scales, batched_x, X_hat, args.alpha, args.recons, weight_tensor)
             #loss_val, struct_loss_val, feat_loss_val, all_errors_val = loss_func(adj_val, A_hat_scales_val, attrs_val, X_hat_val, args.alpha, args.recons, weight_tensor)
             #import ipdb ; ipdb.set_trace()
             l = torch.mean(loss)
@@ -695,6 +665,7 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0, help='balance parameter')
     parser.add_argument('--device', default='cuda', type=str, help='cuda/cpu')
     parser.add_argument('--scales', default='4', type=int, help='number of scales for multi-scale analysis')
+    parser.add_argument('--batch_size', type=int, default=32, help='number of edges to use for batching (default: 32)')
     parser.add_argument('--recons', default='struct', type=str, help='reconstruct features or structure')
     parser.add_argument('--mlp', default=False, type=bool, help='include features for mlp or not')
     parser.add_argument('--parity', default=None, type=str, help='even, odd, or regular scales')

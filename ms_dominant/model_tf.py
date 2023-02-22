@@ -1,5 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import dgl
+import dgl.function as fn
 import torch
 import sympy
 import scipy
@@ -18,54 +20,23 @@ class BWGNN(nn.Module):
         #self.linear2 = nn.Linear(h_feats, h_feats)
         #import ipdb ; ipdb.set_trace()
         self.linear3 = nn.Linear(h_feats*len(self.conv),h_feats*len(self.conv))
-        #self.linear4 = nn.Linear(h_feats, 64)
-        #self.gru = torch.nn.GRU(input_size=400,hidden_size=128,num_layers=2)
         
         #self.act = nn.ReLU()
         self.act = nn.LeakyReLU()#negative_slope=0.01)
         self.d = d
         #import ipdb ; ipdb.set_trace()
-    def forward(self, in_feat, adj):
-        def unnLaplacian(adj):
-            #import ipdb ; ipdb.set_trace()
-            G = nx.from_numpy_matrix(adj.detach().cpu().numpy())
-            l = torch.tensor(nx.laplacian_matrix(G).toarray()).cuda()
-            return l
-        
-        lapl = unnLaplacian(adj).float().cuda()
-        #import ipdb ; ipdb.set_trace() 
+    def forward(self, adj):
+        in_feat = adj.ndata['feature']
         h = self.linear(in_feat)
         h = self.act(h)
-        #h = self.linear2(h)
-        #h = self.act(h)
-        #import ipdb ; ipdb.set_trace()
         h_final = torch.zeros([len(in_feat), 0]).cuda()
         all_h = []
         for ind,conv in enumerate(self.conv):
-            h0 = conv(adj, h, lapl)
+            h0 = conv(adj, h)
             if ind == 0:
                 all_h = h0
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
-            
-            #all_h.append(h0)
-            #all_h.append(-self.act(-self.linear4(h0)))
-            #h_final = torch.cat([h_final,h0],-1)
-            '''
-            h0 = h0[None,:,:]
-            if ind == 0:
-                _,h_final_hidden = self.gru(h0)
-            else:
-                h_final,h_final_hidden = self.gru(h0,h_final_hidden)
-            '''
-            '''
-            if ind == 0:
-                h_final = h0
-            else:
-                h_final = torch.cat([h_final, h0], -1)
-            '''
-        
-        #import ipdb ; ipdb.set_trace()
         return all_h
         '''
         all_h = all_h.reshape(len(self.conv),2708,1433)
@@ -198,51 +169,27 @@ class PolyConv(nn.Module):
         self._in_feats = in_feats
         self._out_feats = out_feats
         self.activation = activation
-        self.theta = theta
+        self._theta = theta
+        self._k = len(self._theta)
 
-    def forward(self, adj, in_feat, lapl):
+    def forward(self, graph, feat):
         '''
         Input:
             feat: transformed features
             adj: normalized adjacency matrix
         '''
-        # TODO: get laplacian
-       
-        #l = unnLaplacian(adj)
-        #w = (l/2)**self._i * (torch.eye(l.shape[0]).cuda()-l/2)**(self._d-self._i)
-        #w /= scipy.special.beta(self._i+1,self._d+1-self._i)
+        def unnLaplacian(feat, D_invsqrt, graph):
+            graph.srcdata['h'] = feat * D_invsqrt
+            graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
+            return feat - graph.srcdata.pop('h') * D_invsqrt
         
-        feat=in_feat
-        try:
-            h = self.theta[0]*(adj@feat)
-        except:
-            import ipdb ; ipdb.set_trace()
-        for theta in self.theta[1:]:
-            '''   
-            #for ind,theta in enumerate(self.theta):    
-            p,q=self._i,self._d-self._i-1
-            #print(p,q)
-            #import ipdb ; ipdb.set_trace()
-            #beta_cons = np.math.factorial(p+1)*(np.math.factorial(p+1)/np.math.factorial(p+q+1+2))
-            beta_cons = scipy.special.beta(p+1,q+1)
-            out = (((lapl/2)**p)@(torch.eye(lapl.shape[0]).cuda()-(lapl/2))**q)
-            out /= 2*beta_cons
-            out = out @ feat
-            h=out
-            '''
-            #import ipdb ; ipdb.set_trace()
-            
-            #if ind == 0:
-            #    h = out
-            #else:
-            #h += out
-            #h = torch.cat((h,out))
-            
-            feat = adj@feat
-            h += theta*feat
-            
-            #import ipdb ; ipdb.set_trace()
-            #h = w.to(torch.float32)@feat
+        with graph.local_scope():
+            D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
+                min=1), -0.5).unsqueeze(-1).to(feat.device)
+            h = self._theta[0]*feat
+            for k in range(1, self._k):
+                feat = unnLaplacian(feat, D_invsqrt, graph)
+                h += self._theta[k]*feat
         return h
 
 def calculate_theta2(d):
@@ -437,7 +384,7 @@ class EGCN(nn.Module):
         else:
             self.scales = scales
         if recons == 'struct':
-            in_size = 400
+            in_size = 10
             out_size = 128
         elif recons == 'feat':
             in_size = 1433
@@ -522,7 +469,7 @@ class EGCN(nn.Module):
         for weight_ind in range(len(self.weights)):
             self.weights[weight_ind].data.uniform_(-stdv, stdv)
     '''
-    def forward(self, x, adj,label):
+    def forward(self,adj,label):
         # updating first set of weights?
         A_hat_scales = []
         #_, w_out_struc = self.struc_gru(self.struc_weights)
@@ -538,7 +485,7 @@ class EGCN(nn.Module):
     
         #import ipdb ; ipdb.set_trace()
         #A_hat_found = [self.conv(x[0],adj)]#,self.conv2(x[0],adj)]#,self.conv3(x[0],adj)]#,self.conv4(x[0],adj),self.conv5(x[0],adj)]
-        A_hat_scales = self.conv(x[0],adj)
+        A_hat_scales = self.conv(adj)
         '''
         shapes=[]
         for ind,A_hat in enumerate(A_hat_found):
@@ -555,7 +502,7 @@ class EGCN(nn.Module):
             elif self.recons == 'feat':
                 A_hat_scales.append(A_hat)
         '''
-        #import ipdb ; ipdb.set_trace()
+        # TODO: need to batch for reconstruction
         A_hat_ret = self.linear(self.act(A_hat_scales))
         sp_size=self.hidden_size#self.final_size
         A_hat_emb = [A_hat_scales[:,:sp_size]]

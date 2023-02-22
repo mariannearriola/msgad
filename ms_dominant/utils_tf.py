@@ -5,7 +5,22 @@ import scipy.io as sio
 import random
 import networkx as nx
 from igraph import Graph
+import dgl
 import copy
+
+def find_intersection(t1,t2):
+    uniques, counts = torch.cat((t1,t2)).unique(return_counts=True)
+    intersection = uniques[counts > 1]
+    return intersection
+
+def sparse_matrix_to_tensor(coo,feat):
+    v = torch.FloatTensor(coo.data)
+    i = torch.LongTensor(np.vstack((coo.row, coo.col)))
+    dgl_graph = dgl.graph((i[0],i[1]))
+    dgl_graph.edata['w'] = v
+    dgl_graph.ndata['feature'] = feat
+    return dgl_graph
+    #return torch.sparse.FloatTensor(i, v, torch.Size(coo.shape))
 
 def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
     data_mat = sio.loadmat(f'data/{dataset}.mat')
@@ -26,11 +41,14 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
         sc_label = data_mat['scale_anomaly_label']
     else:
         sc_label = data_mat['scale_anomaly_label'][0]
-    import ipdb ; ipdb.set_trace()
     adj_norm = normalize_adj(adj + sp.eye(adj.shape[0]))
     adj = adj_no_loop + sp.eye(adj_no_loop.shape[0])
     if dataset == 'weibo':
         adj = adj.toarray()
+    adj = sp.coo_matrix(adj)
+    adj_no_loop = sp.coo_matrix(adj_no_loop)
+    return adj_norm, feats, truth, adj_no_loop, sc_label, adj, feats, adj, feats
+     
     edge_list = Graph.Adjacency(adj_no_loop.toarray()).get_edgelist()
     # edge removal
     train_graph = nx.from_numpy_matrix(adj_no_loop.toarray())

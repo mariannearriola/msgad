@@ -13,7 +13,7 @@ import networkx as nx
 import torch_geometric
 from torch.utils.data import DataLoader
 from scipy import stats
-from model import EGCN
+from model_weibo import EGCN
 from utils import * 
 from scipy.spatial.distance import euclidean
 from sklearn.neighbors import KernelDensity
@@ -92,15 +92,15 @@ def detect_anom_ap(errors,label):
     return average_precision_score(label,errors)
 
 def detect_anom(sorted_errors, label, top_nodes_perc,scores,thresh):
-    anom_sc1 = label[0][0]
-    anom_sc2 = label[1][0]
-    anom_sc3 = label[2][0]
+    anom_sc1 = label[0]
+    anom_sc2 = label[1]
+    anom_sc3 = label[2]
     def redo(anom):
         for ind,i in enumerate(anom):
             if ind == 0:
-                ret_anom = i[0]
+                ret_anom = i
             else:
-                ret_anom = np.concatenate((ret_anom,i[0]))
+                ret_anom = np.concatenate((ret_anom,i))
         return ret_anom
     anom_sc1 = redo(anom_sc1)
     anom_sc2 = redo(anom_sc2)
@@ -230,7 +230,6 @@ def train_dominant(args):
         for attr in attrs_det:
             attrs.append(attr.to(device))
         model = model.cuda()
-
     # weigh positive edges for loss calculation
     weight_mask = torch.where(adj_train.flatten() == 1)[0]
     weight_tensor = torch.ones(adj_train.flatten().shape).to(device)
@@ -415,7 +414,9 @@ def train_dominant(args):
             #import ipdb ; ipdb.set_trace() 
         
         # !!! EMBEDDINGS RETRIEVED !!!
-        X_hat,A_hat_scales = model([batched_x],batched_adj,sc_label)
+        #X_hat,A_hat_scales = model([batched_x],batched_adj,sc_label)
+        A_hat_scales,X_hat = model([batched_x],batched_adj,sc_label)
+        
         #import ipdb ; ipdb.set_trace()
         ''' 
         for node in range(batched_adj.shape[0]):
@@ -493,7 +494,7 @@ def train_dominant(args):
                     import ipdb ; ipdb.set_trace()
                 recons_errors = torch.tensor(recons_errors)
                 '''
-                
+                '''
                 print('lipschitz ranking')
                 for node in batched_adj.shape[0]:
                     x_pert,a_pert = perturb_adj(batched_x,batched_adj,0.3,0.3,node)
@@ -508,6 +509,7 @@ def train_dominant(args):
                     emb_pert,_ = model([x_pert_full],a_pert,sc_label)
                     bound_met,s=calc_lipschitz(batched_adj, a_pert, batched_x, x_pert_full, X_hat, emb_pert, weights, node)
                     lip_scores[bg[ind].item()]
+                '''
                 recons_errors = F.binary_cross_entropy(A_hat.detach().cpu(), batched_adj.detach().cpu(), reduction="none")
                 scores_ = torch.mean(recons_errors,axis=0).detach().cpu().numpy() 
                 #scores_ = scipy.stats.skew(recons_errors.numpy(),axis=1)

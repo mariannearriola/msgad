@@ -524,6 +524,7 @@ class EGCN(nn.Module):
         #self.conv3 = Dominant(in_size,out_size,0.3,recons) 
         self.linear = torch.nn.Linear(hidden_size*(self.d+1),hidden_size)#*(self.d+1))
         self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d)
+        self.linear2 = torch.nn.Linear(hidden_size*(self.d+1),hidden_size)
         #self.conv2 = BWGNN(in_size, hidden_size, out_size,d=4)
         #self.conv3 = BWGNN(in_size, hidden_size, out_size,d=6)
         #self.conv4 = BWGNN(in_size, hidden_size, out_size,d=5) 
@@ -532,13 +533,7 @@ class EGCN(nn.Module):
         self.act = nn.LeakyReLU()
         #for param in self.gru.parameters():
         #    param.requires_grad = True
-    '''
-    def reset_parameters(self):
-        import math
-        stdv = 1. / math.sqrt(self.weights[0].size(1))
-        for weight_ind in range(len(self.weights)):
-            self.weights[weight_ind].data.uniform_(-stdv, stdv)
-    '''
+   
     def forward(self, x, adj,label):
         # updating first set of weights?
         A_hat_scales = []
@@ -555,20 +550,23 @@ class EGCN(nn.Module):
         #import ipdb ; ipdb.set_trace()
         #A_hat_found = [self.conv(x[0],adj)]#,self.conv2(x[0],adj)]#,self.conv3(x[0],adj)]#,self.conv4(x[0],adj),self.conv5(x[0],adj)]
         A_hat_scales,h = self.conv(x[0],adj)
-        
-        A_hat_ret = self.linear(self.act(A_hat_scales))
+        import ipdb ; ipdb.set_trace() 
+        #A_hat_ret = self.linear(self.act(A_hat_scales))
+        A_hat_ret = []
         sp_size=self.hidden_size#self.final_size
         A_hat_emb = [A_hat_scales[:,:sp_size]]
         for i in range(1,self.d+1):
             A_hat_emb.append(A_hat_scales[:,i*sp_size:(i+1)*sp_size])
-        
+        #A_hat_scales = [self.linear2(A_hat_scales)]
         A_hat_scales = [A_hat_ret]
         A_hat_ret = []
          
         embs = []
+        '''
         for A_hat in A_hat_scales:
             A_hat_ret.append(torch.sigmoid(A_hat@A_hat.T))
+        '''
         for A_hat in A_hat_emb:
             embs.append(torch.sigmoid(A_hat@A_hat.T))
         #import ipdb ; ipdb.set_trace()
-        return h,embs
+        return embs,embs
