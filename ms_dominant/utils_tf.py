@@ -8,10 +8,226 @@ from igraph import Graph
 import dgl
 import copy
 
-def find_intersection(t1,t2):
-    uniques, counts = torch.cat((t1,t2)).unique(return_counts=True)
-    intersection = uniques[counts > 1]
-    return intersection
+def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop):
+    '''
+    Input:
+        adj: normalized adjacency matrix
+        pos_edges: positive edge list
+        neg_edges: negative edge list
+    Output:
+        all_costs: total loss for backpropagation
+        all_structure_costs: node-wise errors at each scale
+    '''
+    adjacency = adj.adjacency_matrix().to_dense().cuda()
+    #backprop_edges = torch.cat((pos_edges_,neg_edges_backprop),dim=0)
+    all_costs, all_structure_costs = None, None
+    for ind, A_hat in enumerate(A_hat_scales): 
+        '''
+        structure_reconstruction_errors = torch.nn.functional.binary_cross_entropy(A_hat,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
+        structure_reconstruction_errors = torch.mean(structure_reconstruction_errors,dim=1)
+        '''
+        for row_ind,row in enumerate(adj.adjacency_matrix().to_dense().cuda()): 
+            edge_count = torch.where(row==1)[0].shape[0]
+            non_edges = row[torch.where(row==0)]
+            non_edges_score = torch.randint(row.shape[0],(edge_count,))
+            all_edges_score = torch.cat((torch.where(row==1)[0],non_edges_score.cuda()))
+
+            recons_error=torch.nn.functional.binary_cross_entropy(A_hat[row_ind][all_edges_score],row[all_edges_score].cuda())
+            if row_ind == 0:
+                structure_reconstruction_errors=recons_error.unsqueeze(-1)
+            else:
+                structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
+
+        '''
+        for edge_ind,edge in enumerate(pos_edges_):
+            node1,node2=edge
+            recons_error=torch.nn.functional.binary_cross_entropy(A_hat[node1][node2],torch.tensor(1.,dtype=torch.float32).cuda())
+            if edge_ind == 0:
+                structure_reconstruction_errors=recons_error.unsqueeze(-1)
+            else:
+                structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
+        for edge_ind,edge in enumerate(neg_edges_backprop):
+            node1,node2=edge
+            recons_error=torch.nn.functional.binary_cross_entropy(A_hat[node1][node2],torch.tensor(0.,dtype=torch.float32).cuda())
+            structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
+        '''
+        if all_costs is None:
+            all_costs = torch.mean(structure_reconstruction_errors).unsqueeze(-1)
+            all_structure_costs = (structure_reconstruction_errors).unsqueeze(-1)
+        else:
+            all_costs = torch.cat((all_costs,torch.mean(structure_reconstruction_errors).unsqueeze(-1)))
+            all_structure_costs = torch.cat((all_structure_costs,(structure_reconstruction_errors).unsqueeze(-1)),dim=-1)
+    return all_costs, all_structure_costs
+
+def load_batch(adj,bg,device):
+    '''
+    Input:
+        adj: normalized adjacency matrix
+        bg: batch index
+        device: cuda device
+    Output:
+        batch_adj: batched adjacency matrix
+        pos_edges: positive edge list
+        neg_edges: negative edge list
+        batch_dict: maps batch node numbering to full node numbering
+    '''
+    return adj, adj.edges(), adj.edges(), {k.item():v.item() for k,v in zip(torch.arange(adj.number_of_nodes()),torch.arange(adj.number_of_nodes()))}
+    pos_edges = adj.find_edges(bg.cuda())
+    pos_edge_weights = adj.edata['w'][bg.cuda()]
+
+    sel_nodes = torch.unique(torch.cat((pos_edges[0],pos_edges[1])))
+        
+    pos_edges_= torch.cat((pos_edges[0].unsqueeze(-1),pos_edges[1].unsqueeze(-1)),dim=1)
+    batch_feats = adj.ndata['feature'][sel_nodes]
+    batch_dict_for,batch_dict_rev = {k.item():v.item() for k,v in zip(sel_nodes,torch.arange(sel_nodes.shape[0]))},{k.item():v.item() for k,v in zip(torch.arange(sel_nodes.shape[0]),sel_nodes)}
+    for ind,i in enumerate(pos_edges_):
+        pos_edges_[ind][0],pos_edges_[ind][1] = batch_dict_for[i[0].item()],batch_dict_for[i[1].item()]
+
+    batch_adj = dgl.graph((pos_edges_[:,0],pos_edges_[:,1]))
+    neg_edges_backprop =  dgl.sampling.global_uniform_negative_sampling(batch_adj, int(2708/2))#bg.shape[0])
+    neg_edges_backprop = torch.cat((neg_edges_backprop[0].unsqueeze(-1),neg_edges_backprop[1].unsqueeze(-1)),dim=1)
+    batch_adj.edata['w'] = pos_edge_weights
+    batch_adj = dgl.to_bidirected(batch_adj.cpu()).to(device)
+    batch_adj.ndata['feature'] = batch_feats
+    
+    for row_ind,row in enumerate(batch_adj.adjacency_matrix().to_dense()):
+        if torch.where(row==1)[0].shape[0] == 0:
+            print('disconnected node')
+            import ipdb; ipdb.set_trace()
+            print('?')
+    return batch_adj, pos_edges_,neg_edges_backprop,batch_dict_rev
+
+def calc_lipschitz(A_hat_scales, A_hat_pert, factor_pert, anom_label):
+    A_hat_diff = abs(A_hat_scales-A_hat_pert)
+    A_hat_diff_pool = torch.norm(A_hat_diff)
+    A_hat_diff_p = A_hat_diff_pool
+    lipschitz = A_hat_diff_p
+    return lipschitz
+
+def perturb_adj(attribute_dense,adj,attr_scale,adj_prob):
+    '''
+    Input:
+        attrs: input attributes
+        adj: input adjacency
+        attr_scale: degree to perturb attributes
+        adj_prob: probability of edge in perturbed graph
+    Output:
+        attrs_pert: perturbed attributes
+        adj_pert: perturbed adjacency
+        factor_pert: degree of resulting perturbation
+    '''
+    adj_dense = adj.clone() 
+    dists_adj = torch.zeros(attribute_dense.shape[0])
+    #import ipdb ; ipdb.set_trace()
+    for i,_ in enumerate(adj_dense):
+        for j,_ in enumerate(adj_dense):
+            if j > i:
+                break
+            if j == i:
+                continue
+            # flip if prob met
+            try:
+                adj_dense[i,j]=0
+                adj_dense[j,i]=0
+                if np.random.rand() < adj_prob:
+                    adj_dense[i,j] = 1.
+                    adj_dense[j,i] = 1.
+                    '''
+                    if adj_dense[i,j] == 0:
+                        adj_dense[i, j] = 1.
+                        adj_dense[j, i] = 1. 
+                    if adj_dense[i,j] == 1:
+                        adj_dense[i, j] = 0.
+                        adj_dense[j, i] = 0. 
+                    '''
+                    dists_adj[i] += 1
+                    dists_adj[j] += 1
+            except:
+                import ipdb ; ipdb.set_trace()
+                print('hi')
+    #num_add_edge = np.sum(adj_dense) - ori_num_edge
+    #import ipdb ;ipdb.set_trace() 
+    # Disturb attribute
+        # Every node in each clique is anomalous; no attribute anomaly scale (can be added)
+    print('Constructing attributed anomaly nodes...')
+    #for ind,i_ in enumerate(attribute_anomaly_idx):
+    all_anom_sc = []
+    '''
+    dists = torch.zeros(attribute_dense.shape[0])
+    for cur,_ in enumerate(attribute_dense):
+        #picked_list = random.sample(all_idx, k)
+        max_dist = 0
+        # find attribute with greatest euclidian distance
+        for j_,_ in enumerate(attribute_dense):
+            #cur_dist = euclidean(attribute_dense[i_],attribute_dense[j_])
+            #import ipdb ; ipdb.set_trace()
+            cur_dist = euclidean(attribute_dense[cur].cpu(),attribute_dense[j_].cpu())
+            if cur_dist > max_dist:
+                max_dist = cur_dist
+    
+        for j_,_ in enumerate(attribute_dense):
+            cur_dist = euclidean(attribute_dense[cur].cpu(),attribute_dense[j_].cpu())
+            if cur_dist > max_dist/10:
+                closest = cur_dist
+                dists[cur] = cur_dist
+                closest_idx = j_
+                #max_idx = j_
+        
+        attribute_dense[cur] = attribute_dense[closest_idx]
+    '''
+    #all_anom_sc.append(anom_sc)
+    dists_adj = dists_adj/torch.full((dists_adj.shape[0],),torch.max(dists_adj))
+    #dists = dists/torch.full((dists.shape[0],),torch.max(dists))
+    #factor_pert = dists_adj + dists
+    factor_pert = dists_adj
+    return attribute_dense,adj_dense,factor_pert
+
+from sklearn.metrics import average_precision_score   
+def detect_anom_ap(errors,label):
+    return average_precision_score(label,errors)
+
+def detect_anom(sorted_errors, label, top_nodes_perc):
+    '''
+    Input:
+        sorted_errors: normalized adjacency matrix
+        label: positive edge list
+        top_nodes_perc: negative edge list
+    Output:
+        all_costs: total loss for backpropagation
+        all_structure_costs: structure errors for each scale
+    '''
+    anom_sc1 = label[0][0]
+    anom_sc2 = label[1][0]
+    anom_sc3 = label[2][0]
+    def redo(anom):
+        for ind,i in enumerate(anom):
+            if ind == 0:
+                ret_anom = np.expand_dims(i.flatten(),0)
+            else:
+                try:
+                    ret_anom = np.hstack((ret_anom,np.expand_dims(i.flatten(),0)))
+                except:
+                    import ipdb ; ipdb.set_trace()
+        return ret_anom
+    anom_sc1 = redo(anom_sc1)
+    anom_sc2 = redo(anom_sc2)
+    anom_sc3 = redo(anom_sc3)
+    all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
+    true_anoms = 0
+    cor_1, cor_2, cor_3 = 0,0,0
+    for ind,error_ in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
+        error = error_.item()
+        if error in all_anom:
+            true_anoms += 1
+        if error in anom_sc1:
+            cor_1 += 1
+        if error in anom_sc2:
+            cor_2 += 1
+        if error in anom_sc3:
+            cor_3 += 1
+    print(cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0])
+    return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
+     
 
 def sparse_matrix_to_tensor(coo,feat):
     v = torch.FloatTensor(coo.data)
@@ -60,122 +276,90 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
     nodes_val = np.unique(list(sum(edges_rem,())))
     nodes_train = np.unique(list(sum(edges_keep,())))
 
-    # get biggest graph component
-    #comps = [*max(nx.connected_components(nx_graph),key=len),]
-    # validation set is the rest of graph
-    #feat = feat.toarray()
-    #val_graph = nx.from_edgelist(edges_rem)
-    val_graph = copy.deepcopy(train_graph)
-    val_graph.remove_edges_from(edges_keep)
-    train_graph.remove_edges_from(edges_rem)
-    val_adj = nx.adjacency_matrix(val_graph).todense()
-    train_adj = nx.adjacency_matrix(train_graph).todense()
-    val_adj = val_adj + np.eye(val_adj.shape[0])
-    train_adj = train_adj + np.eye(train_adj.shape[0])
-    train_adj = train_adj[nodes_train][:,nodes_train]
-    val_adj = val_adj[nodes_val][:,nodes_val]
-    val_feats = [feats[0][nodes_val]]
-    train_feats = [feats[0][nodes_train]]
-    
     return adj_norm, feats, truth, adj_no_loop.toarray(), sc_label, train_adj, train_feats, val_adj, val_feats
-    '''    
-    elif dataSet.startswith('weibo'):
-            if self.args.learn_method == 'gnn':
-                ds = dataSet
-                graph_u2p_file = self.file_paths[ds]['graph_u2p']
-                labels_file = self.file_paths[ds]['labels']
-                features_bow_file = self.file_paths[ds]['features_bow']
-                features_loc_file = self.file_paths[ds]['features_loc']
-
-                graph_u2p = pickle.load(open(graph_u2p_file, 'rb'))
-                labels = pickle.load(open(labels_file, 'rb'))
-                feat_bow = pickle.load(open(features_bow_file, 'rb'))
-                feat_loc = pickle.load(open(features_loc_file, 'rb'))
-
-                if self.args.feature == 'all':
-                    feat_data = np.concatenate((feat_loc, feat_bow), axis=1)
-                elif self.args.feature == 'bow':
-                    feat_data = feat_bow
-                elif self.args.feature == 'loc':
-                    feat_data = feat_loc
-
-                m, n = np.shape(graph_u2p)
-                adj_lists = {}
-                feat_p = np.zeros((n, np.shape(feat_data)[1]))
-                for i in range(m):
-                    adj_lists[i] = set(m + graph_u2p[i,:].nonzero()[1])
-                for j in range(n):
-                    adj_lists[j+m] = set(graph_u2p[:,j].nonzero()[0])
-                    feat_j = feat_data[graph_u2p[:,j].nonzero()[0]]
-                    feat_j = np.mean(feat_j, 0)
-                    feat_p[j] = feat_j
-
-                feat_data = np.concatenate((feat_data, feat_p), 0)
-                # feat_data = np.concatenate((feat_data, np.zeros((n, np.shape(feat_data)[1]))), 0)
-                assert np.shape(feat_data)[0] == m+n
-
-                assert len(feat_data) == len(labels)+n == len(adj_lists)
-                test_indexs, val_indexs, train_indexs = self._split_data(len(labels))
-                user_id_max = len(labels)
-                train_indexs_cls = train_indexs
-                train_indexs = np.arange(len(labels))
-
-                user_id_max = len(labels)
-                graph_simi = np.ones((10, 10))
-
-                # get labels for anomaly losses if needed
-                if self.args.a_loss != 'none':
-                    self.logger.info(f'using {self.args.a_loss} anomaly loss.')
-                    label_a_file = self.file_paths[ds][self.args.a_loss]["a_label"]
-                    labels_a = pickle.load(open(label_a_file, 'rb')).astype(int)
-                    # get clusters for anomaly losses if needed
-                    if self.args.cluster_aloss:
-                        clusters_file = self.file_paths[ds][self.args.a_loss]["a_cluster"]
-                        clusters = pickle.load(open(clusters_file, 'rb'))
-                        u2cluster = defaultdict(list)
-                        for i in range(len(clusters)):
-                            for u in clusters[i]:
-                                u2cluster[u].append(i)
-                        cluster_neighbors = defaultdict(set)
-                        for u in range(np.shape(graph_u2p)[0]):
-                            for clus_i in u2cluster[u]:
-                                cluster_neighbors[u] |= clusters[clus_i]
-                        for u in range(np.shape(graph_u2p)[0]):
-                            cluster_neighbors[u] = cluster_neighbors[u] - set([u])
-                            assert len(cluster_neighbors[u]) >= 1
-                        u2size_of_cluster = {}
-                        for u, neighbors in cluster_neighbors.items():
-                            u2size_of_cluster[u] = len(neighbors)
-                    else:
-                        u2size_of_cluster = {}
-                        for u in range(np.shape(graph_u2p)[0]):
-                            u2size_of_cluster[u] = np.sum(labels_a == labels_a[u])
-
-                setattr(self, dataSet+'_test', test_indexs)
-                setattr(self, dataSet+'_val', val_indexs)
-                setattr(self, dataSet+'_train', train_indexs)
-                setattr(self, dataSet+'_train_cls', train_indexs_cls)
-                setattr(self, dataSet+'_trainable', train_indexs)
-                setattr(self, dataSet+'_useridmax', user_id_max)
-
-                setattr(self, dataSet+'_feats', feat_data)
-                setattr(self, dataSet+'_labels', labels)
-                setattr(self, dataSet+'_adj_lists', adj_lists)
-                setattr(self, dataSet+'_best_adj_lists', adj_lists)
-                setattr(self, dataSet+'_simis', graph_simi)
-                if self.args.a_loss != 'none':
-                    setattr(self, dataSet+'_labels_a', labels_a)
-                    setattr(self, dataSet+'_u2size_of_cluster', u2size_of_cluster)
-                if self.args.cluster_aloss:
-                    setattr(self, dataSet+'_cluster_neighbors', cluster_neighbors)
-
-    '''
 
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""
     adj = sp.coo_matrix(adj)
+    #adj += sp.eye(adj.shape[0])
     rowsum = np.array(adj.sum(1))
     d_inv_sqrt = np.power(rowsum, -0.5).flatten()
     d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
     d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
+
+''' 
+    import ipdb ; ipdb.set_trace() 
+    import MADAN.Plotters as Plotters
+    from MADAN._cython_fast_funcs import sum_Sto, sum_Sout, compute_S, cython_nmi, cython_nvi
+    from MADAN.LouvainClustering_fast import Clustering, norm_var_information
+    import MADAN.Madan as md
+    madan = md.Madan(adj, attributes=attrs[-1], sigma=0.08)
+    time_scales = np.concatenate([np.array([0]), 10**np.linspace(0,5,500)])
+    madan.scanning_relevant_context(time_scales, n_jobs=4)
+    madan.scanning_relevant_context_time(time_scales)
+    madan.compute_concentration(1000)
+    print(madan.concentration,madan.anomalous_nodes)
+    madan.compute_context_for_anomalies()
+    print(madan.interp_com)
+    print(' ------------')
+    '''
+
+def embed_sim(embeds,label):
+    import numpy as np
+    anom_sc1 = label[0][0]#[0]
+    anom_sc2 = label[1][0]#[0]
+    anom_sc3 = label[2][0]#[0] 
+    anoms_cat = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None) 
+    all_anom = [anom_sc1,anom_sc2,anom_sc3]
+    # get max embedding diff for normalization
+    '''
+    max_diff = 0
+    #import ipdb ; ipdb.set_trace()
+    for ind,embed in enumerate(embeds):
+        for ind_,embed_ in enumerate(embeds):
+            if ind_>= ind:
+                break
+            max_diff = torch.norm(embed-embed_) if torch.norm(embed-embed_) > max_diff else max_diff
+    '''
+    # get anom embeds differences
+    all_anom_diffs = []
+    for anoms in all_anom:
+        anoms_embs = embeds[anoms]
+        anom_diffs = []
+        for ind,embed in enumerate(anoms_embs):
+            for ind_,embed_ in enumerate(anoms_embs):
+                #if len(anom_diffs) == len(anoms): continue
+                if ind_ >= ind: break
+                #anom_diffs.append(torch.norm(embed-embed_)/max_diff)
+                anom_diffs.append(embed@embed_.T)
+        all_anom_diffs.append(anom_diffs)
+    '''
+    # get normal embeds differences
+
+    normal_diffs = []
+    for ind,embed in enumerate(embeds):
+        if ind in anoms_cat: continue
+        if len(normal_diffs) == len(all_anom_diffs):
+            break
+        for ind_,embed_ in enumerate(embeds):
+            if ind_ >= ind: break
+            if ind_ in anoms_cat: continue
+            normal_diffs.append(torch.norm(embed-embed_)/max_diff)
+    # get normal vs anom embeds differences
+    all_norm_anom_diffs = []
+    for anoms in all_anom:
+        norm_anom_diffs=[]
+        for ind, embed in enumerate(embeds):
+            if ind in anoms_cat: continue
+            for ind_,anom in enumerate(embeds[anoms]):
+                #if len(norm_anom_diffs) == len(anoms): continue 
+                norm_anom_diffs.append(torch.norm(embed-anom)/max_diff)
+        all_norm_anom_diffs.append(norm_anom_diffs)
+    print('normal-normal',sum(normal_diffs)/len(normal_diffs))
+    print('anom-anom',sum(all_anom_diffs[0])/len(all_anom_diffs[0]),sum(all_anom_diffs[1])/len(all_anom_diffs[1]),sum(all_anom_diffs[2])/len(all_anom_diffs[2])) 
+    print('anom-normal',sum(all_norm_anom_diffs[0])/len(all_norm_anom_diffs[0]),sum(all_norm_anom_diffs[1])/len(all_norm_anom_diffs[1]),sum(all_norm_anom_diffs[2])/len(all_norm_anom_diffs[2]))
+    #import ipdb ; ipdb.set_trace()
+    print('----')
+    '''
+    print((sum(all_anom_diffs[0])/len(all_anom_diffs[0])).item(),(sum(all_anom_diffs[1])/len(all_anom_diffs[1])).item(),(sum(all_anom_diffs[2])/len(all_anom_diffs[2])).item()) 
