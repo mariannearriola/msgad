@@ -90,8 +90,6 @@ if __name__ == '__main__':
     parser.add_argument('--scales', default='4', type=int, help='number of scales for multi-scale analysis')
     parser.add_argument('--batch_size', type=int, default=32, help='number of edges to use for batching (default: 32)')
     parser.add_argument('--recons', default='struct', type=str, help='reconstruct features or structure')
-    parser.add_argument('--mlp', default=False, type=bool, help='include features for mlp or not')
-    parser.add_argument('--parity', default=None, type=str, help='even, odd, or regular scales')
     parser.add_argument('--cutoff',default=50, type=float, help='validation cutoff')
     parser.add_argument('--d', default=4, type=int, help='d parameter for BWGNN filters')
     parser.add_argument('--model', default='multi-scale', type=str, help='encoder to use')
