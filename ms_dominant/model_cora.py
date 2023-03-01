@@ -21,7 +21,6 @@ class AnomalyDAE(nn.Module):
         #x = self.dense(x)
         #x = F.dropout(x,self.dropout)
         x = self.attention_layer(x,adj.nonzero().t().contiguous())
-        #ret_x = torch.sigmoid(x@x.T)
         embed_x = x
         return [embed_x],[embed_x]
 
@@ -147,163 +146,6 @@ def calculate_theta2(d):
         thetas.append(inv_coeff)
     return thetas
 
-
-class Encoder(nn.Module):
-    def __init__(self, nfeat, nhid, dropout, recons):
-        super(Encoder, self).__init__()
-        out = 8189
-        self.gc1 = GraphConvolution(nfeat, nhid, bias=False)
-        self.gc2 = GraphConvolution(nhid, nhid, bias=False)
-        self.gc2 = GraphConvolution(nhid, out, bias=False)
-        self.gc3 = GraphConvolution(nhid, nhid, bias=False)
-        self.dropout = dropout
-        self.recons = recons
-        
-    def forward(self, x, adj, w):
-        #x = F.relu(self.gc1(x, adj))
-        #x = F.leaky_relu(self.gc1(x, w),negative_slope=0.1)
-        x = x@w
-        #x = self.gc1(x,adj,w)
-        #x = F.relu(x)
-        x = -F.leaky_relu(-x,negative_slope=0.1)
-        
-        # added
-        #x = F.relu(self.gc3(x, adj))
-        #x = F.dropout(x, self.dropout, self.training)
-        return x
-
-class Attribute_Decoder(nn.Module):
-    def __init__(self, nfeat, nhid, dropout):
-        super(Attribute_Decoder, self).__init__()
-
-        self.gc1 = GraphConvolution(nhid, nhid)
-        self.gc2 = GraphConvolution(nhid, nfeat)
-        self.dropout = dropout
-
-    def forward(self, x, adj):
-        x = F.relu(self.gc1(x, adj))
-        x = F.dropout(x, self.dropout, training=self.training)
-        x = F.relu(self.gc2(x, adj))
-        return x
-
-class Structure_Decoder(nn.Module):
-    def __init__(self, nhid, dropout):
-        super(Structure_Decoder, self).__init__()
-        self.training = True
-        self.gc1 = GraphConvolution(nhid, nhid)
-        self.dropout = dropout
-
-    def forward(self, x):#,label):
-        if False:
-            self.embed_sim(x,label)
-        #import ipdb ; ipdb.set_trace()
-        x = x @ x.T
-        x = torch.sigmoid(x)
-        return x
-
-def embed_sim(embeds,label):
-    import numpy as np
-    #import ipdb ; ipdb.set_trace()
-    anom_sc1 = label[0][0]#[0]
-    anom_sc2 = label[1][0]#[0]
-    anom_sc3 = label[2][0]#[0] 
-    anoms_cat = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None) 
-    all_anom = [anom_sc1,anom_sc2,anom_sc3]
-    '''
-    for h in all_h:
-        if not self.training:
-            embeds = h
-            import numpy as np
-            #import ipdb ; ipdb.set_trace()
-            anom_sc1 = label[0][0]#[0]
-            anom_sc2 = label[1][0]#[0]
-            anom_sc3 = label[2][0]#[0] 
-            anoms_cat = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None) 
-            all_anom = [anom_sc3,anom_sc2,anom_sc3]
-            # get max embedding diff for normalization
-            max_diff = 0
-            #import ipdb ; ipdb.set_trace()
-            for ind,embed in enumerate(embeds):
-                for ind_,embed_ in enumerate(embeds):
-                    if ind_>= ind:
-                        break
-                    max_diff = torch.norm(embed-embed_) if torch.norm(embed-embed_) > max_diff else max_diff
-            #import ipdb ; ipdb.set_trace()
-            # get anom embeds differences
-            all_anom_diffs = []
-            for anoms in all_anom:
-                try:
-                    anoms_embs = embeds[anoms]
-                except:
-                    import ipdb ; ipdb.set_trace()
-                anom_diffs = []
-                for ind,embed in enumerate(anoms_embs):
-                    for ind_,embed_ in enumerate(anoms_embs):
-                        #if len(anom_diffs) == len(anoms): continue
-                        if ind_ >= ind: break
-                        anom_diffs.append(torch.norm(embed-embed_)/max_diff)
-                all_anom_diffs.append(anom_diffs)
-            
-            # TODO: find normal clusters
-            # get normal embeds differences
-            normal_diffs = []
-            for ind,embed in enumerate(embeds):
-                if ind in anoms_cat: continue
-                if len(normal_diffs) == len(all_anom_diffs):
-                    break
-                for ind_,embed_ in enumerate(embeds):
-                    if ind_ >= ind: break
-                    if ind_ in anoms_cat: continue
-                    normal_diffs.append(torch.norm(embed-embed_)/max_diff)
-            
-        # TODO: only get connected node embeddings?
-            # get normal vs anom embeds differences
-            all_norm_anom_diffs = []
-            for anoms in all_anom:
-                norm_anom_diffs=[]
-                for ind, embed in enumerate(embeds):
-                    if ind in anoms_cat: continue
-                    for ind_,anom in enumerate(embeds[anoms]):
-                        #if len(norm_anom_diffs) == len(anoms): continue 
-                        norm_anom_diffs.append(torch.norm(embed-anom)/max_diff)
-                all_norm_anom_diffs.append(norm_anom_diffs)
-
-
-            print('normal-normal',sum(normal_diffs)/len(normal_diffs))
-            print('anom-anom',sum(all_anom_diffs[0])/len(all_anom_diffs[0]),sum(all_anom_diffs[1])/len(all_anom_diffs[1]),sum(all_anom_diffs[2])/len(all_anom_diffs[2])) 
-            print('anom-normal',sum(all_norm_anom_diffs[0])/len(all_norm_anom_diffs[0]),sum(all_norm_anom_diffs[1])/len(all_norm_anom_diffs[1]),sum(all_norm_anom_diffs[2])/len(all_norm_anom_diffs[2]))
-            #import ipdb ; ipdb.set_trace()
-            print('----')
-    '''
-    print((sum(all_anom_diffs[0])/len(all_anom_diffs[0])).item(),(sum(all_anom_diffs[1])/len(all_anom_diffs[1])).item(),(sum(all_anom_diffs[2])/len(all_anom_diffs[2])).item()) 
-
-class Dominant(nn.Module):
-    def __init__(self, feat_size, hidden_size, dropout, recons):
-        super(Dominant, self).__init__()
-        
-        for param in self.parameters():
-            param.requires_grad = False
-        
-        self.shared_encoder = Encoder(feat_size, hidden_size, dropout, recons)
-        self.attr_decoder = Attribute_Decoder(feat_size, hidden_size, dropout)
-        self.struct_decoder = Structure_Decoder(hidden_size, dropout)
-        self.recons = recons
-    def forward(self, x, adj, w_feat):#, label):
-        # encode
-        
-        x = self.shared_encoder(x, adj, w_feat)
-        x = torch.sigmoid(x@x.T)
-        return x, x
-
-def glorot_init(in_size, out_size):
-    import numpy as np
-    import math
-    stdv = 1. / math.sqrt(in_size)
-    #init_range = np.sqrt(6.0/(in_size+out_size))
-    initial = torch.rand(in_size, out_size)*(2*stdv)
-    resh_initial = initial[None, :, :]
-    return resh_initial.cuda()
-
 class EGCN(nn.Module):
     def __init__(self, in_size, out_size, scales, recons, mlp, d):
         super(EGCN, self).__init__()
@@ -339,6 +181,7 @@ class EGCN(nn.Module):
     '''
     def forward(self, x, adj,label):
         A_hat_scales = []
+        #import ipdb ; ipdb.set_trace
         A_hat_scales,h = self.conv(x[0],adj)
         
         #A_hat_ret = self.linear(self.act(A_hat_scales))

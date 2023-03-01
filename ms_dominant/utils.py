@@ -43,6 +43,7 @@ def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
         sc_label = data_mat['scale_anomaly_label'][0]
 
     adj_norm = normalize_adj(adj + sp.eye(adj.shape[0]))
+    #adj_norm = adj
     adj_norm = adj_norm.toarray()
     adj = adj_no_loop
     if dataset == 'weibo':

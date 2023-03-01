@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import numpy as np
 import scipy.sparse as sp
 import scipy.io
-from sklearn.metrics import roc_auc_score
 from datetime import datetime
 import argparse
 import scipy
@@ -13,99 +12,71 @@ import networkx as nx
 import torch_geometric
 from torch.utils.data import DataLoader
 from scipy import stats
-from model_tf import EGCN
+from model_tf import GraphReconstruction
 from utils_tf import *
-from scipy.spatial.distance import euclidean
 import random 
 
-def train_dominant(args):
-
-    adj, attrs_det, label, adj_label, sc_label, adj_train, attrs_train, adj_val, attrs_val = load_anomaly_detection_dataset(args.dataset, args.scales, args.mlp, args.parity)
-    adj, adj_label = sparse_matrix_to_tensor(adj,attrs_det[0]), sparse_matrix_to_tensor(adj_label,attrs_det[0])
-    model = EGCN(in_size = attrs_det[0].size(1), out_size = args.hidden_dim, scales = args.scales, recons = args.recons, mlp = args.mlp, d = args.d)
+def graph_anomaly_detection(args):
+    adj, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales, args.mlp, args.parity)
+    adj, adj_label = sparse_matrix_to_tensor(adj,feats), sparse_matrix_to_tensor(adj_label,feats)
+    model = GraphReconstruction(in_size = feats.size(1), hidden_size=args.hidden_dim, scales = args.scales, recons = args.recons, mlp = args.mlp, d = args.d, model_str = args.model)
     if args.device == 'cuda':
         device = torch.device(args.device)
         adj = adj.to(device)
         adj_label = adj_label.to(device)
         model = model.cuda()
-    
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
-    data_loader = DataLoader(torch.arange(adj.num_edges()), batch_size=args.batch_size,shuffle=False) 
-    
+    data_loader = DataLoader(torch.arange(adj_label.num_edges()), batch_size=args.batch_size,shuffle=True) 
     best_loss = torch.tensor(float('inf')).cuda()
     model.train()
     for epoch in range(args.epoch):
         for iter, bg in enumerate(data_loader):
-            if iter % 1000 == 0: print(iter, '/', len(data_loader))
-            if iter == 1: break
-            batch_adj, pos_edges, neg_edges, _ = load_batch(adj_label,bg,args.device)
-            batch_adj_norm=dgl.add_self_loop(batch_adj)
+            if args.debug:
+                if iter % 10 == 0 and iter != 0 and 'finance' in args.dataset:
+                    num_nonzeros=[]
+                    for sc, A_hat in enumerate(A_hat_scales):
+                        num_nonzeros.append(round((torch.where(A_hat < 0.5)[0].shape[0])/(A_hat.shape[0]**2),10))
+                    avg_edges = []
+                    avg_pos_edges = []
+                    for node in batch_adj.adjacency_matrix().to_dense():
+                        avg_edges.append(torch.where(node==1)[0].shape[0])
+                        avg_pos_edges.append(torch.where(node==0)[0].shape[0])
+                    num_nonzeros_adj=round((torch.where(batch_adj.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(batch_adj.number_of_nodes()**2),3)
+                    print(iter, '/', len(data_loader), l.item(),loss,num_nonzeros,np.mean(np.array(avg_edges)),np.mean(np.array(avg_pos_edges)))
+                
+            g_batch, pos_edges, neg_edges, _ = load_batch(adj_label,bg,args.device)
             optimizer.zero_grad()
-            A_hat_scales, X_hat = model(batch_adj_norm)
-            loss, struct_loss = loss_func(batch_adj, A_hat_scales, pos_edges, neg_edges)
-            l = torch.mean(loss)
+            A_hat_scales, X_hat = model(g_batch)
+            loss, struct_loss = loss_func(g_batch, A_hat_scales, pos_edges, neg_edges, sample=args.sample_train)
+            l = torch.sum(loss)
             '''
             if l < best_loss:
-                best_loss = l
+                best_loss = dl
                 torch.save(model,'best_model.pt')
             '''
             l.backward()
             optimizer.step()
-
         num_nonzeros=[]
         for sc, A_hat in enumerate(A_hat_scales):
             num_nonzeros.append(round((torch.where(A_hat < 0.5)[0].shape[0])/(A_hat.shape[0]**2),2))
-        print("Epoch:", '%04d' % (epoch), "train_loss=", "{:.5f}".format(l.item()), "losses=",loss, "Non-edges:",num_nonzeros)
+        print("Epoch:", '%04d' % (epoch), "train_loss=", "{:.5f}".format(l.item()), "losses=",torch.round(loss,decimals=4).detach().cpu(), "Non-edges:",num_nonzeros)
 
     print('best loss:', best_loss)
-    adj, attrs_det, label, adj_label, sc_label, train_adj, train_attrs, val_adj, val_attrs = load_anomaly_detection_dataset(args.dataset, args.scales, args.mlp, args.parity)
-    adj, adj_label = sparse_matrix_to_tensor(adj,attrs_det[0]), sparse_matrix_to_tensor(adj_label,attrs_det[0])
-    if args.device == 'cuda':
-        device = torch.device(args.device)
-        adj = adj.to(device)
-        adj_label = adj_label.to(device)
-        
+    
     #model = torch.load('best_model.pt')
     model.eval()
-    data_loader = DataLoader(torch.arange(adj.num_edges()), batch_size=args.batch_size,shuffle=False)
+    data_loader = DataLoader(torch.arange(adj_label.num_edges()), batch_size=args.batch_size,shuffle=True)
 
-    scores, l_scores = torch.zeros(adj.number_of_nodes(),args.d+1).cuda(),torch.zeros((adj.number_of_nodes(),args.d+1))
+    scores, l_scores = torch.zeros(args.d,adj.number_of_nodes()).cuda(),torch.zeros((adj.number_of_nodes(),args.d+1))
     for iter, bg in enumerate(data_loader):
-        if iter == 1: break
-        batch_adj, pos_edges, neg_edges, batch_dict = load_batch(adj_label,bg,args.device)
-        batch_adj_norm=dgl.add_self_loop(batch_adj)
-        A_hat_scales, X_hat = model(batch_adj_norm)
-        loss, struct_loss = loss_func(batch_adj, A_hat_scales, pos_edges, neg_edges)
-        scores = struct_loss
-        '''
+        if iter % 50 == 0: print(iter, '/', len(data_loader), l.item(),loss)
+        g_batch, pos_edges, neg_edges, batch_dict = load_batch(adj_label,bg,args.device)
+        A_hat_scales, X_hat = model(g_batch)
+        loss, struct_loss = loss_func(g_batch, A_hat_scales, pos_edges, neg_edges, sample=args.sample_test)
         for sc, A_hat in enumerate(A_hat_scales):
-            scores[list(batch_dict.values()),sc] = struct_loss[:,sc]
-        '''
-    print('CHECK SCORES HERE')
-    for sc, A_hat in enumerate(A_hat_scales):
-        scores_recons = scores[:,sc].detach().cpu().numpy()
-        sorted_errors = np.argsort(-scores_recons)
-        rev_sorted_errors = np.argsort(scores_recons)
-        rankings = []
-        import ipdb ; ipdb.set_trace()
-        for error in sorted_errors:
-            rankings.append(label[error])
-        rankings = np.array(rankings)
-
-        print(f'SCALE {sc+1}',np.mean(scores_recons))
-        try:
-            print('AP',detect_anom_ap(scores_recons,label))
-        except:
-            import ipdb ; ipdb.set_trace()
-        print('RECONSTRUCTION')
-        print(detect_anom(sorted_errors, sc_label[0], 1))
-        print('reverse')
-        print(detect_anom(rev_sorted_errors, sc_label[0], 1))
-        print('')
-        
-    with open('output/{}-ranking_{}.txt'.format(args.dataset, sc), 'w+') as f:
-        for index in sorted_errors:
-            f.write("%s\n" % label[index])
+            scores[sc,list(batch_dict.values())] = struct_loss[sc,:]
+    
+    detect_anomalies(scores,  label, sc_label, args.dataset)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -123,6 +94,10 @@ if __name__ == '__main__':
     parser.add_argument('--parity', default=None, type=str, help='even, odd, or regular scales')
     parser.add_argument('--cutoff',default=50, type=float, help='validation cutoff')
     parser.add_argument('--d', default=4, type=int, help='d parameter for BWGNN filters')
+    parser.add_argument('--model', default='multi-scale', type=str, help='encoder to use')
+    parser.add_argument('--sample_train', default=False, type=bool, help="whether or not to sample edges in training")
+    parser.add_argument('--sample_test', default=False, type=bool, help="whether or not to sample edges in testing")
+    parser.add_argument('--debug', default=False, type=bool, help="if true, prints intermediate output")
     args = parser.parse_args()
 
-    train_dominant(args)
+    graph_anomaly_detection(args)

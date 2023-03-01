@@ -62,12 +62,7 @@ def train_dominant(args):
         optimizer.zero_grad()
         X_hat,A_hat_scales = model(attrs,adj,sc_label)
         loss, struct_loss, feat_loss = loss_func(adj_label, A_hat_scales, attrs[0], X_hat, args.alpha, args.recons, weight_tensor)
-        #loss_val, struct_loss_val, feat_loss_val = loss_func(adj_val, A_hat_scales_val, attrs_val, X_hat_val, args.alpha, args.recons, weight_tensor)
-        #import ipdb ; ipdb.set_trace()
         l = torch.mean(loss)
-        #val_l = torch.mean(loss_val)
-        #if val_l < args.cutoff:
-        #    epoch = args.epoch-1
         if l < best_loss:
             best_loss = l
             torch.save(model,f'best_model_{args.d}.pt')
@@ -75,9 +70,12 @@ def train_dominant(args):
         optimizer.step()
 
         num_nonzeros=[]
+        num_posedges = []
         for sc, A_hat in enumerate(A_hat_scales):
             num_nonzeros.append(torch.where(A_hat < 0.5)[0].shape[0])
-        print("Epoch:", '%04d' % (epoch), "train_loss=", "{:.5f}".format(l.item()), "Non-edges:",num_nonzeros)
+            num_posedges.append(torch.where(A_hat >= 0.5)[0].shape[0])
+        print(A_hat_scales[-1])
+        print("Epoch:", '%04d' % (epoch), "train_loss=", loss, "Non-edges:",np.round(np.array(num_nonzeros)/(A_hat.shape[0]**2),decimals=2))
         '''
         #if epoch%10 == 0 or epoch == args.epoch - 1:
         if epoch == args.epoch-1:
