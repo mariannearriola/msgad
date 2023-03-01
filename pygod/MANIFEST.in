@@ -1,6 +1,0 @@
-prune examples
-prune notebooks
-prune pygod/test
-prune README.md
-include README.rst
-include requirements.txt
