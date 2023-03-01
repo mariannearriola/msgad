@@ -160,15 +160,15 @@ Citation_dataset_list = ['cora', 'citeseer', 'pubmed']
 
 # Set hyperparameters of disturbing
 dataset_str = "cora"  #'BlogCatalog'  'Flickr' 'cora'  'citeseer'  'pubmed'
-seed = 5
+seed = 10
 m = 15  #num of fully connected nodes  #10 15 20   5 (clique size)
 k = 50
 s = 9 # number of scales
 #scale_sizes = np.array([5,15,45])
 #n = np.array([2,1,1])
-scale=1
-num_clust=5
-size=10
+scale=2
+num_clust=2
+size=50
 prob_connect=0.93
 prob_connect=0.75
 prob_connect=0.05
@@ -188,10 +188,13 @@ attr_scales = np.full((num_clust,),1)
 #probs = np.array([0.5,0.5,0.5])
 #probs = np.full((num_clust,),prob_connect)
 #prob = np.array([0.1,0.1,0.1])
+
+
 # Set seed
 print('Random seed: {:d}. \n'.format(seed))
 np.random.seed(seed)
 random.seed(seed)
+
 
 # Load data
 print('Loading data: {}...'.format(dataset_str))
@@ -262,6 +265,7 @@ for ind,n_ in enumerate(n):
         print(current_nodes)
         # connect anom nodes into cluster
         for ind_,i in enumerate(current_nodes):
+
             for jind,j in enumerate(current_nodes):
                 if jind == ind_:
                     continue
@@ -271,8 +275,16 @@ for ind,n_ in enumerate(n):
                 
                 if np.random.rand() > prob_connect:#prob_connects[ind]:
                     adj_dense[i, j] = 1.
-                    adj_dense[j, i] = 1. 
-             
+                    adj_dense[j, i] = 1.
+            for jind,j in enumerate(except_nodes):
+                adj_dense[i,j]=0.
+                adj_dense[j,i]=0.
+                
+                if ind == 0 and jind > (except_nodes.shape[0]-6):
+                    #import ipdb ; ipdb.set_trace()
+                    adj_dense[i,j]=1.
+                    adj_dense[j,i]=1.
+                
             '''
             for jind_,j_ in enumerate(current_nodes):
                 if jind_ > ind_:
@@ -412,7 +424,7 @@ adj = dense_to_sparse(adj_dense)
 #savedir = './pygod/pygod/data'
 savedir = './ms_dominant/data'
 #savedir = './dominant/GCN_AnomalyDetection_pytorch/data'
-#savedir = './pygsp-master/pygsp/data/ms_data'
+savedir = './pygsp-master/pygsp/data/ms_data'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
 #import ipdb ; ipdb.set_trace()
