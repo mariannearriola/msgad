@@ -142,7 +142,7 @@ class PolyConv(nn.Module):
 
 def calculate_theta2(d):
     thetas = []
-    eval_max,offset=2=0
+    eval_max,offset=2,0
     x = sympy.symbols('x')
     for i in range(offset,d+offset,1):
         f = sympy.poly((x/eval_max) ** i * (1 - x/eval_max) ** (d-i+offset) / (eval_max*scipy.special.beta(i+1, d+1-i+offset)))
@@ -155,10 +155,10 @@ def calculate_theta2(d):
     return thetas
     
 class GraphReconstruction(nn.Module):
-    def __init__(self, in_size, hidden_size, scales, recons, mlp, d, model_str):
+    def __init__(self, in_size, hidden_size, scales, recons, d, model_str):
         super(GraphReconstruction, self).__init__()
         self.in_size = in_size
-        self.out_size = out_size
+        self.out_size = in_size
         self.d = d
         self.recons = recons
         self.model_str = model_str
@@ -168,7 +168,7 @@ class GraphReconstruction(nn.Module):
             self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
             self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+3)
             '''
-            self.conv = SimpleGNN(in_size,hidden_size'dominant',hops=5)
+            self.conv = SimpleGNN(in_size,hidden_size,'dominant',hops=5)
             self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',hops=10)
             self.conv3 = SimpleGNN(in_size,hidden_size,'dominant',hops=15)
         else:

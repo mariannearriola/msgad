@@ -2,6 +2,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 import numpy as np
 import scipy.sparse as sp
 import torch
+import scipy
 import scipy.io as sio
 import random
 import networkx as nx
@@ -9,7 +10,7 @@ from igraph import Graph
 import dgl
 import copy
 
-def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, detection=False, sample=True):
+def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, sample=False):
     '''
     Input:
         adj: normalized adjacency matrix
@@ -22,6 +23,7 @@ def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, detection=False
     adjacency = adj.adjacency_matrix().to_dense().cuda()
     #backprop_edges = torch.cat((pos_edges_,neg_edges_backprop),dim=0)
     all_costs, all_structure_costs = None, None
+    
     for ind, A_hat in enumerate(A_hat_scales):
         if sample:
             for edge_ind,edge in enumerate(pos_edges_):
@@ -38,15 +40,15 @@ def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, detection=False
         
         else:
             structure_reconstruction_errors = torch.nn.functional.binary_cross_entropy(A_hat,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
-            structure_reconstruction_errors = torch.mean(structure_reconstruction_errors,dim=1)
+            structure_reconstruction_errors = torch.mean(structure_reconstruction_errors,dim=0)
         
         if all_costs is None:
             all_structure_costs = (structure_reconstruction_errors).unsqueeze(-1)
-            all_costs = torch.mean(all_structure_costs)
+            all_costs = torch.mean(all_structure_costs).unsqueeze(-1)
         else:
-            all_structure_costs = torch.cat((all_structure_costs,(structure_reconstruction_errors).unsqueeze(-1)),dim=-1)
-            all_costs = torch.cat((all_costs,torch.mean(structure_reconstruction_errors.unsqueeze(-1))))
-
+            all_structure_costs = torch.cat((all_structure_costs,(structure_reconstruction_errors).unsqueeze(-1)),dim=0)
+            all_costs = torch.cat((all_costs,torch.mean(structure_reconstruction_errors).unsqueeze(-1)))
+            
     return all_costs, all_structure_costs
 
 def load_batch(adj,bg,device):
@@ -66,7 +68,6 @@ def load_batch(adj,bg,device):
 
     pos_edge_weights = adj.edata['w'][bg.cuda()]
     neg_edges_backprop = dgl.sampling.global_uniform_negative_sampling(adj, int(bg.shape[0])*2)
-
     sel_nodes = torch.unique(torch.cat((pos_edges[0],pos_edges[1])))
     sel_nodes = torch.unique(torch.cat((sel_nodes,torch.cat((neg_edges_backprop[0],neg_edges_backprop[1])))))
         
@@ -82,12 +83,11 @@ def load_batch(adj,bg,device):
 
     batch_adj = adj.subgraph(sel_nodes)
 
-    neg_edges_backprop = torch.cat((neg_edges_backprop[0].unsqueeze(-1),neg_edges_backprop[1].unsqueeze(-1)),dim=1)
     #batch_adj.edata['w'] = pos_edge_weights
     batch_adj = dgl.to_bidirected(batch_adj.cpu()).to(device)
     batch_adj.ndata['feature'] = batch_feats
     
-    return batch_adj, pos_edges_,neg_edges_backprop,batch_dict_rev
+    return batch_adj, pos_edges_, neg_edges_backprop, batch_dict_rev
 
 def calc_lipschitz(A_hat_scales, A_hat_pert, anom_label):
     A_hat_diff = abs(A_hat_scales-A_hat_pert)
@@ -176,7 +176,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
             cor_2 += 1
         if error in anom_sc3:
             cor_3 += 1
-    print(cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0])
+    print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, total: {true_anoms}')
     return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
     
 def detect_anomalies(scores,  label, sc_label, dataset):
@@ -187,35 +187,36 @@ def detect_anomalies(scores,  label, sc_label, dataset):
         sc_label: array containing scale-wise anomaly node ids
         dataset: dataset string
     '''
-    for sc,sc_score.detach().cpu().numpy() in enumerate(scores):
-        sorted_errors = np.argsort(-sc_score)
-        rev_sorted_errors = np.argsort(sc_score)
+    for sc,sc_score in enumerate(scores):
+        sorted_errors = np.argsort(-sc_score.detach().cpu().numpy())
+        rev_sorted_errors = np.argsort(sc_score.detach().cpu().numpy())
         rankings = []
         
         for error in sorted_errors:
             rankings.append(label[error])
         rankings = np.array(rankings)
 
-        print(f'SCALE {sc+1}',np.mean(scores_recons))
-        print('AP',detect_anom_ap(scores_recons,label))
-        print('RECONSTRUCTION')
+        print(f'SCALE {sc+1} loss',torch.mean(sc_score).item())
+        #print('AP',detect_anom_ap(scores_recons,label))
         if 'tfinance' in dataset:
-            print(detect_anom(sorted_errors, sc_label[0][0][0], sc_label[0][0][0], sc_label[0][2][0], 1))
+            detect_anom(sorted_errors, sc_label[0][0][0], sc_label[0][0][0], sc_label[0][2][0], 1)
             print('reverse')
-            print(detect_anom(rev_sorted_errors, sc_label[0][0][0], sc_label[0][0][0], sc_label[0][2][0], 1))
+            detect_anom(rev_sorted_errors, sc_label[0][0][0], sc_label[0][0][0], sc_label[0][2][0], 1)
             print('')
         elif 'weibo' in dataset:
             import ipdb; ipdb.set_trace()
         else:
-            print(detect_anom(sorted_errors, sc_label[0][0], sc_label[0][1], sc_label[0][2], 1))
+            detect_anom(sorted_errors, sc_label[0][0], sc_label[0][1], sc_label[0][2], 1)
             print('reverse')
-            print(detect_anom(rev_sorted_errors, sc_label[0][0], sc_label[0][1], sc_label[0][2], 1))
+            detect_anom(rev_sorted_errors, sc_label[0][0], sc_label[0][1], sc_label[0][2], 1)
+            print('')
         
     with open('output/{}-ranking_{}.txt'.format(dataset, sc), 'w+') as f:
         for index in sorted_errors:
             f.write("%s\n" % label[index])
 
 def sparse_matrix_to_tensor(coo,feat):
+    coo = scipy.sparse.coo_matrix(coo)
     v = torch.FloatTensor(coo.data)
     i = torch.LongTensor(np.vstack((coo.row, coo.col)))
     dgl_graph = dgl.graph((i[0],i[1]))
@@ -223,7 +224,7 @@ def sparse_matrix_to_tensor(coo,feat):
     dgl_graph.ndata['feature'] = feat
     return dgl_graph
 
-def load_anomaly_detection_dataset(dataset, sc, mlp, parity, datadir='data'):
+def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
     '''
     '''
     data_mat = sio.loadmat(f'data/{dataset}.mat')
