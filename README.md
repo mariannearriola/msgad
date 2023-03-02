@@ -1,6 +1,6 @@
-Currently supported datasets: Cora, Weibo
+Currently supported datasets: Cora, T-Finance
 
-Currently supported models: Multi-scale, DOMINANT, AnomalyDAE, MLPAE
+Currently supported models: Multi-scale, DOMINANT
 
 Model training & anomaly detection:
 ```

@@ -10,7 +10,7 @@ from igraph import Graph
 import dgl
 import copy
 
-def loss_func(adj, A_hat, X_hat, pos_edges_, neg_edges_backprop, sample=False, recons='struct', alpha=None):
+def loss_func(adj, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
     '''
     Input:
         adj: normalized adjacency matrix
@@ -24,35 +24,36 @@ def loss_func(adj, A_hat, X_hat, pos_edges_, neg_edges_backprop, sample=False, r
         all_costs: total loss for backpropagation
         all_struct_error: node-wise errors at each scale
     '''
-    if not alpha:
-        alpha = 1 if recons=='struct' else 0
+    if not alpha: alpha = 1 if recons=='struct' else 0
     adjacency = adj.adjacency_matrix().to_dense().cuda()
     feat = adj.ndata['feature']
 
     all_costs, all_struct_error, all_feat_error = None, 0, 0
     struct_error,feat_error=None,None
+
+    pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
+    neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
+
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if not preds: continue
         for ind, sc_pred in enumerate(preds):
+            # structure loss
             if recons_ind == 0:
                 if sample:
-                    for edge_ind,edge in enumerate(pos_edges_):
-                        node1,node2=edge
-                        recons_error=torch.nn.functional.binary_cross_entropy(sc_pred[node1][node2],torch.tensor(1.,dtype=torch.float32).cuda())
-                        if edge_ind == 0:
-                            struct_error=recons_error.unsqueeze(-1)
-                        else:
-                            struct_error = torch.cat((struct_error,recons_error.unsqueeze(-1)))
-                    for edge_ind,edge in enumerate(neg_edges_backprop):
-                        node1,node2=edge
-                        recons_error=torch.nn.functional.binary_cross_entropy(sc_pred[node1][node2],torch.tensor(0.,dtype=torch.float32).cuda())
-                        struct_error = torch.cat((struct_error,recons_error.unsqueeze(-1)))
+                    # collect loss for selected positive/negative edges
+                    pos_edge_error = get_losses(sc_pred,pos_edges,torch.tensor(1.,dtype=torch.float32).cuda())
+                    neg_edge_error = get_losses(sc_pred,neg_edges,torch.tensor(0.,dtype=torch.float32).cuda())
+                    struct_error = torch.cat((pos_edge_error,neg_edge_error))
                 else:
-                    struct_error = torch.nn.functional.binary_cross_entropy(A_hat,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
-                    struct_error = torch.mean(struct_error,dim=0)
+                    # collect loss for all edges/non-edges in reconstruction
+                    #struct_error = torch.nn.functional.binary_cross_entropy(sc_pred,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
+                    #import ipdb ; ipdb.set_trace()
+                    diff_structure = torch.pow(sc_pred - adj.adjacency_matrix().to_dense().cuda(), 2)
+                    struct_error = torch.sqrt(torch.sum(diff_structure, 1))
 
+            # feature loss
             if recons_ind == 1:
-                feat_error = torch.nn.functional.mse(sc_pred,feat.cuda(),reduction='none')
+                feat_error = torch.nn.functional.mse_loss(sc_pred,feat.cuda(),reduction='none')
                 feat_error = torch.mean(feat_error,dim=0)
 
             # accumulate errors
@@ -62,13 +63,25 @@ def loss_func(adj, A_hat, X_hat, pos_edges_, neg_edges_backprop, sample=False, r
                     all_costs = torch.mean(all_struct_error).unsqueeze(-1)*alpha
                 if recons_ind == 1:
                     all_feat_error = (feat_error).unsqueeze(-1)
-                    all_costs += (torch.mean(all_feat_error))*(1-alpha)
+                    all_costs = (torch.mean(all_feat_error))*(1-alpha)
             else:
                 if recons_ind == 0: all_struct_error = torch.cat((all_struct_error,(struct_error).unsqueeze(-1)))
                 if recons_ind == 1: all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(-1)))
                 all_costs = torch.cat((all_costs,torch.add(all_struct_error*alpha,all_feat_error*(1-alpha))))
 
     return all_costs, all_struct_error, all_feat_error
+
+def get_losses(pred,edges,label):
+    for edge_ind,edge in enumerate(edges):
+        node1,node2=edge
+        #recons_error=torch.nn.functional.binary_cross_entropy(pred[node1][node2],label)
+        diff_structure = torch.pow(pred - label, 2)
+        recons_error = torch.sqrt(torch.sum(diff_structure, 1))
+        if edge_ind == 0:
+            edge_errors=recons_error.unsqueeze(-1)
+        else:
+            edge_errors = torch.cat((edge_errors,recons_error.unsqueeze(-1)))
+    return edge_errors
 
 def calc_lipschitz(A_hat_scales, A_hat_pert, anom_label):
     A_hat_diff = abs(A_hat_scales-A_hat_pert)
@@ -232,83 +245,3 @@ def normalize_adj(adj):
     d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
     d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
-
-def embed_sim(embeds,label):
-    '''
-    TODO: CLEAN UP
-    '''
-    import numpy as np
-    anom_sc1 = label[0][0]#[0]
-    anom_sc2 = label[1][0]#[0]
-    anom_sc3 = label[2][0]#[0] 
-    anoms_cat = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None) 
-    all_anom = [anom_sc1,anom_sc2,anom_sc3]
-    # get max embedding diff for normalization
-    '''
-    max_diff = 0
-    #import ipdb ; ipdb.set_trace()
-    for ind,embed in enumerate(embeds):
-        for ind_,embed_ in enumerate(embeds):
-            if ind_>= ind:
-                break
-            max_diff = torch.norm(embed-embed_) if torch.norm(embed-embed_) > max_diff else max_diff
-    '''
-    # get anom embeds differences
-    all_anom_diffs = []
-    for anoms in all_anom:
-        anoms_embs = embeds[anoms]
-        anom_diffs = []
-        for ind,embed in enumerate(anoms_embs):
-            for ind_,embed_ in enumerate(anoms_embs):
-                #if len(anom_diffs) == len(anoms): continue
-                if ind_ >= ind: break
-                #anom_diffs.append(torch.norm(embed-embed_)/max_diff)
-                anom_diffs.append(embed@embed_.T)
-        all_anom_diffs.append(anom_diffs)
-    '''
-    # get normal embeds differences
-
-    normal_diffs = []
-    for ind,embed in enumerate(embeds):
-        if ind in anoms_cat: continue
-        if len(normal_diffs) == len(all_anom_diffs):
-            break
-        for ind_,embed_ in enumerate(embeds):
-            if ind_ >= ind: break
-            if ind_ in anoms_cat: continue
-            normal_diffs.append(torch.norm(embed-embed_)/max_diff)
-    # get normal vs anom embeds differences
-    all_norm_anom_diffs = []
-    for anoms in all_anom:
-        norm_anom_diffs=[]
-        for ind, embed in enumerate(embeds):
-            if ind in anoms_cat: continue
-            for ind_,anom in enumerate(embeds[anoms]):
-                #if len(norm_anom_diffs) == len(anoms): continue 
-                norm_anom_diffs.append(torch.norm(embed-anom)/max_diff)
-        all_norm_anom_diffs.append(norm_anom_diffs)
-    print('normal-normal',sum(normal_diffs)/len(normal_diffs))
-    print('anom-anom',sum(all_anom_diffs[0])/len(all_anom_diffs[0]),sum(all_anom_diffs[1])/len(all_anom_diffs[1]),sum(all_anom_diffs[2])/len(all_anom_diffs[2])) 
-    print('anom-normal',sum(all_norm_anom_diffs[0])/len(all_norm_anom_diffs[0]),sum(all_norm_anom_diffs[1])/len(all_norm_anom_diffs[1]),sum(all_norm_anom_diffs[2])/len(all_norm_anom_diffs[2]))
-    #import ipdb ; ipdb.set_trace()
-    print('----')
-    '''
-    print((sum(all_anom_diffs[0])/len(all_anom_diffs[0])).item(),(sum(all_anom_diffs[1])/len(all_anom_diffs[1])).item(),(sum(all_anom_diffs[2])/len(all_anom_diffs[2])).item()) 
-
-''' 
-TODO: MADAN baseline implementation
-    import ipdb ; ipdb.set_trace() 
-    import MADAN.Plotters as Plotters
-    from MADAN._cython_fast_funcs import sum_Sto, sum_Sout, compute_S, cython_nmi, cython_nvi
-    from MADAN.LouvainClustering_fast import Clustering, norm_var_information
-    import MADAN.Madan as md
-    madan = md.Madan(adj, attributes=attrs[-1], sigma=0.08)
-    time_scales = np.concatenate([np.array([0]), 10**np.linspace(0,5,500)])
-    madan.scanning_relevant_context(time_scales, n_jobs=4)
-    madan.scanning_relevant_context_time(time_scales)
-    madan.compute_concentration(1000)
-    print(madan.concentration,madan.anomalous_nodes)
-    madan.compute_context_for_anomalies()
-    print(madan.interp_com)
-    print(' ------------')
-'''
