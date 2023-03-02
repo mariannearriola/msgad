@@ -1,4 +1,5 @@
 Currently supported datasets: Cora, Weibo
+
 Currently supported models: Multi-scale, DOMINANT, AnomalyDAE, MLPAE
 
 Model training & anomaly detection:
