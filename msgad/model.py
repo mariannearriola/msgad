@@ -13,71 +13,7 @@ import torch_geometric.nn.conv as conv
 from torch_geometric.nn import MLP
 from torch_geometric.nn.conv import GATConv, GCNConv, APPNP, MessagePassing
 from models.dominant import *
-'''
-class SimpleGNN(nn.Module):
-    def __init__(self,in_dim,embed_dim,model_str,recons,hops=2,dropout=0.2,act=nn.LeakyReLU()):
-        super(SimpleGNN, self).__init__()
-        self.model_str = model_str
-        self.recons = recons
-        self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim*2,out_channels=embed_dim,num_layers=1)
-        self.linear = False
-        self.decoder, self.encoder_act, self.decoder_mlp = None,None,None
 
-        if model_str == 'anomalydae':
-            self.linear = True
-            self.encoder=GATConv(embed_dim, embed_dim)
-            if self.recons == 'feat':
-                self.decoder=GATConv(embed_dim,in_dim)
-        elif model_str == 'dominant':
-            self.linear = True
-            self.encoder=GCNConv(embed_dim, embed_dim)
-            if self.recons == 'feat':
-                self.decoder=GCNConv(embed_dim,in_dim)
-            self.encoder_act = act
-        elif model_str == 'appnp':
-            self.linear = True
-            self.encoder=APPNP(hops,0.1)
-        elif model_str == 'mlpae':
-            self.linear=True 
-            self.encoder=None
-            self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim*2,out_channels=embed_dim,num_layers=3)
-        elif model_str == 'adone':
-            self.linear = False ; self.encoder = MessagePassing()
-            self.decoder_mlp = MLP(in_channels=in_dim,hidden_channels=embed_dim,out_channels=in_dim,num_layers=3)
-            self.encoder_act = act
-        elif model_str == 'gaan':
-            self.linear = False
-            self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim,out_channels=in_dim,num_layers=3,act_first=True)
-            self.decoder_linear=nn.Linear(1, 1)
-
-        self.dropout = dropout
-        self.act = act
-        
-    def forward(self,graph):
-        x = graph.ndata['feature']
-        if self.linear:
-            x = self.act(self.dense(x))
-        edge_list = torch.vstack((graph.edges()[0],graph.edges()[1]))
-
-        if self.encoder: x = self.encoder(x,edge_list)
-
-        if self.encoder_act: x = self.encoder_act(x)
-        
-        if self.decoder_mlp:
-            recons = torch.sigmoid(self.decoder_mlp(x))
-        elif self.decoder:
-            recons = torch.sigmoid(self.decoder(x,edge_list))
-        else:
-            #recons = torch.sigmoid(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
-            recons = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
-        
-        if self.model_str == 'gaan':
-            edge_prob = torch.reshape(recons[edge_list[0], edge_list[1]],
-                                  [edge_list.shape[1], 1])
-            recons = torch.sigmoid(self.decoder_linear(edge_prob))
-
-        return recons
-'''
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""
     adj = sp.coo_matrix(adj)
