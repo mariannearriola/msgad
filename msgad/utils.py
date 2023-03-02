@@ -51,44 +51,6 @@ def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, sample=False):
             
     return all_costs, all_structure_costs
 
-def load_batch(adj,bg,device):
-    '''
-    Input:
-        adj: normalized adjacency matrix
-        bg: batch index
-        device: cuda device
-    Output:
-        batch_adj: batched adjacency matrix
-        pos_edges: positive edge list
-        neg_edges: negative edge list
-        batch_dict: maps batch node numbering to full node numbering
-    '''
-    try: pos_edges = adj.find_edges(bg.cuda())
-    except: raise('BATCH LOADING ERROR')
-
-    pos_edge_weights = adj.edata['w'][bg.cuda()]
-    neg_edges_backprop = dgl.sampling.global_uniform_negative_sampling(adj, int(bg.shape[0])*2)
-    sel_nodes = torch.unique(torch.cat((pos_edges[0],pos_edges[1])))
-    sel_nodes = torch.unique(torch.cat((sel_nodes,torch.cat((neg_edges_backprop[0],neg_edges_backprop[1])))))
-        
-    pos_edges_= torch.cat((pos_edges[0].unsqueeze(-1),pos_edges[1].unsqueeze(-1)),dim=1)
-    neg_edges_backprop = torch.cat((neg_edges_backprop[0].unsqueeze(-1),neg_edges_backprop[1].unsqueeze(-1)),dim=1)
-
-    batch_feats = adj.ndata['feature'][sel_nodes]
-    batch_dict_for,batch_dict_rev = {k.item():v.item() for k,v in zip(sel_nodes,torch.arange(sel_nodes.shape[0]))},{k.item():v.item() for k,v in zip(torch.arange(sel_nodes.shape[0]),sel_nodes)}
-    for ind,i in enumerate(pos_edges_):
-        pos_edges_[ind][0],pos_edges_[ind][1] = batch_dict_for[i[0].item()],batch_dict_for[i[1].item()]
-    for ind,i in enumerate(neg_edges_backprop):
-        neg_edges_backprop[ind][0],neg_edges_backprop[ind][1] = batch_dict_for[i[0].item()],batch_dict_for[i[1].item()]
-
-    batch_adj = adj.subgraph(sel_nodes)
-
-    #batch_adj.edata['w'] = pos_edge_weights
-    batch_adj = dgl.to_bidirected(batch_adj.cpu()).to(device)
-    batch_adj.ndata['feature'] = batch_feats
-    
-    return batch_adj, pos_edges_, neg_edges_backprop, batch_dict_rev
-
 def calc_lipschitz(A_hat_scales, A_hat_pert, anom_label):
     A_hat_diff = abs(A_hat_scales-A_hat_pert)
     A_hat_diff_pool = torch.norm(A_hat_diff)

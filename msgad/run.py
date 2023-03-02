@@ -25,36 +25,45 @@ def graph_anomaly_detection(args):
         adj = adj.to(device)
         model = model.cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
+    sampler = dgl.dataloading.NeighborSampler([50])
+    sampler = dgl.dataloading.as_edge_prediction_sampler(sampler)
+    dataloader = dgl.dataloading.DataLoader(adj, adj.nodes(), sampler,batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0)
     data_loader = DataLoader(torch.arange(adj.num_edges()), batch_size=args.batch_size,shuffle=True) 
     best_loss = torch.tensor(float('inf')).cuda()
     model.train()
+    
     for epoch in range(args.epoch):
-        for iter, bg in enumerate(data_loader):
-            if args.debug:
-                if iter % 10 == 0 and iter != 0:
-                    num_nonzeros=[]
-                    for sc, A_hat in enumerate(A_hat_scales):
-                        num_nonzeros.append(round((torch.where(A_hat < 0.5)[0].shape[0])/(A_hat.shape[0]**2),10))
-                    avg_non_edges = []
-                    avg_pos_edges = []
-                    for node in g_batch.adjacency_matrix().to_dense():
-                        avg_non_edges.append(torch.where(node==1)[0].shape[0])
-                        avg_pos_edges.append(torch.where(node==0)[0].shape[0])
-                    num_nonzeros_adj=round((torch.where(g_batch.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(g_batch.number_of_nodes()**2),3)
-                    print(iter, '/', len(data_loader), l.item().detach().cpu(),loss,np.mean(np.array(avg_non_edges)),np.mean(np.array(avg_pos_edges)))
-            
-            g_batch, pos_edges, neg_edges, _ = load_batch(adj,bg,args.device)
-            optimizer.zero_grad()
-            A_hat_scales, X_hat = model(g_batch)
-            loss, struct_loss = loss_func(g_batch, A_hat_scales, pos_edges, neg_edges)
-            l = torch.sum(loss)
-            '''
-            if l < best_loss:
-                best_loss = dl
-                torch.save(model,'best_model.pt')
-            '''
-            l.backward()
-            optimizer.step()
+        #for iter, bg in enumerate(data_loader):
+        iter=0
+        with dataloader.enable_cpu_affinity():
+            for in_nodes,sub_graph,block in dataloader:
+                optimizer.zero_grad()
+                neg_edges = dgl.sampling.global_uniform_negative_sampling(sub_graph, args.batch_size)
+                g_batch = adj.subgraph(in_nodes)
+                A_hat_scales, X_hat = model(g_batch)
+                loss, struct_loss = loss_func(g_batch, A_hat_scales, sub_graph.edges(), neg_edges)
+                l = torch.sum(loss)
+                '''
+                if l < best_loss:
+                    best_loss = dl
+                    torch.save(model,'best_model.pt')
+                '''
+                l.backward()
+                optimizer.step()
+                iter += 1
+                if args.debug:
+                    if iter % 10 == 0 and iter != 0:
+                        num_nonzeros=[]
+                        for sc, A_hat in enumerate(A_hat_scales):
+                            num_nonzeros.append(round((torch.where(A_hat < 0.5)[0].shape[0])/(A_hat.shape[0]**2),10))
+                        avg_non_edges = []
+                        avg_pos_edges = []
+                        for node in g_batch.adjacency_matrix().to_dense():
+                            avg_non_edges.append(torch.where(node==1)[0].shape[0])
+                            avg_pos_edges.append(torch.where(node==0)[0].shape[0])
+                        num_nonzeros_adj=round((torch.where(g_batch.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(g_batch.number_of_nodes()**2),3)
+                        print(iter, '/', len(data_loader), l.item(),loss,np.mean(np.array(avg_non_edges)),np.mean(np.array(avg_pos_edges)))
+                
         num_nonzeros=[]
         for sc, A_hat in enumerate(A_hat_scales):
             num_nonzeros.append(round((torch.where(A_hat < 0.5)[0].shape[0])/(A_hat.shape[0]**2),2))
@@ -67,14 +76,16 @@ def graph_anomaly_detection(args):
     data_loader = DataLoader(torch.arange(adj.num_edges()), batch_size=args.batch_size,shuffle=True)
 
     scores, l_scores = torch.zeros(args.d,adj.number_of_nodes()).cuda(),torch.zeros((adj.number_of_nodes(),args.d+1))
-    for iter, bg in enumerate(data_loader):
-        if args.debug:
-            if iter % 50 == 0: print(iter, '/', len(data_loader), l.item(),loss.item())
-        g_batch, pos_edges, neg_edges, batch_dict = load_batch(adj,bg,args.device)
-        A_hat_scales, X_hat = model(g_batch)
-        loss, struct_loss = loss_func(g_batch, A_hat_scales, pos_edges, neg_edges)
-        for sc, A_hat in enumerate(A_hat_scales):
-            scores[sc,list(batch_dict.values())] = struct_loss[sc,:]
+    with dataloader.enable_cpu_affinity():
+        for in_nodes,sub_graph,block in dataloader:
+            if args.debug:
+                if iter % 50 == 0: print(iter, '/', len(data_loader), l.item(),loss.item())
+            neg_edges = dgl.sampling.global_uniform_negative_sampling(sub_graph, args.batch_size)
+            g_batch = adj.subgraph(in_nodes)
+            A_hat_scales, X_hat = model(g_batch)
+            loss, struct_loss = loss_func(g_batch, A_hat_scales, sub_graph.edges(), neg_edges)
+            for sc, A_hat in enumerate(A_hat_scales):
+                scores[sc,in_nodes] = struct_loss[sc,:]
     
     detect_anomalies(scores, truth, sc_label, args.dataset)
 

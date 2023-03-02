@@ -20,6 +20,7 @@ class SimpleGNN(nn.Module):
         self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim*2,out_channels=embed_dim,num_layers=1)
         self.linear = False
         self.decoder, self.encoder_act, self.decoder_mlp = None,None,None
+
         if model_str == 'anomalydae':
             self.linear = True ; self.encoder=GATConv(embed_dim, embed_dim)
         elif model_str == 'dominant':
@@ -158,7 +159,7 @@ class GraphReconstruction(nn.Module):
     def __init__(self, in_size, hidden_size, scales, recons, d, model_str):
         super(GraphReconstruction, self).__init__()
         self.in_size = in_size
-        self.out_size = in_size
+        out_size = in_size # for reconstruction
         self.d = d
         self.recons = recons
         self.model_str = model_str
@@ -172,7 +173,7 @@ class GraphReconstruction(nn.Module):
             self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',hops=10)
             self.conv3 = SimpleGNN(in_size,hidden_size,'dominant',hops=15)
         else:
-            self.conv = SimpleGNN(in_size,hidden_size,out_size,model_str)
+            self.conv = SimpleGNN(in_size,hidden_size,model_str)
         self.act = nn.LeakyReLU()
 
     def forward(self,graph):
