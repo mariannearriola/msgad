@@ -14,22 +14,31 @@ from torch_geometric.nn import MLP
 from torch_geometric.nn.conv import GATConv, GCNConv, APPNP, MessagePassing
 
 class SimpleGNN(nn.Module):
-    def __init__(self,in_dim,embed_dim,model_str,hops=2,dropout=0.2,act=nn.LeakyReLU()):
+    def __init__(self,in_dim,embed_dim,model_str,recons,hops=2,dropout=0.2,act=nn.LeakyReLU()):
         super(SimpleGNN, self).__init__()
         self.model_str = model_str
+        self.recons = recons
         self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim*2,out_channels=embed_dim,num_layers=1)
         self.linear = False
         self.decoder, self.encoder_act, self.decoder_mlp = None,None,None
 
         if model_str == 'anomalydae':
-            self.linear = True ; self.encoder=GATConv(embed_dim, embed_dim)
+            self.linear = True
+            self.encoder=GATConv(embed_dim, embed_dim)
+            if self.recons == 'feat':
+                self.decoder=GATConv(embed_dim,in_dim)
         elif model_str == 'dominant':
-            self.linear = True ; self.encoder=GCNConv(embed_dim, embed_dim)
+            self.linear = True
+            self.encoder=GCNConv(embed_dim, embed_dim)
+            if self.recons == 'feat':
+                self.decoder=GCNConv(embed_dim,in_dim)
             self.encoder_act = act
         elif model_str == 'appnp':
-            self.linear = True ; self.encoder=APPNP(hops,0.1)
+            self.linear = True
+            self.encoder=APPNP(hops,0.1)
         elif model_str == 'mlpae':
-            self.linear=True ; self.encoder=None
+            self.linear=True 
+            self.encoder=None
             self.dense=MLP(in_channels=in_dim,hidden_channels=embed_dim,out_channels=in_dim,num_layers=3)
         elif model_str == 'adone':
             self.linear = False ; self.encoder = MessagePassing()
@@ -169,11 +178,11 @@ class GraphReconstruction(nn.Module):
             self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
             self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+3)
             '''
-            self.conv = SimpleGNN(in_size,hidden_size,'dominant',hops=5)
-            self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',hops=10)
-            self.conv3 = SimpleGNN(in_size,hidden_size,'dominant',hops=15)
+            self.conv = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=5)
+            self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=10)
+            self.conv3 = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=15)
         else:
-            self.conv = SimpleGNN(in_size,hidden_size,model_str)
+            self.conv = SimpleGNN(in_size,hidden_size,model_str,recons)
         self.act = nn.LeakyReLU()
 
     def forward(self,graph):

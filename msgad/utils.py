@@ -10,46 +10,65 @@ from igraph import Graph
 import dgl
 import copy
 
-def loss_func(adj, A_hat_scales, pos_edges_, neg_edges_backprop, sample=False):
+def loss_func(adj, A_hat, X_hat, pos_edges_, neg_edges_backprop, sample=False, recons='struct', alpha=None):
     '''
     Input:
         adj: normalized adjacency matrix
+        feat: feature matrix
         pos_edges: positive edge list
         neg_edges: negative edge list
+        sample: if true, use sampled edges/non-edges for loss calculation. if false, use all edges/non-edges
+        recons: structure reconstruction, feature reconstruction, or structure & feature reconstruction (dominant)
+        alpha: if structure & feature reconstruction, scalar to weigh importance of structure vs feature reconstruction
     Output:
         all_costs: total loss for backpropagation
-        all_structure_costs: node-wise errors at each scale
+        all_struct_error: node-wise errors at each scale
     '''
+    if not alpha:
+        alpha = 1 if recons=='struct' else 0
     adjacency = adj.adjacency_matrix().to_dense().cuda()
-    #backprop_edges = torch.cat((pos_edges_,neg_edges_backprop),dim=0)
-    all_costs, all_structure_costs = None, None
-    
-    for ind, A_hat in enumerate(A_hat_scales):
-        if sample:
-            for edge_ind,edge in enumerate(pos_edges_):
-                node1,node2=edge
-                recons_error=torch.nn.functional.binary_cross_entropy(A_hat[node1][node2],torch.tensor(1.,dtype=torch.float32).cuda())
-                if edge_ind == 0:
-                    structure_reconstruction_errors=recons_error.unsqueeze(-1)
+    feat = adj.ndata['feature']
+
+    all_costs, all_struct_error, all_feat_error = None, 0, 0
+    struct_error,feat_error=None,None
+    for recons_ind,preds in enumerate([A_hat, X_hat]):
+        if not preds: continue
+        for ind, sc_pred in enumerate(preds):
+            if recons_ind == 0:
+                if sample:
+                    for edge_ind,edge in enumerate(pos_edges_):
+                        node1,node2=edge
+                        recons_error=torch.nn.functional.binary_cross_entropy(sc_pred[node1][node2],torch.tensor(1.,dtype=torch.float32).cuda())
+                        if edge_ind == 0:
+                            struct_error=recons_error.unsqueeze(-1)
+                        else:
+                            struct_error = torch.cat((struct_error,recons_error.unsqueeze(-1)))
+                    for edge_ind,edge in enumerate(neg_edges_backprop):
+                        node1,node2=edge
+                        recons_error=torch.nn.functional.binary_cross_entropy(sc_pred[node1][node2],torch.tensor(0.,dtype=torch.float32).cuda())
+                        struct_error = torch.cat((struct_error,recons_error.unsqueeze(-1)))
                 else:
-                    structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
-            for edge_ind,edge in enumerate(neg_edges_backprop):
-                node1,node2=edge
-                recons_error=torch.nn.functional.binary_cross_entropy(A_hat[node1][node2],torch.tensor(0.,dtype=torch.float32).cuda())
-                structure_reconstruction_errors = torch.cat((structure_reconstruction_errors,recons_error.unsqueeze(-1)))
-        
-        else:
-            structure_reconstruction_errors = torch.nn.functional.binary_cross_entropy(A_hat,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
-            structure_reconstruction_errors = torch.mean(structure_reconstruction_errors,dim=0)
-        
-        if all_costs is None:
-            all_structure_costs = (structure_reconstruction_errors).unsqueeze(-1)
-            all_costs = torch.mean(all_structure_costs).unsqueeze(-1)
-        else:
-            all_structure_costs = torch.cat((all_structure_costs,(structure_reconstruction_errors).unsqueeze(-1)),dim=0)
-            all_costs = torch.cat((all_costs,torch.mean(structure_reconstruction_errors).unsqueeze(-1)))
-            
-    return all_costs, all_structure_costs
+                    struct_error = torch.nn.functional.binary_cross_entropy(A_hat,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
+                    struct_error = torch.mean(struct_error,dim=0)
+
+            if recons_ind == 1:
+                feat_error = torch.nn.functional.mse(sc_pred,feat.cuda(),reduction='none')
+                feat_error = torch.mean(feat_error,dim=0)
+
+            # accumulate errors
+            if all_costs is None:
+                if recons_ind == 0:
+                    all_struct_error = (struct_error).unsqueeze(-1)
+                    all_costs = torch.mean(all_struct_error).unsqueeze(-1)*alpha
+                if recons_ind == 1:
+                    all_feat_error = (feat_error).unsqueeze(-1)
+                    all_costs += (torch.mean(all_feat_error))*(1-alpha)
+            else:
+                if recons_ind == 0: all_struct_error = torch.cat((all_struct_error,(struct_error).unsqueeze(-1)))
+                if recons_ind == 1: all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(-1)))
+                all_costs = torch.cat((all_costs,torch.add(all_struct_error*alpha,all_feat_error*(1-alpha))))
+
+    return all_costs, all_struct_error, all_feat_error
 
 def calc_lipschitz(A_hat_scales, A_hat_pert, anom_label):
     A_hat_diff = abs(A_hat_scales-A_hat_pert)
@@ -106,7 +125,7 @@ def perturb_adj(attribute_dense,adj,attr_scale,adj_prob):
         
     return attribute_dense,adj_dense
 
-def redo(anom):
+def flatten_label(anom):
     for ind,i in enumerate(anom):
         if ind == 0: ret_anom = np.expand_dims(i.flatten(),0)
         else: ret_anom = np.hstack((ret_anom,np.expand_dims(i.flatten(),0)))
@@ -120,11 +139,11 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
         top_nodes_perc: negative edge list
     Output:
         all_costs: total loss for backpropagation
-        all_structure_costs: structure errors for each scale
+        all_struct_error: structure errors for each scale
     '''
-    anom_sc1 = redo(anom_sc1)
-    anom_sc2 = redo(anom_sc2)
-    anom_sc3 = redo(anom_sc3)
+    anom_sc1 = flatten_label(anom_sc1)
+    anom_sc2 = flatten_label(anom_sc2)
+    anom_sc3 = flatten_label(anom_sc3)
     all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
     true_anoms = 0
     cor_1, cor_2, cor_3 = 0,0,0
