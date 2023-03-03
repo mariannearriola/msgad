@@ -32,7 +32,7 @@ class BWGNN(nn.Module):
         for i in range(len(self.thetas)):
             self.conv.append(PolyConv(h_feats, h_feats, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_feats, h_feats)
-        #self.linear2 = nn.Linear(h_feats*2, h_feats)
+        self.linear2 = nn.Linear(h_feats*d, h_feats)
         self.act = nn.LeakyReLU()#negative_slope=0.01)
         self.d = d
         
@@ -47,8 +47,9 @@ class BWGNN(nn.Module):
                 all_h = h0
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
-        x = all_h
-        recons = torch.sigmoid(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
+        x = self.linear2(all_h)
+        recons = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
+        #recons = torch.sigmoid(prod)
         return recons
 
 class PolyConv(nn.Module):
@@ -81,10 +82,10 @@ class PolyConv(nn.Module):
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
             adj = normalize_adj(graph.adjacency_matrix().to_dense()).todense()
             adj = torch.FloatTensor(adj).cuda()
-            h = self._theta[0]*feat#*(adj@feat)
+            h = self._theta[0]*(adj@feat)
             for k in range(1, self._k):
-                feat = unnLaplacian(feat, D_invsqrt, graph)
-                #feat = adj@feat
+                #feat = unnLaplacian(feat, D_invsqrt, graph)
+                feat = adj@feat
                 h += self._theta[k]*feat
         return h
 
@@ -115,7 +116,7 @@ class GraphReconstruction(nn.Module):
         self.decode_act = torch.sigmoid
         self.weight_decay = 0.01
         if model_str == 'multi_scale' or model_str == 'multi-scale':
-            self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d+3)
+            self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d)
             #self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
             #self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+3)
             '''
@@ -134,7 +135,7 @@ class GraphReconstruction(nn.Module):
         elif model_str in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
             self.conv = AnomalyDAE_Base(in_size,batch_size,hidden_size,out_size,dropout,act)
         elif model_str == 'dominant':
-            self.conv = DOMINANT_Base(in_size,hidden_size,4,dropout,act)
+            self.conv = DOMINANT_Base(in_size,hidden_size,3,dropout,act)
         elif model_str == 'done': # x, s, e
             self.conv = DONE_Base(in_size,batch_size,hidden_size,4,dropout,act)
         elif model_str == 'gaan': # x, noise, e
