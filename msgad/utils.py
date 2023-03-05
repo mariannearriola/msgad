@@ -26,9 +26,9 @@ def loss_func(adj, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='str
     '''
     if not alpha: alpha = 1 if recons=='struct' else 0
     adjacency = adj.adjacency_matrix().to_dense().cuda()
-    feat = adj.ndata['feature']
+    feat = adj.ndata['feature']['_N']
 
-    all_costs, all_struct_error, all_feat_error = None, 0, 0
+    all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
     struct_error,feat_error=None,None
 
     pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
@@ -39,18 +39,22 @@ def loss_func(adj, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='str
         for ind, sc_pred in enumerate(preds):
             # structure loss
             if recons_ind == 0:
-                if sample:
-                    # collect loss for selected positive/negative edges
-                    pos_edge_error = get_losses(sc_pred,pos_edges,torch.tensor(1.,dtype=torch.float32).cuda())
-                    neg_edge_error = get_losses(sc_pred,neg_edges,torch.tensor(0.,dtype=torch.float32).cuda())
-                    struct_error = torch.cat((pos_edge_error,neg_edge_error))
+                
+                if True:
+                    # collect loss for selected positive/negative edges. adjacency not used
+
+                    #pos_edge_error = get_losses(sc_pred,pos_edges,torch.tensor(1.,dtype=torch.float32).cuda())
+                    #neg_edge_error = get_losses(sc_pred,neg_edges,torch.tensor(0.,dtype=torch.float32).cuda())
+                    edge_ids = torch.cat((pos_edges,neg_edges))
+                    edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
+                    total_struct_error, edge_struct_errors = get_losses(sc_pred,edge_ids,edge_labels)
+                    #struct_error = torch.cat((pos_edge_error,neg_edge_error))
                 else:
                     # collect loss for all edges/non-edges in reconstruction
                     #struct_error = torch.nn.functional.binary_cross_entropy(sc_pred,adj.adjacency_matrix().to_dense().cuda(),reduction='none')
-                    #import ipdb ; ipdb.set_trace()
                     diff_structure = torch.pow(sc_pred - adj.adjacency_matrix().to_dense().cuda(), 2)
                     struct_error = torch.sqrt(torch.sum(diff_structure, 1))
-
+                
             # feature loss
             if recons_ind == 1:
                 feat_error = torch.nn.functional.mse_loss(sc_pred,feat.cuda(),reduction='none')
@@ -59,29 +63,33 @@ def loss_func(adj, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='str
             # accumulate errors
             if all_costs is None:
                 if recons_ind == 0:
-                    all_struct_error = (struct_error).unsqueeze(-1)
-                    all_costs = torch.mean(all_struct_error).unsqueeze(-1)*alpha
+                    all_struct_error = (edge_struct_errors).unsqueeze(0)
+                    all_costs = total_struct_error.unsqueeze(0)*alpha
                 if recons_ind == 1:
-                    all_feat_error = (feat_error).unsqueeze(-1)
+                    all_feat_error = (feat_error).unsqueeze(0)
                     all_costs = (torch.mean(all_feat_error))*(1-alpha)
             else:
-                if recons_ind == 0: all_struct_error = torch.cat((all_struct_error,(struct_error).unsqueeze(-1)))
-                if recons_ind == 1: all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(-1)))
-                all_costs = torch.cat((all_costs,torch.add(all_struct_error*alpha,all_feat_error*(1-alpha))))
+                if recons_ind == 0: all_struct_error = torch.cat((all_struct_error,(edge_struct_errors).unsqueeze(0)))
+                if recons_ind == 1: all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
+                all_costs = torch.cat((all_costs,torch.add(total_struct_error*alpha,torch.mean(all_feat_error)*(1-alpha)).unsqueeze(0)))
 
     return all_costs, all_struct_error, all_feat_error
 
 def get_losses(pred,edges,label):
+    # TODO: how to get node-wise anomaly score/error....
+    # all edges/nonedges vs n edges/non-edges: build full edge list, like sparse adj matrix
     for edge_ind,edge in enumerate(edges):
         node1,node2=edge
         #recons_error=torch.nn.functional.binary_cross_entropy(pred[node1][node2],label)
-        diff_structure = torch.pow(pred - label, 2)
-        recons_error = torch.sqrt(torch.sum(diff_structure, 1))
+        diff_structure = torch.pow(pred[node1][node2] - label[edge_ind], 2)
+        recons_error = diff_structure
+        
         if edge_ind == 0:
             edge_errors=recons_error.unsqueeze(-1)
         else:
             edge_errors = torch.cat((edge_errors,recons_error.unsqueeze(-1)))
-    return edge_errors
+    total_error = torch.sqrt(torch.sum(edge_errors))
+    return total_error, edge_errors
 
 def calc_lipschitz(A_hat_scales, A_hat_pert, anom_label):
     A_hat_diff = abs(A_hat_scales-A_hat_pert)
@@ -161,7 +169,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
     true_anoms = 0
     cor_1, cor_2, cor_3 = 0,0,0
     for ind,error_ in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
-        error = error_.item()
+        error = error_#.item()
         if error in all_anom:
             true_anoms += 1
         if error in anom_sc1:
@@ -173,7 +181,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
     print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, total: {true_anoms}')
     return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
     
-def detect_anomalies(scores,  label, sc_label, dataset):
+def detect_anomalies(scores, label, sc_label, dataset):
     '''
     Input:
         scores: anomaly scores for all scales []
@@ -182,15 +190,22 @@ def detect_anomalies(scores,  label, sc_label, dataset):
         dataset: dataset string
     '''
     for sc,sc_score in enumerate(scores):
-        sorted_errors = np.argsort(-sc_score.detach().cpu().numpy())
-        rev_sorted_errors = np.argsort(sc_score.detach().cpu().numpy())
+        if True in np.isnan(sc_score.todense()):
+            print('nan found')
+            import ipdb ; ipdb.set_trace()
+        #node_scores = sc_score.mean(axis=1).T
+        # NOTE: ISSUE: NOT ALL NODES COVERED !!!
+        node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score.todense()])
+
+        sorted_errors = np.argsort(-node_scores)
+        rev_sorted_errors = np.argsort(node_scores)
         rankings = []
         
         for error in sorted_errors:
             rankings.append(label[error])
         rankings = np.array(rankings)
 
-        print(f'SCALE {sc+1} loss',torch.mean(sc_score).item())
+        print(f'SCALE {sc+1} loss',np.mean(node_scores))
         #print('AP',detect_anom_ap(scores_recons,label))
         if 'tfinance' in dataset:
             detect_anom(sorted_errors, sc_label[0][0][0], sc_label[0][0][0], sc_label[0][2][0], 1)
@@ -234,6 +249,7 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         sc_label = data_mat['scale_anomaly_label']
     else:
         sc_label = data_mat['scale_anomaly_label'][0]
+ 
     return adj, feats, truth, sc_label
 
 def normalize_adj(adj):

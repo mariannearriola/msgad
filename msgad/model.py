@@ -32,23 +32,30 @@ class BWGNN(nn.Module):
         for i in range(len(self.thetas)):
             self.conv.append(PolyConv(h_feats, h_feats, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_feats, h_feats)
-        self.linear2 = nn.Linear(h_feats*d, h_feats)
+        #self.linear2 = nn.Linear(h_feats*d, h_feats)
         self.act = nn.LeakyReLU()#negative_slope=0.01)
         self.d = d
         
     def forward(self, graph):
-        in_feat = graph.ndata['feature']
+        in_feat = graph.ndata['feature']['_N']
         h = self.linear(in_feat)
         h = self.act(h)
         #h = self.linear2(h)
+        all_h = []
         for ind,conv in enumerate(self.conv):
             h0 = conv(dgl.add_self_loop(graph), h)
+            all_h.append(h0)
+            '''
             if ind == 0:
                 all_h = h0
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
-        x = self.linear2(all_h)
-        recons = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
+            '''
+        #x = self.linear2(all_h)
+        #x = all_h
+        recons = []
+        for x in all_h:
+            recons.append(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
         #recons = torch.sigmoid(prod)
         return recons
 
@@ -80,12 +87,12 @@ class PolyConv(nn.Module):
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
-            adj = normalize_adj(graph.adjacency_matrix().to_dense()).todense()
-            adj = torch.FloatTensor(adj).cuda()
-            h = self._theta[0]*(adj@feat)
+            #adj = normalize_adj(graph.adjacency_matrix().to_dense()).todense()
+            #adj = torch.FloatTensor(adj).cuda()
+            h = self._theta[0]*feat#(adj@feat)
             for k in range(1, self._k):
-                #feat = unnLaplacian(feat, D_invsqrt, graph)
-                feat = adj@feat
+                feat = unnLaplacian(feat, D_invsqrt, graph)
+                #feat = adj@feat
                 h += self._theta[k]*feat
         return h
 
@@ -117,8 +124,8 @@ class GraphReconstruction(nn.Module):
         self.weight_decay = 0.01
         if model_str == 'multi_scale' or model_str == 'multi-scale':
             self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d)
-            #self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
-            #self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+3)
+            #self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+1)
+            #self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
             '''
             self.conv = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=5)
             self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=10)
@@ -177,22 +184,24 @@ class GraphReconstruction(nn.Module):
             A_hat_emb.append(A_hat_scales[:,i*sp_size:(i+1)*sp_size].to_sparse())
         '''
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
+        feats = graph.ndata['feature']['_N']
         if self.model_str in ['adone','done','guide','ogcnn']: # x, s, e
-            recons = [self.conv(graph.ndata['feature'], graph.adjacency_matrix().to_dense(), edges)]
+            recons = [self.conv(feats, graph.adjacency_matrix().to_dense(), edges)]
         elif self.model_str in ['anomalous','mlpae','radar']: # x
-            recons = [self.conv(graph.ndata['feature'])]
+            recons = [self.conv(feats)]
             if self.model_str == 'mlpae':
                 recons = [self.decode_act(recons[0])]
         elif self.model_str in ['conad','gcnae','dominant']: #x, e
-            recons = [self.conv(graph.ndata['feature'], edges)]
+            recons = [self.conv(feats, edges)]
             if self.model_str == 'dominant':
                 recons_ind = 0 if self.recons == 'feat' else 1
-                recons = [self.conv(graph.ndata['feature'], edges)[recons_ind]]
+                recons = [self.conv(feats, edges)[recons_ind]]
         elif self.model_str in ['gaan']: # x, noise, e
             gaussian_noise = torch.randn(graph.number_of_nodes(), self.noise_dim).cuda()
-            recons = [self.conv(graph.ndata['feature'], gaussian_noise, edges)]
+            recons = [self.conv(feats, gaussian_noise, edges)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
-            recons = [self.conv(graph.ndata['feature'], edges,0)]
+            recons = [self.conv(feats, edges,0)]
         elif self.model_str in ['multi_scale','multi-scale']: # g
-            recons = [self.conv(graph)]#,self.conv2(graph),self.conv3(graph)]
+            #recons = [self.conv(graph),self.conv2(graph),self.conv3(graph)]
+            recons = self.conv(graph)
         return recons
