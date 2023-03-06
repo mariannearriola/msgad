@@ -37,7 +37,7 @@ class BWGNN(nn.Module):
         self.d = d
         
     def forward(self, graph):
-        in_feat = graph.ndata['feature']['_N']
+        in_feat = graph.ndata['feature']
         h = self.linear(in_feat)
         h = self.act(h)
         #h = self.linear2(h)
@@ -83,7 +83,7 @@ class PolyConv(nn.Module):
             graph.srcdata['h'] = feat * D_invsqrt
             graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
             return feat - graph.srcdata.pop('h') * D_invsqrt
-        
+
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
@@ -184,9 +184,12 @@ class GraphReconstruction(nn.Module):
             A_hat_emb.append(A_hat_scales[:,i*sp_size:(i+1)*sp_size].to_sparse())
         '''
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
-        feats = graph.ndata['feature']['_N']
+        feats = graph.ndata['feature']
+        adj=graph.adjacency_matrix()
+        #adj=adj.sparse_resize_((graph.num_src_nodes(),graph.num_src_nodes()), adj.sparse_dim(),adj.dense_dim())
+
         if self.model_str in ['adone','done','guide','ogcnn']: # x, s, e
-            recons = [self.conv(feats, graph.adjacency_matrix().to_dense(), edges)]
+            recons = [self.conv(feats, adj.to_dense(), edges)]
         elif self.model_str in ['anomalous','mlpae','radar']: # x
             recons = [self.conv(feats)]
             if self.model_str == 'mlpae':

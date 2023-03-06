@@ -26,7 +26,7 @@ def loss_func(adj, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='str
     '''
     if not alpha: alpha = 1 if recons=='struct' else 0
     adjacency = adj.adjacency_matrix().to_dense().cuda()
-    feat = adj.ndata['feature']['_N']
+    feat = adj.ndata['feature']
 
     all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
     struct_error,feat_error=None,None

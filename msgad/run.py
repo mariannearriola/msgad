@@ -51,7 +51,7 @@ def graph_anomaly_detection(args):
     # initialize data loading
     if args.batch_type == 'edge':
         sampler = dgl.dataloading.NeighborSampler([25])
-        neg_sampler = dgl.dataloading.negative_sampler.Uniform(5)
+        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
         dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
@@ -65,19 +65,20 @@ def graph_anomaly_detection(args):
     for epoch in range(args.epoch):
         #for iter, bg in enumerate(data_loader):
         iter=0
-        if iter == 1: break
         with dataloader.enable_cpu_affinity():
             for loaded_input in dataloader:
                 if args.batch_type == 'node':
                     sub_graph = loaded_input
                     in_nodes = sub_graph.nodes()
                 elif args.batch_type == 'edge':
-                    in_nodes,sub_graph_pos, sub_graph_neg, block = loaded_input
+                    in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
                 optimizer.zero_grad()
                 
-                pos_edges =  sub_graph_pos.edges()
+                pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
-                g_batch = block[0]
+                g_batch=adj.subgraph(in_nodes)
+                g_batch=dgl.remove_edges(g_batch,g_batch.edges('eid'))
+                g_batch.add_edges(block[0].edges()[0],block[0].edges()[1])
                 
                 if struct_model:
                     A_hat = struct_model(g_batch)
@@ -95,7 +96,7 @@ def graph_anomaly_detection(args):
                 optimizer.step()
                 
                 if args.debug:
-                    if iter % 50 == 0:# and iter != 0:
+                    if iter % 100 == 0:# and iter != 0:
                         print(iter,l.item())
                         
                         num_nonzeros=[]
@@ -106,10 +107,11 @@ def graph_anomaly_detection(args):
                         for node in g_batch.adjacency_matrix().to_dense():
                             avg_non_edges.append(torch.where(node==1)[0].shape[0])
                             avg_pos_edges.append(torch.where(node==0)[0].shape[0])
-                        num_nonzeros_adj=round((torch.where(g_batch.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(g_batch.number_of_nodes()**2),3)
-                        num_nonzeros_ahat=round((torch.where(A_hat[0] < 0.5)[0].shape[0])/(g_batch.number_of_nodes()**2),10)
+                        num_nonzeros_adj=round((torch.where(g_batch.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(g_batch.adjacency_matrix().shape[0]*g_batch.adjacency_matrix().shape[1]),3)
+                        num_nonzeros_ahat=round((torch.where(A_hat[0] < 0.5)[0].shape[0])/(A_hat[0].shape[0]*A_hat[0].shape[1]),10)
+                        #import ipdb ; ipdb.set_trace()
                         print(iter, round(l.item(),4),loss,num_nonzeros_adj,num_nonzeros_ahat)
-                    
+
                 iter += 1
                 
         #num_nonzeros=[]
@@ -139,14 +141,16 @@ def graph_anomaly_detection(args):
             #if args.debug:
             #    if iter % 50 == 0: print(iter, l.item(),loss.item())
             #neg_edges = dgl.sampling.global_uniform_negative_sampling(sub_graph, args.batch_size)
+            pos_edges =  sub_graph_pos.edges()
             neg_edges = sub_graph_neg.edges()
-            g_batch = block[0]
+            g_batch=adj.subgraph(in_nodes)
+            g_batch=dgl.remove_edges(g_batch,g_batch.edges('eid'))
+            g_batch.add_edges(block[0].edges()[0],block[0].edges()[1])
             if struct_model:
                 A_hat = struct_model(g_batch)
             if feat_model:
                 X_hat = feat_model(g_batch)
             
-            pos_edges =  sub_graph_pos.edges()
             node_ids_score = in_nodes[:block[0].num_dst_nodes()]
             loss, struct_loss, feat_loss = loss_func(g_batch, A_hat, X_hat, pos_edges, neg_edges, recons=args.recons)
             l = torch.sum(loss)
