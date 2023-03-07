@@ -13,6 +13,8 @@ import torch_geometric.nn.conv as conv
 from torch_geometric.nn import MLP
 from torch_geometric.nn.conv import GATConv, GCNConv, APPNP, MessagePassing
 from models.dominant import *
+from models.anomalydae import *
+# TODO: include an init file, fix all paths
 
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""
@@ -140,7 +142,7 @@ class GraphReconstruction(nn.Module):
                 * torch.eye(batch_size).cuda() + self.gamma * l) @ x #TODO?
             self.conv = ANOMALOUS_Base(w_init,r_init)
         elif model_str in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
-            self.conv = AnomalyDAE_Base(in_size,batch_size,hidden_size,out_size,dropout,act)
+            self.conv = AnomalyDAE_Base(in_size,batch_size,hidden_size*2,hidden_size,dropout=0.2,act=F.relu)
         elif model_str == 'dominant':
             self.conv = DOMINANT_Base(in_size,hidden_size,3,dropout,act)
         elif model_str == 'done': # x, s, e
@@ -185,7 +187,14 @@ class GraphReconstruction(nn.Module):
         '''
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
         feats = graph.ndata['feature']
+        feats = torch.cat((feats['_N_src'],feats['_N_dst']))
+        feat_ids = graph.ndata['_ID']
+        feat_ids = torch.cat((feat_ids['_N_src'],feat_ids['_N_dst']))
+        feats = feats[torch.argsort(feat_ids)]
+
         adj=graph.adjacency_matrix()
+        adj=adj.sparse_resize_((graph.num_nodes(), graph.num_nodes()), adj.sparse_dim(), adj.dense_dim())
+
         #adj=adj.sparse_resize_((graph.num_src_nodes(),graph.num_src_nodes()), adj.sparse_dim(),adj.dense_dim())
 
         if self.model_str in ['adone','done','guide','ogcnn']: # x, s, e
@@ -196,15 +205,17 @@ class GraphReconstruction(nn.Module):
                 recons = [self.decode_act(recons[0])]
         elif self.model_str in ['conad','gcnae','dominant']: #x, e
             recons = [self.conv(feats, edges)]
-            if self.model_str == 'dominant':
-                recons_ind = 0 if self.recons == 'feat' else 1
-                recons = [self.conv(feats, edges)[recons_ind]]
         elif self.model_str in ['gaan']: # x, noise, e
             gaussian_noise = torch.randn(graph.number_of_nodes(), self.noise_dim).cuda()
             recons = [self.conv(feats, gaussian_noise, edges)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
-            recons = [self.conv(feats, edges,0)]
+            recons = [self.conv(feats, edges, 0)]
         elif self.model_str in ['multi_scale','multi-scale']: # g
             #recons = [self.conv(graph),self.conv2(graph),self.conv3(graph)]
             recons = self.conv(graph)
+        
+        if self.model_str in ['anomalydae','dominant']:
+            recons_ind = 0 if self.recons == 'feat' else 1
+            recons = [recons[0][recons_ind]]
+            
         return recons

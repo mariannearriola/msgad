@@ -18,9 +18,9 @@ import random
 
 def graph_anomaly_detection(args):
     # load data
-    adj, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
+    sp_adj, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     anoms,norms=np.where(truth==1)[0],np.where(truth==0)[0]
-    adj = sparse_matrix_to_tensor(adj,feats)
+    adj = sparse_matrix_to_tensor(sp_adj,feats)
 
     # intialize model (on GPU)
     struct_model,feat_model=None,None
@@ -73,13 +73,10 @@ def graph_anomaly_detection(args):
                 elif args.batch_type == 'edge':
                     in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
                 optimizer.zero_grad()
-                
                 pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
-                g_batch=adj.subgraph(in_nodes)
-                g_batch=dgl.remove_edges(g_batch,g_batch.edges('eid'))
-                g_batch.add_edges(block[0].edges()[0],block[0].edges()[1])
                 
+                g_batch = dgl.block_to_graph(block[0])
                 if struct_model:
                     A_hat = struct_model(g_batch)
                 if feat_model:
@@ -97,8 +94,8 @@ def graph_anomaly_detection(args):
                 
                 if args.debug:
                     if iter % 100 == 0:# and iter != 0:
-                        print(iter,l.item())
-                        
+                        print(round(iter/dataloader.indices.shape[0], 3), round(l.item()))
+                        '''
                         num_nonzeros=[]
                         for sc, sc_pred in enumerate(A_hat):
                             num_nonzeros.append(round((torch.where(sc_pred < 0.5)[0].shape[0])/(sc_pred.shape[0]**2),10))
@@ -109,8 +106,9 @@ def graph_anomaly_detection(args):
                             avg_pos_edges.append(torch.where(node==0)[0].shape[0])
                         num_nonzeros_adj=round((torch.where(g_batch.adjacency_matrix().to_dense() < 0.5)[0].shape[0])/(g_batch.adjacency_matrix().shape[0]*g_batch.adjacency_matrix().shape[1]),3)
                         num_nonzeros_ahat=round((torch.where(A_hat[0] < 0.5)[0].shape[0])/(A_hat[0].shape[0]*A_hat[0].shape[1]),10)
-                        #import ipdb ; ipdb.set_trace()
-                        print(iter, round(l.item(),4),loss,num_nonzeros_adj,num_nonzeros_ahat)
+
+                        print(round(iter/dataloader.indices.shape[0], 3), round(l.item(),4),loss,num_nonzeros_adj,num_nonzeros_ahat)
+                        '''
 
                 iter += 1
                 
@@ -131,6 +129,7 @@ def graph_anomaly_detection(args):
     dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0)
     struct_scores, feat_scores = torch.zeros(args.d,adj.number_of_nodes()).cuda(),torch.zeros(args.d,adj.number_of_nodes()).cuda()
     iter = 0
+
     # TODO: REFACTOR
     anom_mats_all = []
     for i in range(args.d):
@@ -162,24 +161,20 @@ def graph_anomaly_detection(args):
             edge_id_dict = {k.item():v.item() for k,v in zip(torch.arange(node_ids_score.shape[0]),node_ids_score)}
             edge_ids=np.vectorize(edge_id_dict.get)(edge_ids)
             for sc in range(args.d):
-                if True in np.isnan(struct_loss[sc].detach().cpu().numpy()):
-                    print('nan found')
-                    import ipdb ; ipdb.set_trace()
-                #import ipdb ; ipdb.set_trace()
-                anom_mats_all[sc][tuple(edge_ids)] = struct_loss[sc].detach().cpu().numpy()
-                anom_mats_all[sc][tuple(np.flip(edge_ids,axis=0))] = anom_mats_all[sc][tuple(edge_ids)]
-                '''
-                if A_hat:
-                    struct_scores[sc,in_nodes] = struct_loss[sc,:]
-                if X_hat:
-                    feat_scores[sc,in_nodes] = feat_loss[sc,:]
-                '''
+                if True:
+                    anom_mats_all[sc][tuple(edge_ids)] = struct_loss[sc].detach().cpu().numpy()
+                    anom_mats_all[sc][tuple(np.flip(edge_ids,axis=0))] = anom_mats_all[sc][tuple(edge_ids)]
+                else:
+                    if A_hat:
+                        struct_scores[sc,in_nodes] = struct_loss[sc,:]
+                    if X_hat:
+                        feat_scores[sc,in_nodes] = feat_loss[sc,:]
             iter += 1
             
     # anomaly detection with final scores
     if A_hat:
         print('structure scores')
-        detect_anomalies(anom_mats_all, truth, sc_label, args.dataset)
+        detect_anomalies(sp_adj, anom_mats_all, truth, sc_label, args.dataset, cluster=True)
     if X_hat:
         print('feat scores')
         detect_anomalies(feat_scores, truth, sc_label, args.dataset)
