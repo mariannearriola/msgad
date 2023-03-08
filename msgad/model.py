@@ -1,117 +1,23 @@
-import torch.nn as nn
-import torch.nn.functional as F
 import dgl
-import dgl.function as fn
 import torch
-import sympy
-import scipy
-import scipy.sparse as sp
-import networkx as nx
-from layers import GraphConvolution
-import numpy as np
-import torch_geometric.nn.conv as conv
 from torch_geometric.nn import MLP
-from torch_geometric.nn.conv import GATConv, GCNConv, APPNP, MessagePassing
 from models.dominant import *
 from models.anomalydae import *
-# TODO: include an init file, fix all paths
+from models.anemone import *
+from models.cola import *
+from models.conad import *
+from models.done import *
+from models.gaan import *
+from models.gcnae import *
+from models.guide import *
+from models.mlpae import *
+from models.ocgnn import *
+from models.one import *
+from models.radar import *
+from models.scan import *
+from models.msgad import *
+from models.bwgnn import *
 
-def normalize_adj(adj):
-    """Symmetrically normalize adjacency matrix."""
-    adj = sp.coo_matrix(adj)
-    rowsum = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
-
-
-class BWGNN(nn.Module):
-    def __init__(self, in_feats, h_feats, out_feats, d=4):
-        super(BWGNN, self).__init__()
-        self.thetas = calculate_theta2(d=d)
-        self.conv = []
-        for i in range(len(self.thetas)):
-            self.conv.append(PolyConv(h_feats, h_feats, d+1, i, self.thetas[i]))
-        self.linear = nn.Linear(in_feats, h_feats)
-        #self.linear2 = nn.Linear(h_feats*d, h_feats)
-        self.act = nn.LeakyReLU()#negative_slope=0.01)
-        self.d = d
-        
-    def forward(self, graph):
-        in_feat = graph.ndata['feature']
-        h = self.linear(in_feat)
-        h = self.act(h)
-        #h = self.linear2(h)
-        all_h = []
-        for ind,conv in enumerate(self.conv):
-            h0 = conv(dgl.add_self_loop(graph), h)
-            all_h.append(h0)
-            '''
-            if ind == 0:
-                all_h = h0
-            else:
-                all_h = torch.cat((all_h,h0),dim=1)
-            '''
-        #x = self.linear2(all_h)
-        #x = all_h
-        recons = []
-        for x in all_h:
-            recons.append(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
-        #recons = torch.sigmoid(prod)
-        return recons
-
-class PolyConv(nn.Module):
-    def __init__(self,
-                 in_feats,
-                 out_feats,
-                 d,
-                 i,
-                 theta,
-                 activation=F.leaky_relu,
-                 lin=False,
-                 bias=False):
-        super(PolyConv, self).__init__()
-        self._d = d
-        self._i = i
-        self._in_feats = in_feats
-        self._out_feats = out_feats
-        self.activation = activation
-        self._theta = theta
-        self._k = len(self._theta)
-
-    def forward(self, graph, feat):
-        def unnLaplacian(feat, D_invsqrt, graph):
-            graph.srcdata['h'] = feat * D_invsqrt
-            graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
-            return feat - graph.srcdata.pop('h') * D_invsqrt
-
-        with graph.local_scope():
-            D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
-                min=1), -0.5).unsqueeze(-1).to(feat.device)
-            #adj = normalize_adj(graph.adjacency_matrix().to_dense()).todense()
-            #adj = torch.FloatTensor(adj).cuda()
-            h = self._theta[0]*feat#(adj@feat)
-            for k in range(1, self._k):
-                feat = unnLaplacian(feat, D_invsqrt, graph)
-                #feat = adj@feat
-                h += self._theta[k]*feat
-        return h
-
-def calculate_theta2(d):
-    thetas = []
-    eval_max,offset=2,0
-    x = sympy.symbols('x')
-    for i in range(offset,d+offset,1):
-        f = sympy.poly((x/eval_max) ** i * (1 - x/eval_max) ** (d-i+offset) / (eval_max*scipy.special.beta(i+1, d+1-i+offset)))
-        coeff = f.all_coeffs()
-        inv_coeff = []
-        # NOTE: DIFFERENCE IS THAT D NOT ADDED BY 1
-        for i in range(0,d+offset,1):
-            inv_coeff.append(float(coeff[d-i+offset]))
-        thetas.append(inv_coeff)
-    return thetas
-    
 class GraphReconstruction(nn.Module):
     def __init__(self, in_size, hidden_size, batch_size, scales, recons, d, model_str, act = nn.LeakyReLU()):
         super(GraphReconstruction, self).__init__()
@@ -125,14 +31,11 @@ class GraphReconstruction(nn.Module):
         self.decode_act = torch.sigmoid
         self.weight_decay = 0.01
         if model_str == 'multi_scale' or model_str == 'multi-scale':
-            self.conv = BWGNN(in_size, hidden_size, out_size, d=self.d)
+            self.conv = MSGAD(in_size, hidden_size, d=self.d)
             #self.conv2 = BWGNN(in_size, hidden_size, out_size, d=self.d+1)
             #self.conv3 = BWGNN(in_size, hidden_size, out_size, d=self.d+2)
-            '''
-            self.conv = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=5)
-            self.conv2 = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=10)
-            self.conv3 = SimpleGNN(in_size,hidden_size,'dominant',recons,hops=15)
-            '''
+        elif model_str == 'bwgnn':
+            self.conv = BWGNN(in_size, hidden_size, d=self.d)
         elif model_str == 'adone': # x, s, e
             self.conv = AdONE_Base(in_size,batch_size,hidden_size,4,dropout,act)
         elif model_str == 'anomalous': # x
@@ -167,26 +70,11 @@ class GraphReconstruction(nn.Module):
             self.conv = CONAD_Base(in_size,hidden_size,4,dropout,act)
         else:
             raise('model not found')
-            #self.conv = SimpleGNN(in_size,hidden_size,model_str,recons)
 
-    def forward(self,graph):
-        '''
-        Input:
-            graph: input dgl graph
-        Output:
-            recons: scale-wise adjacency reconstructions
-        '''
-        '''
-        # NOTE: BWGNN
-        A_hat_scales = self.conv(graph)
-        #A_hat_scales = self.linear(self.act(A_hat_scales))
-        sp_size=self.hidden_size
-        A_hat_emb = [A_hat_scales[:,:sp_size].to_sparse()]
-        for i in range(1,self.d):
-            A_hat_emb.append(A_hat_scales[:,i*sp_size:(i+1)*sp_size].to_sparse())
-        '''
+    def process_graph(self, graph):
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
         feats = graph.ndata['feature']
+        
         feats = torch.cat((feats['_N_src'],feats['_N_dst']))
         feat_ids = graph.ndata['_ID']
         feat_ids = torch.cat((feat_ids['_N_src'],feat_ids['_N_dst']))
@@ -194,9 +82,21 @@ class GraphReconstruction(nn.Module):
 
         adj=graph.adjacency_matrix()
         adj=adj.sparse_resize_((graph.num_nodes(), graph.num_nodes()), adj.sparse_dim(), adj.dense_dim())
+        graph_idx = adj.coalesce().indices()
+        graph_ = dgl.graph((graph_idx[0],graph_idx[1])).to(graph.device)
 
-        #adj=adj.sparse_resize_((graph.num_src_nodes(),graph.num_src_nodes()), adj.sparse_dim(),adj.dense_dim())
-
+        return edges, feats, graph_
+            
+    def forward(self,graph):
+        '''
+        Input:
+            graph: input dgl graph
+        Output:
+            recons: scale-wise adjacency reconstructions
+        '''
+        
+        edges, feats, graph = self.process_graph(graph)
+        
         if self.model_str in ['adone','done','guide','ogcnn']: # x, s, e
             recons = [self.conv(feats, adj.to_dense(), edges)]
         elif self.model_str in ['anomalous','mlpae','radar']: # x
@@ -211,11 +111,12 @@ class GraphReconstruction(nn.Module):
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
             recons = [self.conv(feats, edges, 0)]
         elif self.model_str in ['multi_scale','multi-scale']: # g
-            #recons = [self.conv(graph),self.conv2(graph),self.conv3(graph)]
-            recons = self.conv(graph)
+            feats_ = feats[graph_.nodes()]
+            recons = self.conv(graph, feats_)
         
+        # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant']:
             recons_ind = 0 if self.recons == 'feat' else 1
-            recons = [recons[0][recons_ind]]
-            
+            recons = [recons[0][recons_ind].to_sparse()]
+
         return recons
