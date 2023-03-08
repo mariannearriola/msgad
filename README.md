@@ -14,6 +14,8 @@ python run.py --dataset cora_triple_sc_all --sample_train False --sample_test Fa
 Anomaly detection results are printed to the console and saved in the ./msgad/output folder
 
 ## Code organization
+
+In the folder `msgad`:
 - `data/` – Scipy matrix files containing currently supported datasets (link to T-Finance: TODO)
 - `models/` – Reconstruction backbones
 - `run.py` – Script to run model training & anomaly detection
