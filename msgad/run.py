@@ -201,7 +201,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', default='tfinance', help='dataset name: Flickr/ACM/BlogCatalog')
     parser.add_argument('--hidden_dim', type=int, default=128, help='dimension of hidden embedding (default: 64)')
     parser.add_argument('--epoch', type=int, default=100, help='Training epoch')
-    parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--dropout', type=float, default=0.3, help='Dropout rate')
     parser.add_argument('--alpha', type=float, default=0, help='balance parameter')
     parser.add_argument('--device', default='cuda', type=str, help='cuda/cpu')
