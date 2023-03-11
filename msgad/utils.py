@@ -144,7 +144,7 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
         anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
 
         detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
-        print('reverse')
+        print('scores reverse sorted')
         detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
         print('')
 

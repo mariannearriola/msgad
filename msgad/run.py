@@ -50,7 +50,7 @@ def graph_anomaly_detection(args):
 
     # initialize data loading
     if args.batch_type == 'edge':
-        sampler = dgl.dataloading.NeighborSampler([25])
+        sampler = dgl.dataloading.NeighborSampler([100])
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
@@ -78,7 +78,6 @@ def graph_anomaly_detection(args):
                 
                 pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
-                #g_batch = dgl.block_to_graph(block[0])
                 g_batch = block[0]
                 
                 if struct_model:
@@ -151,7 +150,6 @@ def graph_anomaly_detection(args):
     
             pos_edges = sub_graph_pos.edges()
             neg_edges = sub_graph_neg.edges()
-            #g_batch = dgl.block_to_graph(block[0])
             g_batch = block[0]
 
             if struct_model:
