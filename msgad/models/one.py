@@ -13,8 +13,8 @@ from sklearn.decomposition import NMF
 from sklearn.utils.validation import check_is_fitted
 from torch_geometric.utils import to_scipy_sparse_matrix, to_networkx
 
-from . import BaseDetector
-from ..metrics import eval_roc_auc
+from .base import BaseDetector
+from .metrics import eval_roc_auc
 
 gc.enable()
 

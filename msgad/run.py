@@ -78,8 +78,9 @@ def graph_anomaly_detection(args):
                 
                 pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
-                g_batch = dgl.block_to_graph(block[0])
-        
+                #g_batch = dgl.block_to_graph(block[0])
+                g_batch = block[0]
+                
                 if struct_model:
                     A_hat = struct_model(g_batch)
                 if feat_model: # TODO
@@ -135,12 +136,12 @@ def graph_anomaly_detection(args):
     
     edges=adj.edges('eid')
     dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0)
-    struct_scores, feat_scores = torch.zeros(args.d,adj.number_of_nodes()).cuda(),torch.zeros(args.d,adj.number_of_nodes()).cuda()
+    struct_scores, feat_scores = torch.zeros(len(A_hat),adj.number_of_nodes()).cuda(),torch.zeros(args.d,adj.number_of_nodes()).cuda()
     iter = 0
 
     # TODO: REFACTOR
     anom_mats_all = []
-    for i in range(args.d):
+    for i in range(len(A_hat)):
         anom_mat = scipy.sparse.csr_matrix((adj.number_of_nodes(),adj.number_of_nodes()))
         anom_mats_all.append(anom_mat)
     with dataloader.enable_cpu_affinity():
@@ -150,8 +151,8 @@ def graph_anomaly_detection(args):
     
             pos_edges = sub_graph_pos.edges()
             neg_edges = sub_graph_neg.edges()
-            g_batch = dgl.block_to_graph(block[0])
-            #g_batch = adj
+            #g_batch = dgl.block_to_graph(block[0])
+            g_batch = block[0]
 
             if struct_model:
                 A_hat = struct_model(g_batch)
@@ -171,7 +172,7 @@ def graph_anomaly_detection(args):
             edge_ids = torch.cat((pos_edges,neg_edges)).detach().cpu().numpy().T
             edge_id_dict = {k.item():v.item() for k,v in zip(torch.arange(node_ids_score.shape[0]),node_ids_score)}
             edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
-            for sc in range(args.d):
+            for sc in range(len(A_hat)):
                 if args.batch_size > 0:
                     if args.sample_test:
                         anom_mats_all[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()

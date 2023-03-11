@@ -12,11 +12,10 @@ from torch_geometric.utils import to_dense_adj
 from torch_geometric.loader import NeighborLoader
 from sklearn.utils.validation import check_is_fitted
 
+from .base import BaseDetector
 from .basic_nn import MLP
-from . import BaseDetector
-from ..utils import validate_device
-from ..metrics import eval_roc_auc
-
+from .utils import validate_device
+from .metrics import eval_roc_auc
 
 class GAAN(BaseDetector):
     """

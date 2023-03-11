@@ -126,7 +126,7 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
     '''
     clf = anom_classifier(nu=0.5)
     for sc,sc_score in enumerate(scores):
-        if sample:
+        if True:
             node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score.todense()])
         else:
             node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score])#.todense()])
@@ -157,11 +157,12 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
             cluster_accs = [clf.classify(np.array(list(x.values())),all_anom,np.array(list(y.values()))) for x,y in zip(score_dicts,clust_dicts)]
             print('cluster scores')
             print(cluster_accs)
-
+        '''
         # classify anoms with linear classifier
         anom_accs = clf.classify(node_scores, all_anom)
         print('\nnode scores')
         print(anom_accs)
+        '''
         
     with open('output/{}-ranking_{}.txt'.format(dataset, sc), 'w+') as f:
         for index in sorted_errors:

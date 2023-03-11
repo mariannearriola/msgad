@@ -16,9 +16,7 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
         all_struct_error: node-wise errors at each scale
     '''
     if not alpha: alpha = 1 if recons=='struct' else 0
-    adjacency = graph.adjacency_matrix()
-    adjacency=adjacency.sparse_resize_((graph.num_nodes(), graph.num_nodes()), adjacency.sparse_dim(), adjacency.dense_dim())
-    adjacency=adjacency.cuda()
+    
     feat = graph.ndata['feature']
 
     all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
@@ -30,6 +28,10 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
     edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
     edge_labels = edge_labels.cuda()
 
+    adj_label=torch.sparse_coo_tensor(edge_ids.T,edge_labels)
+    num_nodes = graph.num_dst_nodes()
+    adj_label=adj_label.sparse_resize_((num_nodes,num_nodes),adj_label.sparse_dim(),adj_label.dense_dim())
+
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if not preds: continue
         for ind, sc_pred in enumerate(preds):
@@ -38,10 +40,9 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
                 if sample:
                     # collect loss for selected positive/negative edges. adjacency not used
                     total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred.to_dense(),edge_ids,edge_labels)
-
                 else:
                     # collect loss for all edges/non-edges in reconstruction
-                    edge_struct_errors = torch.pow(sc_pred - adjacency, 2).to_dense()
+                    edge_struct_errors = torch.pow(sc_pred - adj_label, 2).to_dense()
                     total_struct_error = torch.sqrt(torch.sum(edge_struct_errors,1))
 
             # feature loss

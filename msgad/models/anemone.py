@@ -15,7 +15,7 @@ import os
 from torch_geometric.utils import to_dense_adj
 from torch_cluster import random_walk
 
-from . import BaseDetector
+from .base import BaseDetector
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 

@@ -18,10 +18,9 @@ def normalize_adj(adj):
     d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
     return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
 
-
-class MSGAD(nn.Module):
+class BWGNN(nn.Module):
     """
-    Multi-scale autoencoder leveraging beta wavelets
+    Beta wavelet autoencoder
 
     Parameters
     ----------
@@ -30,35 +29,38 @@ class MSGAD(nn.Module):
     h_dim: int
         Hidden dimension for feature transformation
     d : int
-        Number of scale representations to learn
+        Number of filters to use for embedding
     """
     def __init__(self, in_dim, h_dim, d=4):
-        super(MSGAD, self).__init__()
+        super(BWGNN, self).__init__()
         self.thetas = calculate_theta2(d=d)
         self.conv = []
         for i in range(len(self.thetas)):
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
-        self.linear = nn.Linear(in_dim, h_dim)
+        self.linear = nn.Linear(in_dim, h_dim*2)
+        self.linear2 = nn.Linear(h_dim*2, h_dim)
+        self.linear3 = nn.Linear(h_dim*d, h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
         
     def forward(self, graph, in_feat):
         h = self.linear(in_feat)
         h = self.act(h)
-        all_h = []
-        for ind,conv in enumerate(self.conv):
-            # add self loop to batched nodes
-            #graph = dgl.add_edges(graph,graph.dstnodes(),graph.dstnodes())
-            #import ipdb ; ipdb.set_trace()
-            #graph.add_edges(graph.dstnodes(),graph.dstnodes())
-            h0 = conv(graph, h)
-            all_h.append(h0)
+        h = self.linear2(h)
+        h = self.act(h)
         
-        recons = []
-        for x in all_h:
-            recons.append(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)))
-        #recons = torch.sigmoid(prod)
-        return recons
+        for ind,conv in enumerate(self.conv):
+            # self loop ?
+            #h0 = conv(dgl.add_self_loop(graph), h)
+            h0 = conv(graph, h)
+            if ind == 0:
+                all_h = h0
+            else:
+                all_h = torch.cat((all_h,h0),dim=1)
+            
+        x = self.linear3(all_h)
+        x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1))
+        return [x]
 
 class PolyConv(nn.Module):
     def __init__(self,
@@ -90,21 +92,14 @@ class PolyConv(nn.Module):
             graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
 
             return h_dst - graph.dstdata.pop('h') * D_invsqrt[graph.dstnodes()]
-        
+
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
+            
             h = self._theta[0]*feat[graph.dstnodes()]
-
-            # add self loop to dst nodes ?
-            '''
-            h_dst = h[:graph.number_of_dst_nodes()]
-            graph.srcdata['h'] = h_dst
-            graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
-            '''
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
-                # may need to index only dst features here
                 h += self._theta[k]*feat[graph.dstnodes()]
         return h
 

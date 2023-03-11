@@ -261,6 +261,7 @@ class DOMINANT(BaseDetector):
 
         score = self.alpha * attribute_errors \
                 + (1 - self.alpha) * structure_errors
+        import ipdb ; ipdb.set_trace()
         return score
 
 

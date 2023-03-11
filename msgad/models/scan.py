@@ -9,13 +9,13 @@ import torch
 import warnings
 from torch import nn
 import networkx as nx
-from pygod.metrics import *
+from .metrics import *
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
 from sklearn.utils.validation import check_is_fitted
 
-from . import BaseDetector
-from ..utils import validate_device
+from .base import BaseDetector
+from .utils import validate_device
 
 
 class SCAN(BaseDetector):

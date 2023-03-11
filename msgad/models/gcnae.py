@@ -10,10 +10,10 @@ import torch.nn.functional as F
 from torch_geometric.loader import NeighborLoader
 from sklearn.utils.validation import check_is_fitted
 
-from . import BaseDetector
+from .base import BaseDetector
 from .basic_nn import GCN
-from ..utils import validate_device
-from ..metrics import eval_roc_auc
+from .utils import validate_device
+from .metrics import eval_roc_auc
 
 
 class GCNAE(BaseDetector):

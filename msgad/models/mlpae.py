@@ -10,11 +10,11 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.utils.validation import check_is_fitted
 
-from . import BaseDetector
+from .base import BaseDetector
 from .basic_nn import MLP
-from ..utils import validate_device
-from ..metrics import eval_roc_auc
-from ..utils.dataset import PlainDataset
+from .utils import validate_device
+from .metrics import eval_roc_auc
+from .utils.dataset import PlainDataset
 
 
 class MLPAE(BaseDetector):

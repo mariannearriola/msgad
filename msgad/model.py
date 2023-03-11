@@ -74,17 +74,20 @@ class GraphReconstruction(nn.Module):
     def process_graph(self, graph):
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
         feats = graph.ndata['feature']
-        
+        feats = feats['_N']
+        '''
         feats = torch.cat((feats['_N_src'],feats['_N_dst']))
         feat_ids = graph.ndata['_ID']
         feat_ids = torch.cat((feat_ids['_N_src'],feat_ids['_N_dst']))
         feats = feats[torch.argsort(feat_ids)]
-
+        '''
+        '''
         adj=graph.adjacency_matrix()
         adj=adj.sparse_resize_((graph.num_nodes(), graph.num_nodes()), adj.sparse_dim(), adj.dense_dim())
         graph_idx = adj.coalesce().indices()
         graph_ = dgl.graph((graph_idx[0],graph_idx[1])).to(graph.device)
-
+        '''
+        graph_ = graph
         return edges, feats, graph_
             
     def forward(self,graph):
@@ -95,7 +98,7 @@ class GraphReconstruction(nn.Module):
             recons: scale-wise adjacency reconstructions
         '''
         
-        edges, feats, graph = self.process_graph(graph)
+        edges, feats, graph_ = self.process_graph(graph)
         
         if self.model_str in ['adone','done','guide','ogcnn']: # x, s, e
             recons = [self.conv(feats, adj.to_dense(), edges)]
@@ -110,13 +113,22 @@ class GraphReconstruction(nn.Module):
             recons = [self.conv(feats, gaussian_noise, edges)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
             recons = [self.conv(feats, edges, 0)]
-        elif self.model_str in ['multi_scale','multi-scale']: # g
-            feats_ = feats[graph_.nodes()]
+        elif self.model_str in ['multi_scale','multi-scale','bwgnn']: # g
+            #feats_ = feats[graph_.nodes()]
+            #feats_src = graph.srcdata['feature']
+            #feats_dst = graph.dstdata['feature']
+            feats_ = feats
             recons = self.conv(graph, feats_)
+            # recons must be of shape n_dst x n_dsit
         
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant']:
             recons_ind = 0 if self.recons == 'feat' else 1
             recons = [recons[0][recons_ind].to_sparse()]
+
+        if self.model_str not in ['multi-scale','multi_scale','bwgnn']:
+            recons = recons[0].to_dense()
+            recons = recons[graph.dstnodes()][:,graph.dstnodes()]
+            recons = [recons.to_sparse()]
 
         return recons
