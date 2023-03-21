@@ -332,17 +332,18 @@ class AnomalyDAE_Base(nn.Module):
                                         out_dim,
                                         dropout,
                                         act)
-        self.attribute_ae = AttributeAE(self.num_center_nodes,
-                                        embed_dim,
-                                        out_dim,
-                                        dropout,
-                                        act)
+        #self.attribute_ae = AttributeAE(self.num_center_nodes,
+        #                                embed_dim,
+        #                                out_dim,
+        #                                dropout,
+        #                                act)
 
     def forward(self, x, edge_index, batch_size):
         s_, h = self.structure_ae(x, edge_index)
-        if batch_size < self.num_center_nodes:
-            x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
-        x_ = self.attribute_ae(x[:self.num_center_nodes], h)
+        #if batch_size < self.num_center_nodes:
+        #    x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
+        return s_, s_
+        #x_ = self.attribute_ae(x[:self.num_center_nodes], h)
         return x_, s_
 
 
@@ -389,13 +390,19 @@ class StructureAE(nn.Module):
         self.dropout = dropout
         self.act = act
 
-    def forward(self, x, edge_index):
+    def forward(self, x_, edge_index):
         # encoder
-        x = self.act(self.dense(x))
-        x = F.dropout(x, self.dropout)
+        x = self.act(self.dense(x_))
+        #x = F.dropout(x, self.dropout)
         h = self.attention_layer(x, edge_index)
         # decoder
-        s_ = torch.sigmoid(h @ h.T)
+        # NOTE: removed because of loss formulation, results in nan feat transformer weights
+        #s_ = torch.sigmoid(h @ h.T)
+        s_ = h @ h.T
+
+        if True in torch.isnan(s_):
+            import ipdb ; ipdb.set_trace()
+            print('nan')
         return s_, h
 
 
@@ -447,4 +454,5 @@ class AttributeAE(nn.Module):
         x = F.dropout(x, self.dropout)
         # decoder
         x = h @ x.T
+
         return x

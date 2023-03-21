@@ -78,69 +78,6 @@ def load_citation_datadet(dataset_str):
     # TODO: get normal clusters
     return attribute_dense,adj_dense,labels
     graph = nx.from_scipy_sparse_matrix(adj)
-    '''
-    l_comms = nx_comm.louvain_communities(graph)
-    l_comms_arr = []
-    for l_comm in l_comms:
-        l_comms_arr.append(list(l_comm))
-
-    l_comms_arr_2 = []
-    for l_comm in l_comms_arr:
-        if len(l_comm) == 1:
-            l_comms_arr_2.append(l_comm)
-        else:
-            comms_found=False
-            to_app = []
-            l_comm_to_append = nx_comm.louvain_communities(graph.subgraph(l_comm))
-            for l_comm_ in l_comm_to_append:
-                if len(l_comm_) > 1:
-                    comms_found = True
-                to_app.append(list(l_comm_))
-                if comms_found:
-                    l_comms_arr_2.append(to_app)
-                else:
-                    l_comms_arr_2.append(l_comm_)
-
-
-    l_comms_arr_3 = []
-    for l_comm in l_comms_arr_2:
-        if len(l_comm) == 1:
-            l_comms_arr_3.append(l_comm)
-        else:
-            comms_found=False
-            to_app = []
-            if isinstance(l_comm,str):
-                l_comm_to_append = nx_comm.louvain_communities(graph.subgraph(l_comm))
-                for l_comm_ in l_comm_to_append:
-                    if len(l_comm_) > 1:
-                        comms_found = True
-                    to_app.append(list(l_comm_))
-                    if comms_found:
-                        l_comms_arr_3.append(to_app)
-                    else:
-                        l_comms_arr_3.append(l_comm_)
-            else:
-                l_comm_to_append = []
-                
-                for l_comm_inside in l_comm:
-                    if len(l_comm_inside) == 1:
-                        l_comm_to_append.append(l_comm_inside)
-                        continue
-                    try:
-                        l_comm_inner = nx_comm.louvain_communities(graph.subgraph(l_comm_inside))
-                    except:
-                        import ipdb ; ipdb.set_trace()
-                    for l_comm_ in l_comm_inner:
-                        if len(l_comm_) > 1:
-                            comms_found = True
-                        to_app.append(list(l_comm_))
-                        if comms_found:
-                            l_comm_to_append.append(to_app)
-                        else:
-                            l_comm_to_append.append(l_comm_)
-
-                l_comms_arr_3.append(l_comm_to_append)
-    '''
 
     return attribute_dense, adj_dense, cat_labels, l_comms_arr
 
@@ -220,7 +157,6 @@ random.shuffle(all_idx)
 num_anom = n*scale_sizes
 
 # ensures clique are separated
-#anomaly_idx = all_idx[:m*n]
 anomaly_idx = all_idx[:np.sum(num_anom)]
 
 # select m*n structural anomalies and m*n attribute anomalies?
@@ -420,10 +356,6 @@ print('Saving mat file...')
 attribute = dense_to_sparse(attribute_dense)
 adj = dense_to_sparse(adj_dense)
 
-#savedir = 'anom_data/'
-#savedir = './pygod/pygod/data'
-savedir = './ms_dominant/data'
-#savedir = './dominant/GCN_AnomalyDetection_pytorch/data'
 savedir = './pygsp-master/pygsp/data/ms_data'
 if not os.path.exists(savedir):
     os.makedirs(savedir)

@@ -39,11 +39,13 @@ class BWGNN(nn.Module):
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_dim, h_dim*2)
         self.linear2 = nn.Linear(h_dim*2, h_dim)
-        self.linear3 = nn.Linear(h_dim*d, h_dim)
+        self.linear3 = nn.Linear(h_dim*(d+1), h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
         
     def forward(self, graph, in_feat):
+        graph = dgl.block_to_graph(graph)
+        graph.add_edges(graph.dstnodes(),graph.dstnodes())
         h = self.linear(in_feat)
         h = self.act(h)
         h = self.linear2(h)
@@ -52,6 +54,7 @@ class BWGNN(nn.Module):
         for ind,conv in enumerate(self.conv):
             # self loop ?
             #h0 = conv(dgl.add_self_loop(graph), h)
+            #graph.add_edges(graph.dstnodes(),graph.dstnodes())
             h0 = conv(graph, h)
             if ind == 0:
                 all_h = h0
@@ -59,8 +62,9 @@ class BWGNN(nn.Module):
                 all_h = torch.cat((all_h,h0),dim=1)
             
         x = self.linear3(all_h)
-        x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1))
-        return [x]
+        x = torch.mm(x,torch.transpose(x,0,1))
+        #x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
+        return x
 
 class PolyConv(nn.Module):
     def __init__(self,
@@ -91,28 +95,27 @@ class PolyConv(nn.Module):
             # message pass src -> dst
             graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
 
+            # are srcs updated in message passing? read tutorials
             return h_dst - graph.dstdata.pop('h') * D_invsqrt[graph.dstnodes()]
 
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
-            
             h = self._theta[0]*feat[graph.dstnodes()]
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
                 h += self._theta[k]*feat[graph.dstnodes()]
-        return h
+        return h # return thetas for weighting a**2,3,... # theta[0]*a,theta[1]*a^2,...
+
 
 def calculate_theta2(d):
     thetas = []
-    eval_max,offset=2,0
     x = sympy.symbols('x')
-    for i in range(offset,d+offset,1):
-        f = sympy.poly((x/eval_max) ** i * (1 - x/eval_max) ** (d-i+offset) / (eval_max*scipy.special.beta(i+1, d+1-i+offset)))
+    for i in range(d+1):
+        f = sympy.poly((x/2) ** i * (1 - x/2) ** (d-i) / (scipy.special.beta(i+1, d+1-i)))
         coeff = f.all_coeffs()
         inv_coeff = []
-        for i in range(0,d+offset,1):
-            inv_coeff.append(float(coeff[d-i+offset]))
+        for i in range(d+1):
+            inv_coeff.append(float(coeff[d-i]))
         thetas.append(inv_coeff)
     return thetas
-    

@@ -13,6 +13,78 @@ from igraph import Graph
 import dgl
 import copy
 
+'''
+
+class BaseGraph:
+    def __init__(self, graph_name = "test"):
+        self.graph_list = ["test", "cora"]
+        self.graph = self.build_graph_cora(graph_name)
+        self.adj = self.get_adj(self.graph)
+        self.features = self.graph.ndata["feat"]
+        self.num_nodes = self.graph.num_nodes()
+        self.node_index = list(range(self.num_nodes))
+        self.num_edges = self.graph.num_edges()
+        self.nodes = self.graph.nodes()
+        
+        #self.features = self.init_node_feat(self.graph)
+
+    def build_graph_cora(self, graph):
+        # Default: ~/.dgl/ 
+        if graph == "test":
+            graph = self.build_graph_test()
+        elif graph == "cora":
+            data = CoraGraphDataset()
+            graph = data[0]
+        else:
+            raise ValueError("Unknow graph type : {}, graph list: {}".format(graph, " ".join(self.graph_list)))
+
+        return graph
+    
+    
+    def convert_symmetric(self, X, sparse=True):
+        # add symmetric edges
+        if sparse:
+            X += X.T - sp.diags(X.diagonal())
+        else: 
+            X += X.T - np.diag(X.diagonal())
+        return X
+        
+    def add_self_loop(self, graph):
+        # add self loop
+        graph = dgl.remove_self_loop(graph)
+        graph = dgl.add_self_loop(graph)
+        return graph
+
+    def get_adj(self, graph):
+        graph = self.add_self_loop(graph)
+        # edges weights if edges has weights else 1
+        graph.edata["w"] = torch.ones(graph.num_edges())
+        adj = coo_matrix((graph.edata["w"], (graph.edges()[0], graph.edges()[1])),
+                         shape=(graph.num_nodes(), graph.num_nodes()))
+
+        #  add symmetric edges
+        #adj = self.convert_symmetric(adj, sparse=True)
+        # adj normalize and transform matrix to torch tensor type
+        adj = adj_tensorlize(adj, is_sparse=True)
+
+        return adj
+
+    def init_node_feat(self, graph):
+        # init graph node features
+        self.nfeat_dim = graph.number_of_nodes()
+
+        row = list(range(self.nfeat_dim))
+        col = list(range(self.nfeat_dim))
+        indices = torch.from_numpy(
+            np.vstack((row, col)).astype(np.int64))
+        values = torch.ones(self.nfeat_dim)
+
+        features = torch.sparse.FloatTensor(indices, values,
+                                            (self.nfeat_dim, self.nfeat_dim))
+        return features
+'''
+
+
 def getScaleClusts(dend,thresh):
     clust_labels = postprocess.cut_straight(dend,threshold=thresh)
     return clust_labels
@@ -38,6 +110,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
         all_costs: total loss for backpropagation
         all_struct_error: structure errors for each scale
     '''
+    import ipdb ; ipdb.set_trace()
     all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
     true_anoms = 0
     cor_1, cor_2, cor_3 = 0,0,0
@@ -116,7 +189,7 @@ class anom_classifier():
                 accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
         return accs, anom_preds.shape[0]
 
-def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, cluster=False):
+def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, cluster=False, input_scores=False):
     '''
     Input:
         scores: anomaly scores for all scales []
@@ -124,12 +197,19 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
         sc_label: array containing scale-wise anomaly node ids
         dataset: dataset string
     '''
+    
+    anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
     clf = anom_classifier(nu=0.5)
     for sc,sc_score in enumerate(scores):
-        if True:
-            node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score.todense()])
+        if input_scores:
+            node_scores = sc_score
+            if -1 in node_scores:
+                print('not all node anomaly scores calculated for node sampling!')
         else:
-            node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score])#.todense()])
+            node_scores = np.array([np.mean(i.data) for i in sc_score])
+        
+        # else:
+        #    node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score])#.todense()])
 
         sorted_errors = np.argsort(-node_scores)
         rev_sorted_errors = np.argsort(node_scores)
@@ -140,8 +220,6 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
         rankings = np.array(rankings)
 
         print(f'SCALE {sc+1} loss',np.mean(node_scores))
-
-        anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
 
         detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
         print('scores reverse sorted')

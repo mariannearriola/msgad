@@ -4,6 +4,7 @@ from torch_geometric.nn.conv import APPNP
 import sympy
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 import dgl.function as fn
 import dgl
 import torch
@@ -36,27 +37,34 @@ class MSGAD(nn.Module):
         super(MSGAD, self).__init__()
         self.thetas = calculate_theta2(d=d)
         self.conv = []
-        for i in range(len(self.thetas)):
+        for i in range(len(self.thetas)-1): # exclude high pass
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_dim, h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
-        
+        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
+
     def forward(self, graph, in_feat):
+        graph = dgl.block_to_graph(graph)
+        graph.add_edges(graph.dstnodes(),graph.dstnodes()) # self loop
         h = self.linear(in_feat)
         h = self.act(h)
         all_h = []
         for ind,conv in enumerate(self.conv):
-            # add self loop to batched nodes
-            #graph = dgl.add_edges(graph,graph.dstnodes(),graph.dstnodes())
-            #import ipdb ; ipdb.set_trace()
-            #graph.add_edges(graph.dstnodes(),graph.dstnodes())
             h0 = conv(graph, h)
             all_h.append(h0)
         
-        recons = []
-        for x in all_h:
-            recons.append(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)))
+        '''
+        recons = torch.sigmoid(self.lam[0])*(torch.sparse.mm(all_h[0].to_sparse(),torch.transpose(all_h[0].to_sparse(),0,1)).to_dense())
+        for ind,x in enumerate(all_h[1:]):
+            recons += torch.sigmoid(self.lam[ind])*(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
+        '''
+        #recons = torch.sigmoid(self.lam[0])*(torch.mm(all_h[0],torch.transpose(all_h[0],0,1)))
+        recons = torch.sigmoid(self.lam[0])*all_h[0]
+        for ind,x in enumerate(all_h[1:]):
+            recons += torch.sigmoid(self.lam[ind])*x
+        #recons = torch.mm(recons,torch.transpose(recons,0,1))
+        recons = recons@recons.T
         #recons = torch.sigmoid(prod)
         return recons
 
@@ -95,7 +103,11 @@ class PolyConv(nn.Module):
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
             h = self._theta[0]*feat[graph.dstnodes()]
-
+        
+            #n,m=h.shape
+            #thr = (math.sqrt(2 * math.log(n)) / math.sqrt(n) * 1) * torch.unsqueeze(torch.tensor(self._theta[0]), dim=0).repeat(m)
+            #h = torch.mul(torch.sign(h), (((torch.abs(h) - thr.cuda()) + torch.abs(torch.abs(h) - thr.cuda())) / 2))
+            
             # add self loop to dst nodes ?
             '''
             h_dst = h[:graph.number_of_dst_nodes()]
@@ -104,20 +116,22 @@ class PolyConv(nn.Module):
             '''
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
-                # may need to index only dst features here
                 h += self._theta[k]*feat[graph.dstnodes()]
+            # SHRINKAGE
+            #n,m=h.shape
+            #thr = (math.sqrt(2 * math.log(n)) / math.sqrt(n) * sigma) * torch.unsqueeze(scale, dim=0).repeat(m)
+            # self.threshold = (math.sqrt(2*math.log(h.shape)))
+            # = torch.mul(torch.sign(x), (((torch.abs(x) - self.threshold) + torch.abs(torch.abs(x) - self.threshold)) / 2))
         return h
 
 def calculate_theta2(d):
     thetas = []
-    eval_max,offset=2,0
     x = sympy.symbols('x')
-    for i in range(offset,d+offset,1):
-        f = sympy.poly((x/eval_max) ** i * (1 - x/eval_max) ** (d-i+offset) / (eval_max*scipy.special.beta(i+1, d+1-i+offset)))
+    for i in range(d+1):
+        f = sympy.poly((x/2) ** i * (1 - x/2) ** (d-i) / (scipy.special.beta(i+1, d+1-i)))
         coeff = f.all_coeffs()
         inv_coeff = []
-        for i in range(0,d+offset,1):
-            inv_coeff.append(float(coeff[d-i+offset]))
+        for i in range(d+1):
+            inv_coeff.append(float(coeff[d-i]))
         thetas.append(inv_coeff)
     return thetas
-    
