@@ -44,17 +44,14 @@ class BWGNN(nn.Module):
         self.d = d
         
     def forward(self, graph, in_feat):
-        graph = dgl.block_to_graph(graph)
-        graph.add_edges(graph.dstnodes(),graph.dstnodes())
+        #graph = dgl.block_to_graph(graph)
+        #graph.add_edges(graph.dstnodes(),graph.dstnodes())
         h = self.linear(in_feat)
         h = self.act(h)
         h = self.linear2(h)
         h = self.act(h)
         
         for ind,conv in enumerate(self.conv):
-            # self loop ?
-            #h0 = conv(dgl.add_self_loop(graph), h)
-            #graph.add_edges(graph.dstnodes(),graph.dstnodes())
             h0 = conv(graph, h)
             if ind == 0:
                 all_h = h0
@@ -62,9 +59,11 @@ class BWGNN(nn.Module):
                 all_h = torch.cat((all_h,h0),dim=1)
             
         x = self.linear3(all_h)
-        x = torch.mm(x,torch.transpose(x,0,1))
+        x = x@x.T
+        #x = torch.mm(x,torch.transpose(x,0,1))
         #x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
-        return x
+        #return x
+        return torch.sigmoid(x)
 
 class PolyConv(nn.Module):
     def __init__(self,

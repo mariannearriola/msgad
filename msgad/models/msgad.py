@@ -37,36 +37,40 @@ class MSGAD(nn.Module):
         super(MSGAD, self).__init__()
         self.thetas = calculate_theta2(d=d)
         self.conv = []
-        for i in range(len(self.thetas)-1): # exclude high pass
+        for i in range(len(self.thetas)): # exclude high pass
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_dim, h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
         self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
-
+        self.relu = torch.nn.ReLU()
+        
     def forward(self, graph, in_feat):
-        graph = dgl.block_to_graph(graph)
-        graph.add_edges(graph.dstnodes(),graph.dstnodes()) # self loop
+        if graph.is_block: graph = dgl.block_to_graph(graph)
+
+        # add self-loop
+        graph.add_edges(graph.dstnodes(),graph.dstnodes())
+
+        # feature transformer
         h = self.linear(in_feat)
         h = self.act(h)
+        
+        # scale-wise embeddings via multi-frequency graph wavelet
         all_h = []
         for ind,conv in enumerate(self.conv):
             h0 = conv(graph, h)
             all_h.append(h0)
-        
-        '''
-        recons = torch.sigmoid(self.lam[0])*(torch.sparse.mm(all_h[0].to_sparse(),torch.transpose(all_h[0].to_sparse(),0,1)).to_dense())
-        for ind,x in enumerate(all_h[1:]):
-            recons += torch.sigmoid(self.lam[ind])*(torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense())
-        '''
-        #recons = torch.sigmoid(self.lam[0])*(torch.mm(all_h[0],torch.transpose(all_h[0],0,1)))
+    
+        # learned linear combo of multi-frequency embeddings
         recons = torch.sigmoid(self.lam[0])*all_h[0]
         for ind,x in enumerate(all_h[1:]):
             recons += torch.sigmoid(self.lam[ind])*x
+
+        # inner-product decoder
         #recons = torch.mm(recons,torch.transpose(recons,0,1))
         recons = recons@recons.T
-        #recons = torch.sigmoid(prod)
-        return recons
+        #return recons
+        return torch.sigmoid(recons)
 
 class PolyConv(nn.Module):
     def __init__(self,
@@ -98,7 +102,7 @@ class PolyConv(nn.Module):
             graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
 
             return h_dst - graph.dstdata.pop('h') * D_invsqrt[graph.dstnodes()]
-        
+
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
@@ -109,11 +113,6 @@ class PolyConv(nn.Module):
             #h = torch.mul(torch.sign(h), (((torch.abs(h) - thr.cuda()) + torch.abs(torch.abs(h) - thr.cuda())) / 2))
             
             # add self loop to dst nodes ?
-            '''
-            h_dst = h[:graph.number_of_dst_nodes()]
-            graph.srcdata['h'] = h_dst
-            graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
-            '''
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
                 h += self._theta[k]*feat[graph.dstnodes()]
@@ -122,6 +121,7 @@ class PolyConv(nn.Module):
             #thr = (math.sqrt(2 * math.log(n)) / math.sqrt(n) * sigma) * torch.unsqueeze(scale, dim=0).repeat(m)
             # self.threshold = (math.sqrt(2*math.log(h.shape)))
             # = torch.mul(torch.sign(x), (((torch.abs(x) - self.threshold) + torch.abs(torch.abs(x) - self.threshold)) / 2))
+
         return h
 
 def calculate_theta2(d):

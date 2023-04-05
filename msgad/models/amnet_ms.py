@@ -125,9 +125,9 @@ class BernConv(MessagePassing):
         return out
 
 
-class AMNet(nn.Module):
+class AMNet_ms(nn.Module):
     def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
-        super(AMNet, self).__init__()
+        super(AMNet_ms, self).__init__()
         self.act_fn = nn.ReLU()
         self.attn_fn = nn.Tanh()
         self.linear_transform_in = nn.Sequential(nn.Linear(in_channels, hid_channels),
@@ -137,6 +137,7 @@ class AMNet(nn.Module):
         self.K = K
         self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=True, bias=True) for _ in range(filter_num)])
         self.filter_num = filter_num
+        
         self.W_f = nn.Sequential(nn.Linear(hid_channels, hid_channels),
                                  self.attn_fn,
                                  )
@@ -147,11 +148,13 @@ class AMNet(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hid_channels, num_class))
 
+        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
 
         self.attn = list(self.W_x.parameters())
         self.attn.extend(list(self.W_f.parameters()))
         self.lin = list(self.linear_transform_in.parameters())
         self.lin.extend(list(self.linear_cls_out.parameters()))
+        self.relu = torch.nn.ReLU()
         self.reset_parameters()
 
 
@@ -183,35 +186,17 @@ class AMNet(nn.Module):
 
         res = h_filters[:, 0, :] * score[:, 0]
         for i in range(1, self.filter_num):
-            res += h_filters[:, i, :] * score[:, i]
+            res += torch.sigmoid(self.lam[i])*(h_filters[:, i, :] * score[:, i])
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
 
         # ADAPT TO RECONSTRUCTION
-        return torch.sigmoid(res@res.T)
-        '''
-        y_hat = self.linear_cls_out(res)
-        marginal_loss = 0.
-        return y_hat
-        '''
-        '''
-        if self.training:
-            anomaly_train, normal_train = label
-            normal_bias = score[normal_train][:, 1] - score[normal_train][:, 0]
-            anomaly_bias = score[anomaly_train][:, 0] - score[anomaly_train][:, 1]
-            normal_bias = torch.clamp(normal_bias, -0.)
-            anomaly_bias = torch.clamp(anomaly_bias, -0.)
-            normal_bias = torch.mean(normal_bias)
-            anomaly_bias = torch.mean(anomaly_bias)
-            bias = anomaly_bias + normal_bias
-            marginal_loss = bias
-
-        if self.training:
-            return y_hat,  marginal_loss
-        else:
-            return y_hat
-        '''
+        #return self.relu(res@res.T)
+        # inner product always positive
+        return torch.tanh(res@res.T)
+        #return res@res.T
+        #return torch.sigmoid(res@res.T)
 
 
 

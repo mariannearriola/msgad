@@ -103,22 +103,24 @@ k = 50
 s = 9 # number of scales
 #scale_sizes = np.array([5,15,45])
 #n = np.array([2,1,1])
-scale=2
-num_clust=2
+scale=3
+num_clust=93
 size=50
 prob_connect=0.93
 prob_connect=0.75
 prob_connect=0.05
-prob_connects=[0.3,0.43,0.925]
-prob_connect=prob_connects[scale-1]
+#prob_connects=[0.3,0.43,0.925]
+prob_connect = 0.3
+#prob_connect=prob_connects[scale-1]
 #prob_connect=0.98
-scale_sizes = np.array([10,50,150])
-scale_sizes = np.full((num_clust,),size)
-n = np.array([30,6,2])
-n= np.array([5,2,2])
-n = np.full((num_clust,),1)
+scale_sizes = np.array([10,50,150,1])
+#scale_sizes = np.full((num_clust,),size)
+#n = np.array([30,6,2,1])
+#n= np.array([5,2,2])
+#n = np.full((num_clust,),1)
+n = np.array([1,1,1,90])
 #attr_scales = np.array([3,1,1,1])
-#attr_scales = np.array([1,1,1])
+#attr_scales = np.array([1,1,1,1])
 attr_scales = np.full((num_clust,),1)
 #probs = np.array([0.2,0.87,0.9335])
 #probs = np.array([0.05,0.3,0.5])
@@ -212,14 +214,20 @@ for ind,n_ in enumerate(n):
                 if np.random.rand() > prob_connect:#prob_connects[ind]:
                     adj_dense[i, j] = 1.
                     adj_dense[j, i] = 1.
+
+
+            # normal_neighbors = np.setdiff1d(np.where(adj_dense[i] != 0)[0],structure_anomaly_idx)
+
+            # disconnect from other anomalous cliques
             for jind,j in enumerate(except_nodes):
                 adj_dense[i,j]=0.
                 adj_dense[j,i]=0.
-                
+                '''
                 if ind == 0 and jind > (except_nodes.shape[0]-6):
                     #import ipdb ; ipdb.set_trace()
                     adj_dense[i,j]=1.
                     adj_dense[j,i]=1.
+                '''
                 
             '''
             for jind_,j_ in enumerate(current_nodes):
@@ -233,6 +241,7 @@ for ind,n_ in enumerate(n):
         #adj_dense[current_nodes,current_nodes] = 0.
         
         #nx_graph = nx.from_numpy_matrix(adj_dense[current_nodes,:][:,current_nodes])
+        '''
         nx_graph = nx.from_numpy_matrix(adj_dense)
         
         print(nx.is_connected(nx_graph))
@@ -250,9 +259,12 @@ for ind,n_ in enumerate(n):
                     import ipdb ; ipdb.set_trace()
                     print(e)
                     print('hi')
-            anom_sps.append(sum(i_sps)/len(i_sps))
-        print('AVG SHORTEST PATHS',sum(anom_sps)/len(anom_sps))
-        
+            if len(i_sps) == 0: continue
+            else:
+                anom_sps.append(sum(i_sps)/len(i_sps))
+        if len(anom_sps) != 0:
+            print('AVG SHORTEST PATHS',sum(anom_sps)/len(anom_sps))
+        '''
         '''
         print(nx.is_connected(nx_graph))
         shortest_paths = dict(nx.shortest_path_length(nx_graph))
@@ -283,7 +295,6 @@ print('Done. {:d} structured nodes are constructed. ({:.0f} edges are added) \n'
 
 
 # TODO: find connectivity of normal clusters
-
 nx_graph = nx.from_numpy_matrix(adj_dense)
 '''
 print(nx.is_connected(nx_graph))
@@ -315,6 +326,7 @@ print('AVG NORMAL SHORTEST PATHS',sum(normal_sps)/len(normal_sps))
 print('Constructing attributed anomaly nodes...')
 #for ind,i_ in enumerate(attribute_anomaly_idx):
 all_anom_sc = []
+selected_freq = {}
 for ind,n_ in enumerate(n):
     anom_sc = []
     for ind2,n__ in enumerate(range(n_)):
@@ -348,9 +360,14 @@ for ind,n_ in enumerate(n):
             # copies attribute from node with highest euclidian distance of randomly sampled node
             #attribute_dense[i_] = attribute_dense[max_idx]
             attribute_dense[cur] = attribute_dense[closest_idx]
+            if closest_idx in selected_freq.keys():
+                selected_freq[closest_idx] += 1
+            else:
+                selected_freq[closest_idx] = 1
     all_anom_sc.append(anom_sc)
-print('Done. {:d} attributed nodes are constructed. \n'.format(len(attribute_anomaly_idx)))
 
+print('Done. {:d} attributed nodes are constructed. \n'.format(len(attribute_anomaly_idx)))
+import ipdb ; ipdb.set_trace()
 # Pack & save them into .matip
 print('Saving mat file...')
 attribute = dense_to_sparse(attribute_dense)
@@ -360,7 +377,7 @@ savedir = './pygsp-master/pygsp/data/ms_data'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
 #import ipdb ; ipdb.set_trace()
-sio.savemat('{}/{}_triple_sc{}.mat'.format(savedir,dataset_str,str(scale)),\
+sio.savemat('{}/{}_triple_sc{}_test.mat'.format(savedir,dataset_str,str(scale)),\
             {'Network': adj, 'Label': label, 'Attributes': attribute,\
             'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label, 'scale_anomaly_label': all_anom_sc, 'l_comms': l_comms})
 print('Done. The file is save as: anom_data/{}.mat \n'.format(dataset_str))

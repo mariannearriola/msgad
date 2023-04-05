@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn import GATConv
 from torch_geometric.utils import to_dense_adj
 from torch_geometric.loader import NeighborLoader
 from sklearn.utils.validation import check_is_fitted
@@ -138,7 +139,7 @@ class DOMINANT(BaseDetector):
         loader = NeighborLoader(G,
                                 [self.num_neigh] * self.num_layers,
                                 batch_size=self.batch_size)
-
+                                
         self.model = DOMINANT_Base(in_dim=G.x.shape[1],
                                    hid_dim=self.hid_dim,
                                    num_layers=self.num_layers,
@@ -277,13 +278,16 @@ class DOMINANT_Base(nn.Module):
         # split the number of layers for the encoder and decoders
         encoder_layers = int(num_layers / 2)
         decoder_layers = num_layers - encoder_layers
-
+        self.dense = nn.Linear(in_dim, hid_dim)
+        '''
         self.shared_encoder = GCN(in_channels=in_dim,
                                   hidden_channels=hid_dim,
                                   num_layers=encoder_layers,
                                   out_channels=hid_dim,
                                   dropout=dropout,
                                   act=act)
+        '''
+        self.shared_encoder = GATConv(hid_dim, hid_dim)
 
         self.attr_decoder = GCN(in_channels=hid_dim,
                                 hidden_channels=hid_dim,
@@ -291,21 +295,26 @@ class DOMINANT_Base(nn.Module):
                                 out_channels=in_dim,
                                 dropout=dropout,
                                 act=act)
-
+        '''
         self.struct_decoder = GCN(in_channels=hid_dim,
                                   hidden_channels=hid_dim,
                                   num_layers=decoder_layers - 1,
                                   out_channels=in_dim,
                                   dropout=dropout,
                                   act=act)
+        '''
+        #self.struct_decoder = GATConv(hid_dim, hid_dim)
+
 
     def forward(self, x, edge_index):
         # encode
-        h = self.shared_encoder(x, edge_index)
+        h = self.dense(x)
+        h_ = self.shared_encoder(h, edge_index)
         # decode feature matrix
-        x_ = self.attr_decoder(h, edge_index)
+        #x_ = self.attr_decoder(h, edge_index)
         # decode adjacency matrix
-        h_ = self.struct_decoder(h, edge_index)
-        s_ = h_ @ h_.T
+        #h_ = self.struct_decoder(h, edge_index)
+        s_ = torch.sigmoid(h_ @ h_.T)
+        x_ = s_
         # return reconstructed matrices
         return x_, s_

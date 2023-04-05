@@ -2,6 +2,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import SGDOneClassSVM
 from sknetwork.hierarchy import Paris, postprocess, LouvainHierarchy, LouvainIteration
+from torch_geometric.nn import MessagePassing
 import numpy as np
 import scipy.sparse as sp
 import torch
@@ -12,78 +13,6 @@ import networkx as nx
 from igraph import Graph
 import dgl
 import copy
-
-'''
-
-class BaseGraph:
-    def __init__(self, graph_name = "test"):
-        self.graph_list = ["test", "cora"]
-        self.graph = self.build_graph_cora(graph_name)
-        self.adj = self.get_adj(self.graph)
-        self.features = self.graph.ndata["feat"]
-        self.num_nodes = self.graph.num_nodes()
-        self.node_index = list(range(self.num_nodes))
-        self.num_edges = self.graph.num_edges()
-        self.nodes = self.graph.nodes()
-        
-        #self.features = self.init_node_feat(self.graph)
-
-    def build_graph_cora(self, graph):
-        # Default: ~/.dgl/ 
-        if graph == "test":
-            graph = self.build_graph_test()
-        elif graph == "cora":
-            data = CoraGraphDataset()
-            graph = data[0]
-        else:
-            raise ValueError("Unknow graph type : {}, graph list: {}".format(graph, " ".join(self.graph_list)))
-
-        return graph
-    
-    
-    def convert_symmetric(self, X, sparse=True):
-        # add symmetric edges
-        if sparse:
-            X += X.T - sp.diags(X.diagonal())
-        else: 
-            X += X.T - np.diag(X.diagonal())
-        return X
-        
-    def add_self_loop(self, graph):
-        # add self loop
-        graph = dgl.remove_self_loop(graph)
-        graph = dgl.add_self_loop(graph)
-        return graph
-
-    def get_adj(self, graph):
-        graph = self.add_self_loop(graph)
-        # edges weights if edges has weights else 1
-        graph.edata["w"] = torch.ones(graph.num_edges())
-        adj = coo_matrix((graph.edata["w"], (graph.edges()[0], graph.edges()[1])),
-                         shape=(graph.num_nodes(), graph.num_nodes()))
-
-        #  add symmetric edges
-        #adj = self.convert_symmetric(adj, sparse=True)
-        # adj normalize and transform matrix to torch tensor type
-        adj = adj_tensorlize(adj, is_sparse=True)
-
-        return adj
-
-    def init_node_feat(self, graph):
-        # init graph node features
-        self.nfeat_dim = graph.number_of_nodes()
-
-        row = list(range(self.nfeat_dim))
-        col = list(range(self.nfeat_dim))
-        indices = torch.from_numpy(
-            np.vstack((row, col)).astype(np.int64))
-        values = torch.ones(self.nfeat_dim)
-
-        features = torch.sparse.FloatTensor(indices, values,
-                                            (self.nfeat_dim, self.nfeat_dim))
-        return features
-'''
-
 
 def getScaleClusts(dend,thresh):
     clust_labels = postprocess.cut_straight(dend,threshold=thresh)
@@ -110,7 +39,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
         all_costs: total loss for backpropagation
         all_struct_error: structure errors for each scale
     '''
-    import ipdb ; ipdb.set_trace()
+    #import ipdb ; ipdb.set_trace()
     all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
     true_anoms = 0
     cor_1, cor_2, cor_3 = 0,0,0
@@ -189,7 +118,7 @@ class anom_classifier():
                 accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
         return accs, anom_preds.shape[0]
 
-def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, cluster=False, input_scores=False):
+def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
     '''
     Input:
         scores: anomaly scores for all scales []
@@ -197,7 +126,7 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
         sc_label: array containing scale-wise anomaly node ids
         dataset: dataset string
     '''
-    
+    # anom_clf = MessagePassing(aggr='max')
     anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
     clf = anom_classifier(nu=0.5)
     for sc,sc_score in enumerate(scores):
@@ -207,9 +136,10 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
                 print('not all node anomaly scores calculated for node sampling!')
         else:
             node_scores = np.array([np.mean(i.data) for i in sc_score])
-        
-        # else:
-        #    node_scores=np.array([np.mean(i[np.where(i!=0)]) for i in sc_score])#.todense()])
+
+        # run graph transformer with node score attributes
+        # import ipdb ; ipdb.set_trace()
+        # anom_preds = anom_clf.forward(node_scores,graph.edges())
 
         sorted_errors = np.argsort(-node_scores)
         rev_sorted_errors = np.argsort(node_scores)
@@ -225,6 +155,42 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
         print('scores reverse sorted')
         detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
         print('')
+
+        if clust_inds != None:
+            clust_inds = clust_inds.detach().cpu().numpy()
+            clust_anom1,clust_anom2,clust_anom3=[],[],[]
+            try:
+                for ind,clust in enumerate(clust_inds):
+                    if np.intersect1d(clust,anom_sc1).shape[0] > 0:
+                        clust_anom1.append(ind)
+                    if np.intersect1d(clust,anom_sc2).shape[0] > 0:
+                        clust_anom2.append(ind)
+                    if np.intersect1d(clust,anom_sc3).shape[0] > 0:
+                        clust_anom3.append(ind)
+            except:
+                import ipdb ; ipdb.set_trace()
+                print('what')
+            num_anom_clusts = len(clust_anom1) + len(clust_anom2) + len(clust_anom3)
+            clust_anom_scores = torch.mean(clust_anom_mats[0],dim=1).detach().cpu().numpy()
+            clust_anom_ranks = np.argsort(-clust_anom_scores)
+            rev_clust_anom_ranks = np.argsort(clust_anom_scores)
+            detected_anom_clusts = clust_anom_ranks[:num_anom_clusts]
+            clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
+            clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
+            clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
+            print('detected anomalous clusters')
+            print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
+            print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
+
+            detected_anom_clusts = rev_clust_anom_ranks[:num_anom_clusts]
+            clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
+            clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
+            clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
+            print('reverse sorted ---')
+            print('detected anomalous clusters')
+            print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
+            print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
+
 
         all_anom = [anom_sc1,anom_sc2,anom_sc3]
         all_anom_cat = [np.concatenate((anom_sc1,(np.concatenate((anom_sc2,anom_sc3)))))]
