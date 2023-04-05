@@ -128,7 +128,7 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
             
-    def forward(self,graph):
+    def forward(self,graph,last_batch_node):
         '''
         Input:
             graph: input dgl graph
@@ -137,7 +137,8 @@ class GraphReconstruction(nn.Module):
         '''
         labels = None 
         edges, feats, graph_ = self.process_graph(graph)
-        dst_nodes = graph.dstnodes().detach().cpu().numpy()
+        #dst_nodes = graph.dstnodes().detach().cpu().numpy()
+        dst_nodes = torch.arange(last_batch_node+1)
         if self.model_str in ['dominant','amnet']: #x, e
             recons = [self.conv(feats, edges)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
@@ -155,16 +156,26 @@ class GraphReconstruction(nn.Module):
 
             graph = dgl.block_to_graph(graph)
             #dst_edges=graph.find_edges(dst_nodes)
+            #dst_edges = pos_edges
             #dst_graph = dgl.graph((dst_edges[0],dst_edges[1]))
             #sp_adj = torch.sparse_coo_tensor(torch.vstack((dst_edges[0],dst_edges[1])), torch.ones(dst_edges[0].shape[0]).cuda(), (dst_graph.number_of_nodes(), dst_graph.number_of_nodes()))
-            adj_label_ = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()#.to_sparse()
+            #adj_label_ = sp_adj
+            #adj_label_ = graph.adjacency_matrix().to_dense().cuda()
+            adj_label_ = graph.adjacency_matrix().to_dense().to(graph.device)
             for i in self.module_list:
                 if self.model_str == 'multi-scale-amnet':
                     recons.append(i(feats,edges))
                 elif self.model_str == 'multi-scale-bwgnn':
                     recons.append(i(graph,feats))
-                recons[-1] = recons[-1][graph.dstnodes()][:,graph.dstnodes()]
+                recons[-1] = recons[-1][dst_nodes][:,dst_nodes]#[graph.dstnodes()][:,graph.dstnodes()]
+            #import ipdb ; ipdb.set_trace()
             adj_label = adj_label_
+            #co_adj = adj_label_.coalesce()
+            #sp_idx = co_adj.indices()
+            #sp_vals = co_adj.values()
+            #num_a_edges = sp_idx.shape[-1]
+
+            #triu_idx = torch.triu_indices(adj_label_.shape[0],adj_label_.shape[1],1)
             num_a_edges = torch.triu(adj_label_,1).nonzero().shape[0]
             #for thetas in self.module_list[1].thetas[:-1]: # ignore high freq
             for iter_ in range(3):
@@ -189,6 +200,7 @@ class GraphReconstruction(nn.Module):
                     labels.append(adj_label)
                     adj_label = adj_label@adj_label
                 elif self.label_type == 'single':
+                    #labels.append(sp_adj)
                     labels.append(adj_label)
                 elif self.label_type == 'single_norm':
                     adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
@@ -294,12 +306,12 @@ class GraphReconstruction(nn.Module):
                     adj_label[drop_idx[:,1],drop_idx[:,0]]=0
                 '''
         if self.label_type == 'amnet_filter':
-            
             adj_label = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()
             num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
             K = 5
             bern_coeff =  get_bern_coeff(K)
             labels = []
+            import ipdb ; ipdb.set_trace()
             for k in range(0, K+1):
                 adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
                 adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
@@ -324,13 +336,14 @@ class GraphReconstruction(nn.Module):
             #labels = [adj_label,labels[0],labels[1]]
             #labels = [adj_label,labels[1],labels[3]]
             #labels=[labels[0],labels[2],labels[4]]
-            #labels=[adj_label,labels[0],labels[2]]
-            labels = [labels[2]]
+            labels=[adj_label,labels[0],labels[2]]
+            #labels = [labels[2]]
             #labels = [labels[1],labels[3],labels[5]]
         elif self.label_type == 'bwgnn_filter':
             d=5
             thetas = calculate_theta2(d)
             #labels.append(adj_label)
+            adj_label = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()
             for k in range(d+1):
                 adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
                 adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
@@ -356,9 +369,9 @@ class GraphReconstruction(nn.Module):
 
                 #labels.append(torch.sigmoid(basis))
             #import ipdb ; ipdb.set_trace()
-            #labels = [adj_label,labels[0],labels[1]]
+            labels = [adj_label,labels[0],labels[1]]
             #labels = [labels[3],labels[4],labels[5]]
-            labels = [labels[0],labels[1],labels[2]]
+            #labels = [labels[0],labels[1],labels[2]]
             #labels = [adj_label,labels[1],labels[3]]
             #labels = [labels[1],labels[3],labels[5]]
             #labels = [adj_label,labels[1],labels[3]]
@@ -374,7 +387,8 @@ class GraphReconstruction(nn.Module):
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate']:
             recons = recons[0]
-            recons = [recons[graph.dstnodes()][:,graph.dstnodes()]]
+            #recons = [recons[graph.dstnodes()][:,graph.dstnodes()]]
+            recons = [recons[dst_nodes][:,dst_nodes]]
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
         return recons, labels

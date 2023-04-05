@@ -119,6 +119,19 @@ def graph_anomaly_detection(args):
                     in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
                     pos_edges = sub_graph_pos.edges()
                     neg_edges = sub_graph_neg.edges()
+                    last_batch_node = torch.max(neg_edges[1])
+                    '''
+                    tgt_pos_nodes,tgt_neg_nodes = in_nodes[sub_graph_pos.nodes()],in_nodes[sub_graph_neg.nodes()]
+                    for ind in range(pos_edges[0].shape[0]):
+                        pos_edges[0][ind] = tgt_pos_nodes[pos_edges[0][ind]]
+                        pos_edges[1][ind] = tgt_pos_nodes[pos_edges[1][ind]]
+                        neg_edges[0][ind] = tgt_pos_nodes[neg_edges[0][ind]]
+                        neg_edges[1][ind] = tgt_pos_nodes[neg_edges[1][ind]]
+                    '''
+
+                    #if not torch.equal(tgt_pos_nodes,tgt_neg_nodes):
+                    #    print('not equal')
+                    #    import ipdb ; ipdb.set_trace()
                     g_batch = block[0]
                     '''
                     node_dict = {k.item():v for k,v in zip(g_batch.dstnodes(),np.arange(g_batch.num_dst_nodes()))}
@@ -183,7 +196,7 @@ def graph_anomaly_detection(args):
                 if args.model == 'ho-gat':
                     A_hat,lbl,_ = struct_model(g_batch)
                 elif struct_model:
-                    A_hat,lbl = struct_model(g_batch)
+                    A_hat,lbl = struct_model(g_batch,last_batch_node)
                 if feat_model: # TODO
                     X_hat,lbl = feat_model(g_batch)
                     
@@ -200,8 +213,11 @@ def graph_anomaly_detection(args):
                         loss, struct_loss, feat_cost = loss_func(g_batch, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_train, recons=args.recons)
                     else:
                         loss, struct_loss, feat_cost = loss_func(lbl, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_train, recons=args.recons)
-  
-                l = torch.sum(torch.mean(loss,dim=1))
+                
+                if 'multi-scale' in args.model:
+                    l = torch.sum(torch.mean(loss,dim=1))
+                else:
+                    l = torch.mean(loss)
                 '''
                 if l < best_loss:
                     best_loss = dl
@@ -277,6 +293,7 @@ def graph_anomaly_detection(args):
                 in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
                 pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
+                last_batch_node = torch.max(neg_edges[1])
                 g_batch = block[0]
                 if args.batch_type == 'edge':
                     for i in g_batch.ndata['_ID']['_N']:
@@ -288,7 +305,12 @@ def graph_anomaly_detection(args):
             if args.model == 'ho-gat':
                 A_hat,lbl,clust_ind = struct_model(g_batch)
             elif struct_model:
-                A_hat,lbl = struct_model(g_batch)
+                try:
+                    A_hat,lbl = struct_model(g_batch,last_batch_node)
+                except Exception as e:
+                    print('e')
+                    import ipdb ; ipdb.set_trace()
+                    print('o')
             elif feat_model: # TODO
                 X_hat = feat_model(g_batch)
             else:
@@ -304,7 +326,9 @@ def graph_anomaly_detection(args):
                 neg_edges = torch.vstack((neg_edges[0],neg_edges[1]))
                 edge_ids = torch.cat((pos_edges.T,neg_edges.T)).detach().cpu().numpy().T
                 edge_id_dict = {k.item():v.item() for k,v in zip(torch.arange(node_ids_score.shape[0]),node_ids_score)}
+                rev_id_dict = {v: k for k, v in edge_id_dict.items()}
                 edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
+                #edge_ids = np.vectorize(rev_id_dict.get)(edge_ids)
             elif args.batch_type == 'edge_rw':
                 
                 pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).to(torch.long)
@@ -312,7 +336,12 @@ def graph_anomaly_detection(args):
                 
                 edge_ids = torch.cat((pos_edges.T,neg_edges.T)).detach().cpu().numpy().T
                 edge_id_dict = {k.item():v.item() for k,v in zip(k_,v_)}
-                edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
+                try:
+                    edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
+                except Exception as e:
+                    print(e)
+                    import ipdb ; ipdb.set_trace()
+                    print('.')
                 
                 '''
                 node_ids_score = in_nodes[:block.num_dst_nodes()]
@@ -328,7 +357,11 @@ def graph_anomaly_detection(args):
                 if lbl is None:
                     loss, struct_loss, feat_cost = loss_func(g_batch, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons)
                 else:
-                    loss, struct_loss, feat_cost = loss_func(lbl, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons)
+                    try:
+                        loss, struct_loss, feat_cost = loss_func(lbl, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons)
+                    except:
+                        print('loss here')
+                        import ipdb ; ipdb.set_trace()
             if args.model in ['gradate']:
                 loss = A_hat[0]
                 struct_loss = [A_hat[1]]
