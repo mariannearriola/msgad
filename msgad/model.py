@@ -4,7 +4,9 @@ import numpy as np
 import numpy.linalg as npla
 import sympy
 import math
+import copy
 from numpy import polynomial
+from dgl.nn import EdgeWeightNorm
 
 from torch_geometric.nn import MLP
 from torch_geometric.transforms import GCNNorm
@@ -19,6 +21,22 @@ from models.amnet_ms import *
 from models.gcad import *
 from models.hogat import *
 from models.gradate import *
+
+def edge_index_select(t, query_row, query_col):
+    t_idx = t.indices()
+    row, col, val = t_idx[0],t_idx[1],t.values()
+    row_mask = row == query_row.view(-1, 1)
+    col_mask = col == query_col.view(-1, 1)
+    mask = torch.max(torch.logical_and(row_mask, col_mask), dim=0).values
+    return val[mask],mask.nonzero().flatten()
+
+def neg_edge_index_select(t, query_row, query_col):
+    t = t.coalesce()
+    row, col, val = t.indices()[0],t.indices()[1],t.values()
+    row_mask = row == query_row.view(-1, 1)
+    col_mask = col == query_col.view(-1, 1)
+    mask = torch.max(torch.logical_and(row_mask, col_mask), dim=0).values
+    return val[mask]
 
 def calculate_theta2(d):
     thetas = []
@@ -53,7 +71,7 @@ def degree_vector(G):
     :param G: Input graph.
     :return: Degree vector.
     """
-    return torch.tensor([a for a in sorted(G.out_degrees()[G.dstnodes()], key=lambda a: a.item())]).cuda()
+    return torch.tensor([a for a in sorted(G.out_degrees()[G.dstnodes()], key=lambda a: a.item())]).to(G.device)
 
 class GraphReconstruction(nn.Module):
     def __init__(self, in_size, hidden_size, batch_size, scales, recons, d, model_str, batch_type, act = nn.LeakyReLU(), label_type='single'):
@@ -63,6 +81,7 @@ class GraphReconstruction(nn.Module):
         self.taus = [2,3,0]
         self.b = 1
         self.norm = torch_geometric.nn.conv.gcn_conv.gcn_norm
+        self.norm = EdgeWeightNorm()
         self.d = d
         self.label_type = label_type
         self.recons = recons
@@ -106,7 +125,7 @@ class GraphReconstruction(nn.Module):
             feats = feats['_N']
         return edges, feats, graph
 
-    def stationary_distribution(self, M):
+    def stationary_distribution(self, M, device):
         """
         Stationary distribution given the transition matrix.
         :param M: Transition matrix.
@@ -115,8 +134,8 @@ class GraphReconstruction(nn.Module):
 
         # We solve (M^T - I) pi = 0 and 1 pi = 1. Combine them and let A = [M^T - I; 1], b = [0; 1]. We have A pi = b.
         n = M.shape[0]
-        A = torch.cat([M.T - torch.eye(n).cuda(),torch.ones((1,n)).cuda()],axis=0)
-        b = torch.cat([torch.zeros(n),torch.tensor([1])],axis=0).cuda()
+        A = torch.cat([M.T - torch.eye(n).to(device),torch.ones((1,n)).to(device)],axis=0)
+        b = torch.cat([torch.zeros(n),torch.tensor([1])],axis=0).to(device)
 
         # Solve A^T A pi = A^T pi instead (since A is not square).
         try:
@@ -128,7 +147,7 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
             
-    def forward(self,graph,last_batch_node):
+    def forward(self,graph,last_batch_node,pos_edges,neg_edges):
         '''
         Input:
             graph: input dgl graph
@@ -138,7 +157,7 @@ class GraphReconstruction(nn.Module):
         labels = None 
         edges, feats, graph_ = self.process_graph(graph)
         #dst_nodes = graph.dstnodes().detach().cpu().numpy()
-        dst_nodes = torch.arange(last_batch_node+1)
+        dst_nodes = torch.arange(last_batch_node+1)#.to(graph.device)
         if self.model_str in ['dominant','amnet']: #x, e
             recons = [self.conv(feats, edges)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
@@ -160,16 +179,15 @@ class GraphReconstruction(nn.Module):
             #dst_graph = dgl.graph((dst_edges[0],dst_edges[1]))
             #sp_adj = torch.sparse_coo_tensor(torch.vstack((dst_edges[0],dst_edges[1])), torch.ones(dst_edges[0].shape[0]).cuda(), (dst_graph.number_of_nodes(), dst_graph.number_of_nodes()))
             #adj_label_ = sp_adj
-            #adj_label_ = graph.adjacency_matrix().to_dense().cuda()
             adj_label_ = graph.adjacency_matrix().to_dense().to(graph.device)
             for i in self.module_list:
                 if self.model_str == 'multi-scale-amnet':
                     recons.append(i(feats,edges))
                 elif self.model_str == 'multi-scale-bwgnn':
                     recons.append(i(graph,feats))
-                recons[-1] = recons[-1][dst_nodes][:,dst_nodes]#[graph.dstnodes()][:,graph.dstnodes()]
+                #recons[-1] = recons[-1][dst_nodes][:,dst_nodes]#[graph.dstnodes()][:,graph.dstnodes()]
             #import ipdb ; ipdb.set_trace()
-            adj_label = adj_label_
+            #adj_label = adj_label_
             #co_adj = adj_label_.coalesce()
             #sp_idx = co_adj.indices()
             #sp_vals = co_adj.values()
@@ -274,7 +292,7 @@ class GraphReconstruction(nn.Module):
                     A = adj_label
                     M = torch.matmul(D_1, A)
 
-                    pi = self.stationary_distribution(M)
+                    pi = self.stationary_distribution(M,graph.device)
                     Pi = np.diag(pi)
                     M_tau = np.linalg.matrix_power(adj_label.detach().cpu().numpy(), self.taus[len(labels)-1])
     
@@ -285,65 +303,67 @@ class GraphReconstruction(nn.Module):
                     R[np.isinf(R)] = np.inf
                     R[np.isinf(R)] = R.min()
                     res = torch.tensor(R).to(graph.device)
-                '''
-                elif self.label_type == 'sample_prods_norm_first':
-                    if len(labels) == 0:
-                        adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
-                        adj_label[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
-                    else:
-                        adj_label_norm = adj_label.nonzero().contiguous().T
-                        adj_label[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
-
-                    labels.append(adj_label)
-                    
-                    adj_label = adj_label@adj_label
-                    top_edges = torch.argsort(adj_label)
-                    upper_tri=torch.triu(adj_label,1)
-                    nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
-                    sorted_idx = torch.argsort(-nz)
-                    drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
-                    adj_label[drop_idx[:,0],drop_idx[:,1]]=0
-                    adj_label[drop_idx[:,1],drop_idx[:,0]]=0
-                '''
         if self.label_type == 'amnet_filter':
-            adj_label = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()
-            num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
+            all_edges = torch.vstack((pos_edges,neg_edges))
+            #print('getting label')
             K = 5
             bern_coeff =  get_bern_coeff(K)
             labels = []
-            import ipdb ; ipdb.set_trace()
-            for k in range(0, K+1):
-                adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
-                adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
-                adj_label_[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
-                coeff = bern_coeff[k]
-                basis = adj_label_ * coeff[0]
-                for i in range(1, K+1):
-                    adj_label_ = adj_label_@adj_label_
-                    basis += adj_label_ * coeff[i]
+            prods = []
+            prod_graphs = []
+            
+            g= dgl.graph(graph.edges()).cpu()
+            g.edata['w'] = self.norm(graph,graph.edata['w']).cpu()
+            
+            for k in range(0,K+1):
+               prod_graph=dgl.khop_in_subgraph(g, dst_nodes, k=k+1)[0].cpu()
+               prod_graphs.append(prod_graph)
 
-                top_edges = torch.argsort(basis)
-                upper_tri=torch.triu(basis,1)
-                nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
-                sorted_idx = torch.argsort(-nz)
-                drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
-                basis[drop_idx[:,0],drop_idx[:,1]]=0
-                basis[drop_idx[:,1],drop_idx[:,0]]=0
-                basis[torch.where(basis!=0)[0],torch.where(basis!=0)[1]]=1
+            full_e = torch.zeros(prod_graphs[-1].num_edges())
+            full_eids = prod_graphs[-1].edata['_ID']
+
+            basis_ = dgl.khop_in_subgraph(g, dst_nodes, k=0)[0]#.adjacency_matrix()
+
+            basis_ = g.edge_subgraph(basis_.edata['_ID'],relabel_nodes=False)
+
+            basis_.edata['w']=torch.ceil(basis_.edata['w'])
+            labels.append(basis_)
+            for k in range(0, K+1):
+                coeff = bern_coeff[k]
+                edata = (basis_.edata['w'] * coeff[0])
+                basis = copy.deepcopy(basis_)
+                basis.edata['w'] = edata
+                for i in range(1, K+1):
+                    prod_graph = g.edge_subgraph(prod_graphs[i].edata['_ID'],relabel_nodes=False)
+                    prod_graph.edata['w']*=coeff[i]
+                    basis = dgl.adj_sum_graph([prod_graph,basis],'w')
+
+                #drop_edges = torch.argsort(-basis.edata['w'])[num_a_edges:]
+                #import ipdb ; ipdb.set_trace()
+                #basis = dgl.remove_edges(basis,drop_edges)
+                basis.edata['w']=torch.sigmoid(basis.edata['w'])
+               
+                labels_edges=basis.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
+                labels_pos_eids=basis.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
+                labels_edges[torch.where(labels_edges!=0)[0]] = basis.edata['w'][labels_pos_eids]
+ 
                 labels.append(basis)
-                #labels.append(torch.sigmoid(basis))
-            #import ipdb ; ipdb.set_trace()
-            #labels = [adj_label,labels[0],labels[1]]
-            #labels = [adj_label,labels[1],labels[3]]
-            #labels=[labels[0],labels[2],labels[4]]
-            labels=[adj_label,labels[0],labels[2]]
-            #labels = [labels[2]]
-            #labels = [labels[1],labels[3],labels[5]]
+                
+            label_idx=[0,1,3]
+            label_edges = []
+            for label_id in label_idx:
+                label_edge=labels[label_id].has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
+                labels_pos_eids=labels[label_id].edge_ids(all_edges[:,0].cpu()[label_edge.nonzero()].flatten(),all_edges[:,1].cpu()[label_edge.nonzero()].flatten())
+                label_edge[torch.where(label_edge!=0)[0]] = labels[label_id].edata['w'][labels_pos_eids]
+                label_edges.append(label_edge.to(graph.device))
+            labels = label_edges
+            #print('fetched')
+
         elif self.label_type == 'bwgnn_filter':
             d=5
             thetas = calculate_theta2(d)
             #labels.append(adj_label)
-            adj_label = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()
+            adj_label = graph.adjacency_matrix().to_dense().to(graph.device)#[dst_nodes].to(graph.device)
             for k in range(d+1):
                 adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
                 adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
@@ -354,7 +374,7 @@ class GraphReconstruction(nn.Module):
                 for i in range(d+1):
                     adj_label_ = adj_label_@adj_label_
                     basis += adj_label_*coeff[i]
-
+                '''
                 # getting top edges from sparse adj:
                 # just sort idx by vals, select top k
                 top_edges = torch.argsort(basis)
@@ -365,6 +385,7 @@ class GraphReconstruction(nn.Module):
                 basis[drop_idx[:,0],drop_idx[:,1]]=0
                 basis[drop_idx[:,1],drop_idx[:,0]]=0
                 basis[torch.where(basis!=0)[0],torch.where(basis!=0)[1]]=1
+                '''
                 labels.append(basis)
 
                 #labels.append(torch.sigmoid(basis))

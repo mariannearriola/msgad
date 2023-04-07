@@ -242,6 +242,8 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         anom_sc1,anom_sc2,anom_sc3 = sc_label[0][0],sc_label[1][0],sc_label[2][0]
     elif 'cora' in dataset:
         anom_sc1,anom_sc2,anom_sc3=sc_label[0]
+    elif 'yelpchi' in dataset:
+        anom_sc1,anom_sc2,anom_sc3=sc_label[0]
 
     sc_label = [anom_sc1,anom_sc2,anom_sc3]
  

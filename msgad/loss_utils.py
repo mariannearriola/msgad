@@ -1,6 +1,5 @@
 import torch
 
-
 def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
     """
     Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction
@@ -36,9 +35,9 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
     all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
     struct_error,feat_error=None,None
     if not pos_edges == None:
-        pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
-        neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
-        edge_ids = torch.cat((pos_edges,neg_edges))
+        #pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
+        #neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
+        edge_ids = torch.vstack((pos_edges,neg_edges))
         if type(graph) != list:
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
@@ -50,11 +49,15 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
             # structure loss
             if recons_ind == 0:
                 if sample:
+                    
                     # collect loss for selected positive/negative edges. adjacency not used
                     if type(graph) == list:
-                        edge_labels = torch.round(graph[inds_label[ind]].cuda()[edge_ids[:,0],edge_ids[:,1]])
-                    #import ipdb ; ipdb.set_trace()
+                        #edge_labels = torch.round(graph[inds_label[ind]][edge_ids[:,0],edge_ids[:,1]])
+                        #import ipdb; ipdb.set_trace()
+                        edge_labels = graph[inds_label[ind]]
+
                     total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
+  
                 else:
                     # collect loss for all edges/non-edges in reconstruction
                     if type(graph) != list:
@@ -68,10 +71,10 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
                                 adj_label = graph
                                 num_nodes = adj_label.shape[0]
                             else:
-                                adj_label = graph.adjacency_matrix().to_dense().cuda()
+                                adj_label = graph.adjacency_matrix().to_dense().to(graph.device)
                                 num_nodes = graph.num_dst_nodes()
                     else:
-                        adj_label = graph[inds_label[ind]].cuda()
+                        adj_label = graph[inds_label[ind]].to(graph.device)
                         
                     edge_struct_errors = torch.pow(sc_pred - adj_label, 2)
                     total_struct_error = torch.mean(torch.sqrt(torch.sum(edge_struct_errors,1)))
@@ -118,4 +121,6 @@ def get_sampled_losses(pred,edges,label):
     edge_errors = torch.pow(torch.abs(edge_errors-label),2)
     epsilon = 1e-8
     total_error = torch.sqrt(edge_errors+epsilon)
+    #edge_errors = edge_errors-label
+    #total_error = edge_errors
     return total_error, edge_errors
