@@ -35,8 +35,6 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
     all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
     struct_error,feat_error=None,None
     if not pos_edges == None:
-        #pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
-        #neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
         edge_ids = torch.vstack((pos_edges,neg_edges))
         if type(graph) != list:
             feat = graph.ndata['feature']
