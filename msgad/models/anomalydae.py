@@ -338,8 +338,8 @@ class AnomalyDAE_Base(nn.Module):
         #                                dropout,
         #                                act)
 
-    def forward(self, x, edge_index, batch_size):
-        s_, h = self.structure_ae(x, edge_index)
+    def forward(self, x, edge_index, batch_size, dst_nodes):
+        s_, h = self.structure_ae(x, edge_index, dst_nodes)
         #if batch_size < self.num_center_nodes:
         #    x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
         return s_, s_
@@ -390,15 +390,15 @@ class StructureAE(nn.Module):
         self.dropout = dropout
         self.act = act
 
-    def forward(self, x_, edge_index):
+    def forward(self, x_, edge_index, dst_nodes):
         # encoder
         x = self.act(self.dense(x_))
-        #x = F.dropout(x, self.dropout)
-        h = self.attention_layer(x, edge_index)
+        x = F.dropout(x, self.dropout)
+        h = self.attention_layer(x, edge_index)[dst_nodes]
         # decoder
         # NOTE: removed because of loss formulation, results in nan feat transformer weights
-        #s_ = torch.sigmoid(h @ h.T)
-        s_ = h @ h.T
+        s_ = torch.sigmoid(h @ h.T)
+        #s_ = h @ h.T
 
         if True in torch.isnan(s_):
             import ipdb ; ipdb.set_trace()

@@ -306,15 +306,17 @@ class DOMINANT_Base(nn.Module):
         #self.struct_decoder = GATConv(hid_dim, hid_dim)
 
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, dst_nodes):
         # encode
         h = self.dense(x)
-        h_ = self.shared_encoder(h, edge_index)
+        h_ = self.shared_encoder(h, edge_index)[dst_nodes]#[:,dst_nodes]
         # decode feature matrix
         #x_ = self.attr_decoder(h, edge_index)
         # decode adjacency matrix
         #h_ = self.struct_decoder(h, edge_index)
-        s_ = torch.sigmoid(h_ @ h_.T)
+        #s_ = torch.sigmoid(h_ @ h_.T)
+        #import ipdb ; ipdb.set_trace()
+        s_ = torch.tanh(h_ @ h_.T)
         x_ = s_
         # return reconstructed matrices
         return x_, s_

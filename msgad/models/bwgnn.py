@@ -43,7 +43,7 @@ class BWGNN(nn.Module):
         self.act = nn.LeakyReLU()
         self.d = d
         
-    def forward(self, graph, in_feat):
+    def forward(self, graph, in_feat, dst_nodes):
         #graph = dgl.block_to_graph(graph)
         #graph.add_edges(graph.dstnodes(),graph.dstnodes())
         h = self.linear(in_feat)
@@ -58,7 +58,7 @@ class BWGNN(nn.Module):
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
             
-        x = self.linear3(all_h)
+        x = self.linear3(all_h)[dst_nodes]
         x = x@x.T
         #x = torch.mm(x,torch.transpose(x,0,1))
         #x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
@@ -93,6 +93,10 @@ class PolyConv(nn.Module):
 
             # message pass src -> dst
             graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
+
+            #graph.dstdata['self'] = h_dst * D_invsqrt[graph.dstnodes()]
+            # message pass src -> dst
+            #graph.update_all(fn.copy_u('self','m'), fn.sum('m','self'))
 
             # are srcs updated in message passing? read tutorials
             return h_dst - graph.dstdata.pop('h') * D_invsqrt[graph.dstnodes()]

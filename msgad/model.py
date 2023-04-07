@@ -154,34 +154,36 @@ class GraphReconstruction(nn.Module):
         Output:
             recons: scale-wise adjacency reconstructions
         '''
-        labels = None 
+        labels = None
+        if self.model_str != 'bwgnn':
+            graph.add_edges(graph.dstnodes(),graph.dstnodes())
+            needs_edges = graph.has_edges_between(pos_edges[:,0],pos_edges[:,1]).int().nonzero()
+            graph.add_edges(pos_edges[:,0][needs_edges.T[0]][0],pos_edges[:,1][needs_edges.T[0]])
         edges, feats, graph_ = self.process_graph(graph)
         all_edges = torch.vstack((pos_edges,neg_edges))
-        #dst_nodes = graph.dstnodes().detach().cpu().numpy()
-        dst_nodes = torch.arange(last_batch_node+1)#.to(graph.device)
+        dst_nodes = torch.arange(last_batch_node+1)
         if self.model_str in ['dominant','amnet']: #x, e
-            recons = [self.conv(feats, edges)]
+            recons = [self.conv(feats, edges, dst_nodes)]
+            
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
-            recons = [self.conv(feats, edges, 0)]
+            recons = [self.conv(feats, edges, 0, dst_nodes)]
         elif self.model_str in ['gradate']: # adjacency matrix
             loss, ano_score = self.conv(graph_, graph_.adjacency_matrix(), feats, False)
             #import ipdb ; ipdb.set_trace()
-        elif self.model_str in ['ho-gat']: # x, adj
-            recons = [self.conv(feats, graph_)]
         if self.model_str == 'bwgnn':
-            recons = [self.conv(graph,feats)]
+            recons = [self.conv(graph_,feats,dst_nodes)]
         elif 'multi-scale' in self.model_str: # g
             recons,labels = [],[]
-            graph = dgl.block_to_graph(graph)
             for i in self.module_list:
                 if self.model_str == 'multi-scale-amnet':
-                    recons.append(i(feats,edges))
+                    recons.append(i(feats,edges,dst_nodes))
                 elif self.model_str == 'multi-scale-bwgnn':
-                    recons.append(i(graph,feats))
+                    recons.append(i(graph,feats,dst_nodes))
 
             # collect multi-scale labels
             g = dgl.graph(graph.edges()).cpu()
-            g.edata['w'] = graph.edata['w'].cpu() ; g.edata['_ID'] = graph.edata['_ID'].cpu()
+            g.edata['_ID'] = graph.edata['_ID'].cpu()
+            g.edata['w'] = torch.full(g.edata['_ID'].shape,1.)
             num_a_edges = g.num_edges()
 
             if 'norm' in self.label_type:
@@ -209,33 +211,16 @@ class GraphReconstruction(nn.Module):
                     label_edge[torch.where(label_edge!=0)[0]] = labels[label_id].edata['w'][labels_pos_eids]
 
                     label_edges.append(label_edge.to(graph.device))
-        
+                import ipdb ; ipdb.set_trace()
                 labels = label_edges
             elif self.label_type == 'single':
                 labels = []
+                edges = graph.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
+                labels_pos_eids=graph.edge_ids(all_edges[:,0].cpu()[edges.nonzero()].flatten(),all_edges[:,1].cpu()[edges.nonzero()].flatten())
+                edges[torch.where(edges!=0)[0]] = graph.edata['w'][labels_pos_eids]
                 for k in range(3):
-                    labels.append(adj_label)
-            elif self.label_type == 'random_walk':
-                if len(labels) == 0:
-                    labels.append(adj_label)
-                else:
-                    labels.append(res)
+                    labels.append(edges.to(graph.device))
 
-                D_1 = torch.diag(1 / degree_vector(graph))
-                A = adj_label
-                M = torch.matmul(D_1, A)
-
-                pi = self.stationary_distribution(M,graph.device)
-                Pi = np.diag(pi)
-                M_tau = np.linalg.matrix_power(adj_label.detach().cpu().numpy(), self.taus[len(labels)-1])
-
-                R = np.log(Pi @ M_tau/self.b) - np.log(np.outer(pi, pi))
-                R = R.copy()
-                # Replace nan with 0 and negative infinity with min value in the matrix.
-                R[np.isnan(R)] = 0
-                R[np.isinf(R)] = np.inf
-                R[np.isinf(R)] = R.min()
-                res = torch.tensor(R).to(graph.device)
         if 'filter' in self.label_type:   
             K = 5
             if 'amnet' in self.label_type:
@@ -250,8 +235,10 @@ class GraphReconstruction(nn.Module):
             prod_adjs = []
             
             g= dgl.graph(graph.edges()).cpu()
+            g.edata['w'] = torch.full(graph.edges()[0].shape,1.)
             epsilon = 1e-8
-            g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
+            g.edata['w'] = self.norm(g,(g.edata['w']+epsilon)).cpu()
+            #g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
 
             for k in range(0,K+1):
                prod_graph=dgl.khop_out_subgraph(g, dst_nodes, k=k+1)[0].cpu()
@@ -274,7 +261,6 @@ class GraphReconstruction(nn.Module):
                     prod_graph = prod_graphs[i]
                     prod_graph.edata['w']*=coeff[i]
                     basis = dgl.adj_sum_graph([prod_graph,basis],'w')
-
                 if 'sample' in self.label_type:
                     drop_edges = torch.argsort(-basis.edata['w'])[num_a_edges:]
                     basis = dgl.remove_edges(basis,drop_edges)
@@ -297,7 +283,13 @@ class GraphReconstruction(nn.Module):
                 label_edges.append(label_edge.to(graph.device))
     
             labels = label_edges
-
+        # single scale reconstruction label
+        if 'multi-scale' not in self.model_str:
+            edges = graph.has_edges_between(all_edges[:,0],all_edges[:,1]).float()
+            #labels_pos_eids=graph.edge_ids(all_edges[:,0][edges.nonzero()].flatten(),all_edges[:,1][edges.nonzero()].flatten())
+            #edges[torch.where(edges!=0)[0]] = 1.#graph.edata['w'][labels_pos_eids]
+            labels = [edges]
+            
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:
             recons_ind = 0 if self.recons == 'feat' else 1

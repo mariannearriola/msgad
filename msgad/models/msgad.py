@@ -39,38 +39,37 @@ class MSGAD(nn.Module):
         self.conv = []
         for i in range(len(self.thetas)): # exclude high pass
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
-        self.linear = nn.Linear(in_dim, h_dim)
+        self.linear = nn.Linear(in_dim, h_dim*2)
+        self.linear2 = nn.Linear(h_dim*2, h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
         self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
         self.relu = torch.nn.ReLU()
         
-    def forward(self, graph, in_feat):
+    def forward(self, graph, in_feat, dst_nodes):
+        dst_nodes = graph.dstnodes()
         if graph.is_block: graph = dgl.block_to_graph(graph)
-
         # add self-loop
         graph.add_edges(graph.dstnodes(),graph.dstnodes())
 
         # feature transformer
         h = self.linear(in_feat)
         h = self.act(h)
+        h = self.linear2(h)
+        h = self.act(h)
         
-        # scale-wise embeddings via multi-frequency graph wavelet
-        all_h = []
+        # scale-wise embeddings via multi-frequency graph wavelet        
         for ind,conv in enumerate(self.conv):
             h0 = conv(graph, h)
-            all_h.append(h0)
-    
-        # learned linear combo of multi-frequency embeddings
-        recons = torch.sigmoid(self.lam[0])*all_h[0]
-        for ind,x in enumerate(all_h[1:]):
-            recons += torch.sigmoid(self.lam[ind])*x
+            if ind == 0:
+                all_h = torch.sigmoid(self.lam[0])*h0
+            else:
+                all_h += torch.sigmoid(self.lam[ind])*h0
 
         # inner-product decoder
-        #recons = torch.mm(recons,torch.transpose(recons,0,1))
-        recons = recons@recons.T
-        #return recons
-        return torch.sigmoid(recons)
+        all_h = all_h[dst_nodes]
+        recons = all_h@all_h.T
+        return recons
 
 class PolyConv(nn.Module):
     def __init__(self,
@@ -107,20 +106,10 @@ class PolyConv(nn.Module):
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(
                 min=1), -0.5).unsqueeze(-1).to(feat.device)
             h = self._theta[0]*feat[graph.dstnodes()]
-        
-            #n,m=h.shape
-            #thr = (math.sqrt(2 * math.log(n)) / math.sqrt(n) * 1) * torch.unsqueeze(torch.tensor(self._theta[0]), dim=0).repeat(m)
-            #h = torch.mul(torch.sign(h), (((torch.abs(h) - thr.cuda()) + torch.abs(torch.abs(h) - thr.cuda())) / 2))
-            
-            # add self loop to dst nodes ?
+
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
                 h += self._theta[k]*feat[graph.dstnodes()]
-            # SHRINKAGE
-            #n,m=h.shape
-            #thr = (math.sqrt(2 * math.log(n)) / math.sqrt(n) * sigma) * torch.unsqueeze(scale, dim=0).repeat(m)
-            # self.threshold = (math.sqrt(2*math.log(h.shape)))
-            # = torch.mul(torch.sign(x), (((torch.abs(x) - self.threshold) + torch.abs(torch.abs(x) - self.threshold)) / 2))
 
         return h
 

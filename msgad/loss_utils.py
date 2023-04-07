@@ -40,7 +40,7 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
             edge_labels = edge_labels.to(graph.device)
-    inds_label = [0,1,2]
+  
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
         for ind, sc_pred in enumerate(preds):
@@ -52,7 +52,7 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
                     if type(graph) == list:
                         #edge_labels = torch.round(graph[inds_label[ind]][edge_ids[:,0],edge_ids[:,1]])
                         #import ipdb; ipdb.set_trace()
-                        edge_labels = graph[inds_label[ind]]
+                        edge_labels = graph[ind]
 
                     total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
   
@@ -72,7 +72,7 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
                                 adj_label = graph.adjacency_matrix().to_dense().to(graph.device)
                                 num_nodes = graph.num_dst_nodes()
                     else:
-                        adj_label = graph[inds_label[ind]].to(graph.device)
+                        adj_label = graph[ind].to(pos_edges.device)
                         
                     edge_struct_errors = torch.pow(sc_pred - adj_label, 2)
                     total_struct_error = torch.mean(torch.sqrt(torch.sum(edge_struct_errors,1)))

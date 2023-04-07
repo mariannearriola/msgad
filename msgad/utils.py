@@ -19,8 +19,6 @@ def getScaleClusts(dend,thresh):
     return clust_labels
 
 def flatten_label(anoms):
-    #if ...:
-    
     flattened_anoms = []
     for anom_sc in anoms:
         for ind,i in enumerate(anom_sc):
@@ -39,7 +37,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
         all_costs: total loss for backpropagation
         all_struct_error: structure errors for each scale
     '''
-    #import ipdb ; ipdb.set_trace()
+    
     all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
     true_anoms = 0
     cor_1, cor_2, cor_3 = 0,0,0
@@ -53,7 +51,9 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
             cor_2 += 1
         if error in anom_sc3:
             cor_3 += 1
+    prec1,prec2,prec3,prec_all=cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0],true_anoms/all_anom.shape[0]
     print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, total: {true_anoms}')
+    print(f'prec1: {prec1*100}, prec2: {prec2*100}, prec3: {prec3*100}, total_prec: {prec_all*100}')
     
     return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
     
@@ -228,8 +228,12 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         feats = torch.FloatTensor(data_mat['Attributes'].toarray())
     else:
         feats = torch.FloatTensor(data_mat['Attributes'])
+    adj,edge_idx=None,None
+    if 'Edge-index' in data_mat.keys():
+        edge_idx = data_mat['Edge-index']
+    elif 'Network' in data_mat.keys():
+        adj = data_mat['Network']
 
-    adj = data_mat['Network']
     truth = data_mat['Label'].flatten()
 
     sc_label = data_mat['scale_anomaly_label']
@@ -244,10 +248,12 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         anom_sc1,anom_sc2,anom_sc3=sc_label[0]
     elif 'yelpchi' in dataset:
         anom_sc1,anom_sc2,anom_sc3=sc_label[0]
+    elif 'elliptic' in dataset:
+        anom_sc1,anom_sc2,anom_sc3=sc_label[0][0][0],sc_label[0][1][0],sc_label[0][2][0]
 
     sc_label = [anom_sc1,anom_sc2,anom_sc3]
  
-    return adj, feats, truth, sc_label
+    return adj, edge_idx, feats, truth, sc_label
 
 def normalize_adj(adj):
     """Symmetrically normalize adjacency matrix."""

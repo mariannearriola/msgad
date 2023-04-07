@@ -34,16 +34,20 @@ def graph_anomaly_detection(args):
 
     # initialize data loading
     if args.batch_type == 'edge':
+        #sampler = dgl.dataloading.NeighborSampler([50,50,50])
         if args.dataset in ['weibo','tfinance','yelpchi']:
-            sampler = dgl.dataloading.NeighborSampler([2,2,2])
+            sampler = dgl.dataloading.NeighborSampler([50,50,50])
         else:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
-        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
+        # sample 2x the number of negative edges from positive edges (marginal?)
+        neg_sampler = dgl.dataloading.negative_sampler.Uniform(2)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
-        if adj is not None:
+        if sp_adj is not None:
             edges=adj.edges('eid')
-        if edge_idx is not None:
-            edges=edge_idx
+        elif edge_idx is not None:
+            adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feats.shape[0])
+            adj.ndata['feature'] = feats
+            edges = adj.edges('eid')
         batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_edges()
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)#,pin_prefetcher=True)
@@ -84,6 +88,7 @@ def graph_anomaly_detection(args):
     if args.device == 'cuda':
         device = torch.device(args.device)
         adj = adj.to(device)
+        #import ipdb ; ipdb.set_trace()
         if struct_model:
             struct_model = struct_model.to(args.device) ; struct_model.train()
         if feat_model:
@@ -123,9 +128,11 @@ def graph_anomaly_detection(args):
                     neg_edges = sub_graph_neg.edges()
                     pos_edges=torch.vstack((pos_edges[0],pos_edges[1])).T
                     neg_edges=torch.vstack((neg_edges[0],neg_edges[1])).T
-                    last_batch_node = torch.max(neg_edges[1])
+                    last_batch_node = torch.max(neg_edges)
+                    # TODO: ISSUE IS THAT LARGER GRAPHS W DATA LAOIDNG SETTING
+                    # DONT HAVE FULL EDGES. NEED TO INJECT
                     g_batch = block[0]
-
+                    #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
                     
                 if args.model == 'madan':
                     if args.debug:
@@ -212,11 +219,8 @@ def graph_anomaly_detection(args):
             print("Seconds since epoch =", (time.time()-seconds)/60)
             seconds = time.time()
 
-        #num_nonzeros=[]
-        #for sc, sc_pred in enumerate(A_hat):
-        #    num_nonzeros.append(round((torch.where(sc_pred < 0.5)[0].shape[0])/(sc_pred.shape[0]**2),2))
         if args.model != 'madan':
-            print("Epoch:", '%04d' % (epoch), "train_loss=", round(l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())#, "Non-edges:",num_nonzeros)
+            print("Epoch:", '%04d' % (epoch), "train_loss=", round(l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())
 
     print('best loss:', best_loss)
     
@@ -243,12 +247,14 @@ def graph_anomaly_detection(args):
     with dataloader.enable_cpu_affinity():
         for loaded_input in dataloader:
             # collect input
+            
             if args.batch_type == 'node':
                 all_nodes,in_nodes,g_batch=loaded_input
+                '''
                 for i in g_batch.ndata['_ID']:
                     if i not in all_samps:
                         all_samps.append(i)
-                
+                '''
             elif args.batch_type == 'edge_rw':
                 in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
                 g_batch = block
@@ -261,13 +267,19 @@ def graph_anomaly_detection(args):
                 pos_edges=torch.vstack((pos_edges[0],pos_edges[1])).T
                 neg_edges=torch.vstack((neg_edges[0],neg_edges[1])).T
 
-                last_batch_node = torch.max(neg_edges[1])
+                last_batch_node = torch.max(neg_edges)
                 g_batch = block[0]
+                #g_batch = dgl.block_to_graph(g_batch)
+
+                #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
+                #g_batch.add_edges(neg_edges[:,0],neg_edges[:,1])
+                '''
                 if args.batch_type == 'edge':
-                    for i in g_batch.ndata['_ID']['_N']:
+                    import ipdb ; ipdb.set_trace()
+                    for i in g_batch.ndata['_ID']:#['_N']:
                         if i.item() not in all_samps:
                             all_samps.append(i.item())
-
+                '''
                 k_,v_=torch.arange(g_batch.number_of_nodes()),g_batch.ndata['_ID']
             
             # run evaluation
@@ -287,7 +299,7 @@ def graph_anomaly_detection(args):
                 node_ids_score = in_nodes[:block[0].num_dst_nodes()]
                 edge_ids = torch.cat((pos_edges,neg_edges)).detach().cpu().numpy().T
                 edge_id_dict = {k.item():v.item() for k,v in zip(torch.arange(node_ids_score.shape[0]),node_ids_score)}
-                rev_id_dict = {v: k for k, v in edge_id_dict.items()}
+                #rev_id_dict = {v: k for k, v in edge_id_dict.items()}
                 edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
                 #edge_ids = np.vectorize(rev_id_dict.get)(edge_ids)
             elif args.batch_type == 'edge_rw':
