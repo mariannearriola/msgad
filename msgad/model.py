@@ -186,6 +186,7 @@ class GraphReconstruction(nn.Module):
             g.edata['_ID'] = graph.edata['_ID'].cpu()
             g.edata['w'] = torch.full(g.edata['_ID'].shape,1.)
             num_a_edges = g.num_edges()
+
             if not self.dataload:
                 if 'norm' in self.label_type:
                     g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
@@ -232,6 +233,8 @@ class GraphReconstruction(nn.Module):
                     node_dict = {k:v.item() for k,v in zip(list(nx_graph.nodes),node_ids)}
                     labels = []
                     full_labels = [torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device),torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device),torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device)]
+                    #import ipdb ; ipdb.set_trace()
+                    labels.append(graph.adjacency_matrix().to_dense())
                     for connected_graph_nodes in connected_graphs:
                         subgraph = dgl.from_networkx(nx_graph.subgraph(connected_graph_nodes))
                         nodes_sel = [node_dict[j] for j in list(connected_graph_nodes)]
@@ -270,7 +273,7 @@ class GraphReconstruction(nn.Module):
                     num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
                     labels = []
                     for k in range(0, K+1):
-                        adj_label_norm = self.norm(adj_label.nonzero().contiguous().T)
+                        adj_label_norm = self.norm_adj(adj_label.nonzero().contiguous().T)
                         adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
                         adj_label_[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
                         coeff = coeffs[k]
@@ -349,6 +352,8 @@ class GraphReconstruction(nn.Module):
     
             labels = label_edges
             '''
+        elif not self.dataload:
+            labels = [graph.adjacency_matrix().to_dense().to(graph.device)]
         # single scale reconstruction label
         '''
         if 'multi-scale' not in self.model_str:

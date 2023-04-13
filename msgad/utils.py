@@ -65,7 +65,14 @@ def init_model(feat_size,args):
 
 def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
-        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
+        #sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
+        if args.dataset == 'tfinance':
+            num_neighbors = 100
+            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
+        elif args.dataset in ['weibo','cora_triple_sc_all']:
+            #num_neighbors = 1000
+            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
+
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
@@ -102,11 +109,12 @@ def get_edge_batch(loaded_input):
     pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
     neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
     last_batch_node = torch.max(neg_edges)
-    g_batch = block[0]
+    g_batch = block
     return in_nodes, pos_edges, neg_edges, g_batch, last_batch_node
 
 def save_batch(loaded_input,lbl,iter,setting,args):
     loaded_input[0] = loaded_input[0].to_sparse()
+    loaded_input[-1] = loaded_input[-1][0]
     if args.datadir is not None and args.datasave:
         dirpath = f'{args.datadir}/{args.dataset}/{setting}'
         if not os.path.exists(dirpath):
@@ -121,7 +129,7 @@ def load_batch(iter,setting,args):
     loaded_input = batch_dict['loaded_input']
     lbl = batch_dict['label']
     loaded_input[0] = loaded_input[0].to_dense()
-    lbl = [lbl.to_dense() for l in lbl]
+    lbl = [l.to_dense() for l in lbl]
     return loaded_input,lbl
 
 def getScaleClusts(dend,thresh):

@@ -38,8 +38,8 @@ def graph_anomaly_detection(args):
         adj.ndata['feature'] = feats
     edges=adj.edges('eid')
 
-    if args.datadir is not None and args.dataload:
-        dataloader = range(len(os.listdir(f'{args.datadir}/{args.dataset}/train')))
+    if args.dataload:
+        dataloader = np.arange(len(os.listdir(f'{args.datadir}/{args.dataset}/train')))
     else:
         dataloader = fetch_dataloader(adj, edges, args)
     print('sample train',args.sample_train,'sample test',args.sample_test)
@@ -58,7 +58,7 @@ def graph_anomaly_detection(args):
     seconds = time.time()
     for epoch in range(args.epoch):
         if epoch > 0:
-            dataloader = random.shuffle(dataloader)
+            random.shuffle(dataloader)
         if args.model == 'gcad': break
         iter=0
         for data_ind in dataloader:
@@ -76,6 +76,8 @@ def graph_anomaly_detection(args):
             else:
                 in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
                 #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
+                if args.datasave:
+                    g_batch = g_batch[0]
             
             if args.model == 'madan':
                 if args.debug:
@@ -127,9 +129,10 @@ def graph_anomaly_detection(args):
             optimizer.zero_grad()
     
             if struct_model:
-                A_hat,lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
-            if feat_model: # TODO
-                X_hat,lbl = feat_model(g_batch)
+                A_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
+                if args.datasave:
+                    lbl = model_lbl
+
             #print('alcing loss')
             if args.batch_type == 'node':
                 if args.model == 'gradate':
@@ -189,7 +192,7 @@ def graph_anomaly_detection(args):
         node_anom_mats.append(np.full((adj.number_of_nodes(),),-1.))
     all_samps = []
     if args.datadir is not None and args.dataload:
-        dataloader = random.shuffle(dataloader)
+        random.shuffle(dataloader)
     else:
         dataloader = fetch_dataloader(adj, edges, args)
 
@@ -207,11 +210,15 @@ def graph_anomaly_detection(args):
             neg_edges = sub_graph_neg.edges()
         else:
             in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
+            if args.datasave:
+                g_batch = g_batch[0]
             #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
     
         # run evaluation
         if struct_model and args.model != 'gcad':
-            A_hat,lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
+            A_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
+            if args.datasave:
+                lbl = model_lbl
         if args.model == 'gcad':
             adj_ = g_batch.adjacency_matrix() 
             adj_=adj_.sparse_resize_((g_batch.num_src_nodes(),g_batch.num_src_nodes()), adj_.sparse_dim(),adj_.dense_dim())
@@ -279,9 +286,9 @@ def graph_anomaly_detection(args):
         print('feat scores')
         detect_anomalies(feat_scores, truth, sc_label, args.dataset)
     
-    if args.debug:
-        print('finished, ready to debug')
-        import ipdb ; ipdb.set_trace()
+    #if args.debug:
+    #    print('finished, ready to debug')
+    #    import ipdb ; ipdb.set_trace()
     for i in struct_model.module_list:
         print(torch.sigmoid(i.lam))
 

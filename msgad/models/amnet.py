@@ -189,7 +189,10 @@ class AMNet(nn.Module):
             print('nan')
 
         # ADAPT TO RECONSTRUCTION
-        return torch.sigmoid(res@res.T)
+        res = res@res.T
+        return torch.sigmoid(res)
+        #return 1 / (1 + math.exp(-res))
+        #return torch.sigmoid(res@res.T)
         '''
         y_hat = self.linear_cls_out(res)
         marginal_loss = 0.
