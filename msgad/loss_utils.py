@@ -47,7 +47,6 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
             # structure loss
             if recons_ind == 0:
                 if sample:
-                    
                     # collect loss for selected positive/negative edges. adjacency not used
                     if type(graph) == list:
                         #edge_labels = torch.round(graph[inds_label[ind]][edge_ids[:,0],edge_ids[:,1]])
@@ -116,6 +115,7 @@ def get_sampled_losses(pred,edges,label):
             edge-wise errors
     """
     edge_errors = pred[edges[:,0],edges[:,1]]
+    label = label[edges[:,0],edges[:,1]]
     edge_errors = torch.pow(torch.abs(edge_errors-label),2)
     epsilon = 1e-8
     total_error = torch.sqrt(edge_errors+epsilon)

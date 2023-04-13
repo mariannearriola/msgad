@@ -13,6 +13,116 @@ import networkx as nx
 from igraph import Graph
 import dgl
 import copy
+import pickle as pkl
+from model import GraphReconstruction
+from models.gcad import *
+import os
+
+def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
+    edge_ids_,node_ids_=None,None
+    if args.batch_type == 'edge':
+        # construct edge reconstruction error matrix for anom detection
+        node_ids_score = in_nodes[:g_batch.num_dst_nodes()]
+        
+        edge_ids = torch.cat((pos_edges,neg_edges)).detach().cpu().numpy().T
+        edge_id_dict = {k.item():v.item() for k,v in zip(torch.arange(node_ids_score.shape[0]),node_ids_score)}
+        rev_id_dict = {v: k for k, v in edge_id_dict.items()}
+        edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
+        #edge_ids = np.vectorize(rev_id_dict.get)(edge_ids)
+    else:
+        node_ids_ = g_batch.ndata['_ID']
+    return edge_ids_,node_ids_
+        
+
+def init_model(feat_size,args):
+    struct_model,feat_model=None,None
+    if args.model == 'gcad':
+        gcad_model = GCAD(2,100,1)
+    elif args.model == 'madan':
+        pass
+    else:
+        struct_model = GraphReconstruction(feat_size, args)
+  
+    if args.device == 'cuda':
+        device = torch.device(args.device)
+        if struct_model:
+            struct_model = struct_model.to(args.device) ; struct_model.train()
+        if feat_model:
+            feat_model = feat_model.to(args.device) ; feat_model.train()
+    
+    if args.model == 'gcad':
+        gcad = GCAD(2,100,4)
+    elif args.model == 'madan':
+        pass
+    elif args.recons == 'struct':
+        params = struct_model.parameters()
+    elif args.recons == 'feat':
+        params = feat_model.parameters()
+    elif args.recons == 'both':
+        params = list(struct_model.parameters()) + list(feat_model.parameters())
+
+    return struct_model,params
+
+def fetch_dataloader(adj, edges, args):
+    if args.batch_type == 'edge':
+        sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
+        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
+        edges=adj.edges('eid')
+        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_edges()
+        if args.device == 'cuda':
+            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
+        else:
+            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=6, device=args.device)
+    elif args.batch_type == 'edge_rw':
+        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_nodes()
+        
+        #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
+
+        sampler = dgl.dataloading.ShaDowKHopSampler([4])
+        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
+        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
+        edges=adj.edges('eid')
+        dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
+    elif args.batch_type == 'node':
+        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_nodes()
+        #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
+        sampler = dgl.dataloading.ShaDowKHopSampler([4])
+        if args.device == 'cuda':
+            num_workers = 0
+        else:
+            num_workers = 4
+        dataloader = dgl.dataloading.DataLoader(adj, adj.nodes(), sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=num_workers, device=args.device)
+    return dataloader
+
+def get_edge_batch(loaded_input):
+    in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
+    pos_edges = sub_graph_pos.edges()
+    neg_edges = sub_graph_neg.edges()
+    pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
+    neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
+    last_batch_node = torch.max(neg_edges)
+    g_batch = block[0]
+    return in_nodes, pos_edges, neg_edges, g_batch, last_batch_node
+
+def save_batch(loaded_input,lbl,iter,setting,args):
+    loaded_input[0] = loaded_input[0].to_sparse()
+    if args.datadir is not None and args.datasave:
+        dirpath = f'{args.datadir}/{args.dataset}/{setting}'
+        if not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+        with open (f'{dirpath}/{iter}.pkl','wb') as fout:
+            pkl.dump({'loaded_input':loaded_input,'label':[l.to_sparse() for l in lbl]},fout)
+
+def load_batch(iter,setting,args):
+    dirpath = f'{args.datadir}/{args.dataset}/{setting}'
+    with open (f'{dirpath}/{iter}.pkl','rb') as fin:
+        batch_dict = pkl.load(fin)
+    loaded_input = batch_dict['loaded_input']
+    lbl = batch_dict['label']
+    loaded_input[0] = loaded_input[0].to_dense()
+    lbl = [lbl.to_dense() for l in lbl]
+    return loaded_input,lbl
 
 def getScaleClusts(dend,thresh):
     clust_labels = postprocess.cut_straight(dend,threshold=thresh)

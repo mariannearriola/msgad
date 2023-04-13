@@ -13,7 +13,6 @@ import networkx as nx
 import torch_geometric
 from torch.utils.data import DataLoader
 from scipy import stats
-from model import GraphReconstruction
 from utils import *
 from loss_utils import *
 import pickle as pkl
@@ -42,12 +41,13 @@ def graph_anomaly_detection(args):
     if args.datadir is not None and args.dataload:
         dataloader = range(len(os.listdir(f'{args.datadir}/{args.dataset}/train')))
     else:
-        dataloader = fetch_dataloder(args.batch_type, adj, edges, args.batch_size, args.device, args.dataset)
+        dataloader = fetch_dataloader(adj, edges, args)
     print('sample train',args.sample_train,'sample test',args.sample_test)
 
     # intialize model (on given device)
     adj = adj.to(args.device)
-    struct_model,feat_model,params = init_model(feats.size(1),args)
+    struct_model,feat_model=None,None
+    struct_model,params = init_model(feats.size(1),args)
 
     if not args.model in ['gcad','madan']:
         optimizer = torch.optim.Adam(params, lr = args.lr)
@@ -63,9 +63,7 @@ def graph_anomaly_detection(args):
         iter=0
         for data_ind in dataloader:
             if (args.datadir is not None and args.dataload) or epoch > 0:
-                #loaded_input=load_batch(data_ind,args)
-                with open(f'{args.datadir}/{args.dataset}/train/{data_ind}.pkl','rb') as fin:
-                    loaded_input = pkl.load(fin)
+                loaded_input,lbl=load_batch(data_ind,'train',args)
             else:
                 loaded_input = data_ind
             if args.batch_type == 'node':
@@ -76,14 +74,9 @@ def graph_anomaly_detection(args):
                 pos_edges = sub_graph_pos.edges()
                 neg_edges = sub_graph_neg.edges()
             else:
-                in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(args,loaded_input)
+                in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
                 #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
-            if args.datadir is not None and args.datasave and epoch == 0: 
-                dirpath = f'{args.datadir}/{args.dataset}/train'
-                if not os.path.exists(dirpath):
-                    os.makedirs(dirpath)
-                with open (f'{dirpath}/{iter}.pkl','wb') as fout:
-                    pkl.dump(loaded_input,fout)
+            
             if args.model == 'madan':
                 if args.debug:
                     if iter % 100 == 0:
@@ -158,6 +151,10 @@ def graph_anomaly_detection(args):
             '''
             l.backward()
             optimizer.step()
+
+            # save batch info
+            if args.datasave:
+                save_batch(loaded_input,lbl,iter,'train',args)
             if args.debug:
                 if iter % 100 == 0:
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
@@ -184,7 +181,6 @@ def graph_anomaly_detection(args):
         struct_scores, feat_scores = torch.zeros(len(A_hat),adj.number_of_nodes()).to(args.device),torch.zeros(args.d,adj.number_of_nodes()).to(args.device)
     iter = 0
 
-    # TODO: REFACTOR
     edge_anom_mats,node_anom_mats = [],[]
     scales = 3 if 'multi-scale' in args.model else 1
     for i in range(scales):
@@ -195,14 +191,11 @@ def graph_anomaly_detection(args):
     if args.datadir is not None and args.dataload:
         dataloader = random.shuffle(dataloader)
     else:
-        dataloader = fetch_dataloder(args.batch_type, adj, edges, args.batch_size, args.device, args.dataset)
+        dataloader = fetch_dataloader(adj, edges, args)
 
-    #with dataloader.enable_cpu_affinity():
     for loaded_input in dataloader:
-        if args.datadir is not None and args.dataload:
-            #loaded_input=load_batch(data_ind,args)
-            with open(f'{args.datadir}/{args.dataset}/test_{iter}.pkl','rb') as fin:
-                loaded_input = pkl.load(fin)
+        if args.dataload:
+            loaded_input,lbl=load_batch(loaded_input,'test',args)
         # collect input
         if args.batch_type == 'node':
             all_nodes,in_nodes,g_batch= loaded_input
@@ -213,20 +206,12 @@ def graph_anomaly_detection(args):
             pos_edges = sub_graph_pos.edges()
             neg_edges = sub_graph_neg.edges()
         else:
-            in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(args,loaded_input)
+            in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
             #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
-        if args.datadir is not None and args.datasave:
-            dirpath = f'{args.datadir}/{args.dataset}/test'
-            if not os.path.exists(dirpath):
-                os.makedirs(dirpath)
-            with open (f'{dirpath}/{iter}.pkl','wb') as fout:
-                pkl.dump(loaded_input,fout)
-        
+    
         # run evaluation
         if struct_model and args.model != 'gcad':
             A_hat,lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
-        elif feat_model: # TODO
-            X_hat = feat_model(g_batch)
         if args.model == 'gcad':
             adj_ = g_batch.adjacency_matrix() 
             adj_=adj_.sparse_resize_((g_batch.num_src_nodes(),g_batch.num_src_nodes()), adj_.sparse_dim(),adj_.dense_dim())
@@ -237,8 +222,13 @@ def graph_anomaly_detection(args):
             struct_loss = np.array((struct_loss.T)[g_batch.dstnodes().detach().cpu().numpy()].T)
 
         # collect anomaly scores
-        edge_ids_,node_ids_ = collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args.batch_type)
+        edge_ids_,node_ids_ = collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args)
         
+        # save batch info
+        if args.datasave:
+            save_batch(loaded_input,lbl,iter,'test',args)
+
+
         if 'edge' in args.batch_type and args.model not in ['gcad']:
             recons_label = g_batch if lbl is None else lbl
             loss, struct_loss, feat_cost = loss_func(recons_label, A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons)
@@ -302,7 +292,7 @@ if __name__ == '__main__':
     parser.add_argument('--datasave', default=False, type=bool, help='whether to save data')
     parser.add_argument('--dataload', default=False, type=bool, help='whether to load data')
     parser.add_argument('--hidden_dim', type=int, default=128, help='dimension of hidden embedding (default: 64)')
-    parser.add_argument('--epoch', type=int, default=100, help='Training epoch')
+    parser.add_argument('--epoch', type=int, default=15, help='Training epoch')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--dropout', type=float, default=0.3, help='Dropout rate')
     parser.add_argument('--alpha', type=float, default=0, help='balance parameter')
@@ -311,10 +301,10 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32, help='number of edges to use for batching (default: 32)')
     parser.add_argument('--recons', default='struct', type=str, help='reconstruct features or structure')
     parser.add_argument('--cutoff',default=50, type=float, help='validation cutoff')
-    parser.add_argument('--d', default=1, type=int, help='d parameter for BWGNN filters')
+    parser.add_argument('--d', default=5, type=int, help='d parameter for BWGNN filters')
     parser.add_argument('--model', default='multi-scale-amnet', type=str, help='encoder to use')
-    parser.add_argument('--sample_train', default=False, type=bool, help="whether or not to sample edges in training")
-    parser.add_argument('--sample_test', default=False, type=bool, help="whether or not to sample edges in testing")
+    parser.add_argument('--sample_train', default=True, type=bool, help="whether or not to sample edges in training")
+    parser.add_argument('--sample_test', default=True, type=bool, help="whether or not to sample edges in testing")
     parser.add_argument('--batch_type', default='edge', type=str, help="node or edge sampling for batching")
     parser.add_argument('--debug', default=False, type=bool, help="if true, prints intermediate output")
     parser.add_argument('--label_type', default='single', type=str, help="if true, prints intermediate output")
