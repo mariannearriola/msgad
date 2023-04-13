@@ -66,7 +66,7 @@ def init_model(feat_size,args):
 def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
         #sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
-        if args.dataset == 'tfinance':
+        if args.dataset in ['weibo','tfinance']:
             num_neighbors = 100
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
         elif args.dataset in ['weibo','cora_triple_sc_all']:
@@ -76,21 +76,11 @@ def fetch_dataloader(adj, edges, args):
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_edges()
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=6, device=args.device)
-    elif args.batch_type == 'edge_rw':
-        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_nodes()
-        
-        #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
-
-        sampler = dgl.dataloading.ShaDowKHopSampler([4])
-        neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
-        sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
-        edges=adj.edges('eid')
-        dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=args.batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
     elif args.batch_type == 'node':
         batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_nodes()
         #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
@@ -145,7 +135,7 @@ def flatten_label(anoms):
         flattened_anoms.append(ret_anom[0])
     return flattened_anoms
 
-def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
+def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, top_nodes_perc):
     '''
     Input:
         sorted_errors: normalized adjacency matrix
@@ -157,8 +147,9 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
     '''
     
     all_anom = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3),axis=None)),axis=None)
+    full_anom = np.where(label==1)[0]
     true_anoms = 0
-    cor_1, cor_2, cor_3 = 0,0,0
+    cor_1, cor_2, cor_3, cor_single = 0,0,0,0
     for ind,error_ in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
         error = error_#.item()
         if error in all_anom:
@@ -169,8 +160,10 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, top_nodes_perc):
             cor_2 += 1
         if error in anom_sc3:
             cor_3 += 1
+        if error in full_anom and error not in all_anom:
+            cor_single += 1
     prec1,prec2,prec3,prec_all=cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0],true_anoms/all_anom.shape[0]
-    print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, total: {true_anoms}')
+    print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, single: {cor_single}, total: {true_anoms}')
     print(f'prec1: {prec1*100}, prec2: {prec2*100}, prec3: {prec3*100}, total_prec: {prec_all*100}')
     
     return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
@@ -246,15 +239,17 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
     '''
     # anom_clf = MessagePassing(aggr='max')
     anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
-    clf = anom_classifier(nu=0.5)
+    if 'cora' in dataset or 'weibo' in dataset:
+        import ipdb ; ipdb.set_trace()
+        clf = anom_classifier(nu=0.5)
     for sc,sc_score in enumerate(scores):
         if input_scores:
             node_scores = sc_score
             if -1 in node_scores:
                 print('not all node anomaly scores calculated for node sampling!')
         else:
-            node_scores = np.array([np.mean(i.data) for i in sc_score])
-
+            node_scores = np.mean(sc_score,axis=1)
+            
         # run graph transformer with node score attributes
         # import ipdb ; ipdb.set_trace()
         # anom_preds = anom_clf.forward(node_scores,graph.edges())
@@ -269,9 +264,9 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
 
         print(f'SCALE {sc+1} loss',np.mean(node_scores))
 
-        detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
+        detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
         print('scores reverse sorted')
-        detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, 1)
+        detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
         print('')
 
         if clust_inds != None:

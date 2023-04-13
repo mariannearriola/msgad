@@ -278,8 +278,8 @@ class DOMINANT_Base(nn.Module):
         # split the number of layers for the encoder and decoders
         encoder_layers = int(num_layers / 2)
         decoder_layers = num_layers - encoder_layers
-        self.dense = nn.Linear(in_dim, hid_dim)
-        '''
+        #self.dense = nn.Linear(in_dim, hid_dim)
+        
         self.shared_encoder = GCN(in_channels=in_dim,
                                   hidden_channels=hid_dim,
                                   num_layers=encoder_layers,
@@ -288,35 +288,36 @@ class DOMINANT_Base(nn.Module):
                                   act=act)
         '''
         self.shared_encoder = GATConv(hid_dim, hid_dim)
-
+        '''
         self.attr_decoder = GCN(in_channels=hid_dim,
                                 hidden_channels=hid_dim,
                                 num_layers=decoder_layers,
                                 out_channels=in_dim,
                                 dropout=dropout,
                                 act=act)
-        '''
+        
         self.struct_decoder = GCN(in_channels=hid_dim,
                                   hidden_channels=hid_dim,
                                   num_layers=decoder_layers - 1,
                                   out_channels=in_dim,
                                   dropout=dropout,
                                   act=act)
-        '''
+        
         #self.struct_decoder = GATConv(hid_dim, hid_dim)
 
 
     def forward(self, x, edge_index, dst_nodes):
         # encode
-        h = self.dense(x)
-        h_ = self.shared_encoder(h, edge_index)[dst_nodes]#[:,dst_nodes]
+        #h = self.dense(x)
+        h_ = self.shared_encoder(x, edge_index)#[dst_nodes]#[:,dst_nodes]
         # decode feature matrix
-        #x_ = self.attr_decoder(h, edge_index)
+        x_ = self.attr_decoder(h_, edge_index)
         # decode adjacency matrix
-        #h_ = self.struct_decoder(h, edge_index)
+        h_ = self.struct_decoder(h_, edge_index)
         #s_ = torch.sigmoid(h_ @ h_.T)
         #import ipdb ; ipdb.set_trace()
-        s_ = torch.tanh(h_ @ h_.T)
+        #s_ = torch.tanh(h_ @ h_.T)
+        s_ = h_@h_.T
         x_ = s_
         # return reconstructed matrices
         return x_, s_

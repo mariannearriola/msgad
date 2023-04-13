@@ -269,7 +269,7 @@ class GraphReconstruction(nn.Module):
                     prods = []
                     prod_graphs = []
                     prod_adjs = []
-                    adj_label = graph.adjacency_matrix().to_dense()[dst_nodes].cuda()
+                    adj_label = graph.adjacency_matrix().to_dense().cuda()#[dst_nodes].cuda()
                     num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
                     labels = []
                     for k in range(0, K+1):
@@ -281,7 +281,7 @@ class GraphReconstruction(nn.Module):
                         for i in range(1, K+1):
                             adj_label_ = adj_label_@adj_label_
                             basis += adj_label_ * coeff[i]
-
+                        
                         top_edges = torch.argsort(basis)
                         upper_tri=torch.triu(basis,1)
                         nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
@@ -289,14 +289,18 @@ class GraphReconstruction(nn.Module):
                         drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
                         basis[drop_idx[:,0],drop_idx[:,1]]=0
                         basis[drop_idx[:,1],drop_idx[:,0]]=0
-                        basis[torch.where(basis!=0)[0],torch.where(basis!=0)[1]]=1
+                        
+                        #basis[torch.where(basis!=0)[0],torch.where(basis!=0)[1]]=1
+                        basis[torch.where(basis>0)[0],torch.where(basis>0)[1]]=1
+                        basis[torch.where(basis<0)[0],torch.where(basis<0)[1]]=0
                         labels.append(basis)
                         #labels.append(torch.sigmoid(basis))
-                    #import ipdb ; ipdb.set_trace()
                     #labels = [adj_label,labels[0],labels[1]]
                     #labels = [adj_label,labels[1],labels[3]]
                     #labels=[labels[0],labels[2],labels[4]]
-                    labels=[adj_label,labels[0],labels[2]]
+                
+                    #labels=[adj_label,labels[0],labels[2]]
+                    labels=[adj_label,labels[0],labels[3]]
                     ''''
                     g= dgl.graph(graph.edges()).cpu()
                     g.edata['w'] = torch.full(graph.edges()[0].shape,1.)
@@ -307,13 +311,13 @@ class GraphReconstruction(nn.Module):
                     for k in range(0,K+1):
                         
                         
-                        prod_graph=dgl.khop_subgraph(g, k=k+1)[0].cpu()
+                        prod_graph=dgl.khop_graph(g, k=k+1)[0].cpu()
                         prod_graphs.append(g.edge_subgraph(prod_graph.edata['_ID'],relabel_nodes=False))
 
                         full_e = torch.zeros(prod_graphs[-1].num_edges())
                         full_eids = prod_graphs[-1].edata['_ID']
 
-                        basis_ = dgl.khop_subgraph(g, k=0)[0]
+                        basis_ = dgl.khop_graph(g, k=0)[0]
                         basis_ = g.edge_subgraph(basis_.edata['_ID'],relabel_nodes=False)
 
                         basis_.edata['w']=torch.ceil(basis_.edata['w'])

@@ -57,6 +57,7 @@ def graph_anomaly_detection(args):
     A_hat, X_hat = None,None
     seconds = time.time()
     for epoch in range(args.epoch):
+        epoch_l = 0
         if epoch > 0:
             random.shuffle(dataloader)
         if args.model == 'gcad': break
@@ -132,7 +133,7 @@ def graph_anomaly_detection(args):
                 A_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
                 if args.datasave:
                     lbl = model_lbl
-
+                    
             #print('alcing loss')
             if args.batch_type == 'node':
                 if args.model == 'gradate':
@@ -152,8 +153,7 @@ def graph_anomaly_detection(args):
                 best_loss = dl
                 torch.save(model,'best_model.pt')
             '''
-            l.backward()
-            optimizer.step()
+            epoch_l += l
 
             # save batch info
             if args.datasave:
@@ -163,11 +163,14 @@ def graph_anomaly_detection(args):
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
+        epoch_l.backward()
+        optimizer.step()
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
 
         if args.model != 'madan':
             print("Epoch:", '%04d' % (epoch), "train_loss=", round(l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())
+            print('avg loss',epoch_l/dataloader.__len__())
 
     print('best loss:', best_loss)
     
@@ -176,7 +179,6 @@ def graph_anomaly_detection(args):
     # accumulate node-wise anomaly scores via model evaluation
     if args.model not in ['madan','gcad']:
         if struct_model: struct_model.eval()
-        if feat_model: feat_model.eval()
     
     edges=adj.edges('eid')
     #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0,device=args.device)
@@ -195,7 +197,7 @@ def graph_anomaly_detection(args):
         random.shuffle(dataloader)
     else:
         dataloader = fetch_dataloader(adj, edges, args)
-
+    #import ipdb ; ipdb.set_trace()
     for loaded_input in dataloader:
         if args.dataload:
             loaded_input,lbl=load_batch(loaded_input,'test',args)
@@ -285,10 +287,7 @@ def graph_anomaly_detection(args):
     if X_hat: # TODO
         print('feat scores')
         detect_anomalies(feat_scores, truth, sc_label, args.dataset)
-    
-    #if args.debug:
-    #    print('finished, ready to debug')
-    #    import ipdb ; ipdb.set_trace()
+ 
     for i in struct_model.module_list:
         print(torch.sigmoid(i.lam))
 
