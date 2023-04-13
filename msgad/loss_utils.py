@@ -116,6 +116,8 @@ def get_sampled_losses(pred,edges,label):
     """
     edge_errors = pred[edges[:,0],edges[:,1]]
     label = label[edges[:,0],edges[:,1]]
+    label[torch.where(label<0)]=0.
+    label[torch.where(label>0)]=1.
     edge_errors = torch.pow(torch.abs(edge_errors-label),2)
     epsilon = 1e-8
     total_error = torch.sqrt(edge_errors+epsilon)

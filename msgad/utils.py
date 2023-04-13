@@ -67,16 +67,16 @@ def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
         #sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
         if args.dataset in ['weibo','tfinance']:
-            num_neighbors = 100
+            num_neighbors = 50
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
         elif args.dataset in ['weibo','cora_triple_sc_all']:
             #num_neighbors = 1000
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
+            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/100)#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:

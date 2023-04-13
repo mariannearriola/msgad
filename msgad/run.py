@@ -153,7 +153,10 @@ def graph_anomaly_detection(args):
                 best_loss = dl
                 torch.save(model,'best_model.pt')
             '''
-            epoch_l += l
+            if iter == 0:
+                epoch_l = l.unsqueeze(0)
+            else:
+                epoch_l = torch.cat((epoch_l,l.unsqueeze(0)))
 
             # save batch info
             if args.datasave:
@@ -163,14 +166,15 @@ def graph_anomaly_detection(args):
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
+        epoch_l = torch.sum(epoch_l)
         epoch_l.backward()
         optimizer.step()
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
 
         if args.model != 'madan':
-            print("Epoch:", '%04d' % (epoch), "train_loss=", round(l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())
-            print('avg loss',epoch_l/dataloader.__len__())
+            print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())
+            print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
 
     print('best loss:', best_loss)
     

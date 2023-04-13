@@ -79,7 +79,7 @@ class GraphReconstruction(nn.Module):
         super(GraphReconstruction, self).__init__()
         self.in_size = in_size
         out_size = in_size # for reconstruction
-        self.taus = [2,3,0]
+        self.taus = [1,2,3]
         self.b = 1
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
@@ -173,7 +173,7 @@ class GraphReconstruction(nn.Module):
             #import ipdb ; ipdb.set_trace()
         if self.model_str == 'bwgnn':
             recons = [self.conv(graph_,feats,dst_nodes)]
-        elif 'multi-scale' in self.model_str: # g
+        if 'multi-scale' in self.model_str: # g
             recons,labels = [],[]
             for i in self.module_list:
                 if self.model_str == 'multi-scale-amnet':
@@ -245,7 +245,7 @@ class GraphReconstruction(nn.Module):
 
                             pi = self.stationary_distribution(M.to(graph.device),graph.device)
                             Pi = np.diag(pi)
-                            M_tau = np.linalg.matrix_power(A.detach().cpu().numpy(), self.taus[len(labels)-1])
+                            M_tau = np.linalg.matrix_power(A.detach().cpu().numpy(), self.taus[i])
 
                             R = np.log(Pi @ M_tau/self.b) - np.log(np.outer(pi, pi))
                             R = R.copy()
@@ -254,7 +254,9 @@ class GraphReconstruction(nn.Module):
                             R[np.isinf(R)] = np.inf
                             R[np.isinf(R)] = R.min()
                             res = torch.tensor(R).to(graph.device)
-                            full_labels[i][nodes_sel][:,nodes_sel]=res
+                            lbl_idx = torch.tensor(nodes_sel).to(torch.long)
+                            full_labels[i][lbl_idx.reshape(-1,1),lbl_idx]=res
+                            #full_labels[i][nodes_sel][:,nodes_sel]=res
                     labels = full_labels
 
                 if 'filter' in self.label_type:   
@@ -269,6 +271,7 @@ class GraphReconstruction(nn.Module):
                     prods = []
                     prod_graphs = []
                     prod_adjs = []
+                    
                     adj_label = graph.adjacency_matrix().to_dense().cuda()#[dst_nodes].cuda()
                     num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
                     labels = []
@@ -301,48 +304,56 @@ class GraphReconstruction(nn.Module):
                 
                     #labels=[adj_label,labels[0],labels[2]]
                     labels=[adj_label,labels[0],labels[3]]
-                    ''''
+                    
+                    '''
                     g= dgl.graph(graph.edges()).cpu()
                     g.edata['w'] = torch.full(graph.edges()[0].shape,1.)
                     epsilon = 1e-8
                     g.edata['w'] = self.norm(g,(g.edata['w']+epsilon)).cpu()
-                    #g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
-
+                    import ipdb ; ipdb.set_trace()
                     for k in range(0,K+1):
-                        
-                        
-                        prod_graph=dgl.khop_graph(g, k=k+1)[0].cpu()
-                        prod_graphs.append(g.edge_subgraph(prod_graph.edata['_ID'],relabel_nodes=False))
-
-                        full_e = torch.zeros(prod_graphs[-1].num_edges())
-                        full_eids = prod_graphs[-1].edata['_ID']
-
-                        basis_ = dgl.khop_graph(g, k=0)[0]
-                        basis_ = g.edge_subgraph(basis_.edata['_ID'],relabel_nodes=False)
-
-                        basis_.edata['w']=torch.ceil(basis_.edata['w'])
-                        labels.append(basis_)
-                        for k in range(0, K+1):
-                            coeff = coeffs[k]
-                            edata = (basis_.edata['w'] * coeff[0])
-                            basis = copy.deepcopy(basis_)
-                            basis.edata['w'] = edata
-                            for i in range(1, K+1):
-                                prod_graph = prod_graphs[i]
-                                prod_graph.edata['w']*=coeff[i]
-                                basis = dgl.adj_sum_graph([prod_graph,basis],'w')
-                            if 'sample' in self.label_type:
-                                drop_edges = torch.argsort(-basis.edata['w'])[num_a_edges:]
-                                basis = dgl.remove_edges(basis,drop_edges)
-                                basis.edata['w']=torch.sigmoid(basis.edata['w'])
-                            elif 'round' in self.label_type:
-                                basis.edata['w'][basis.edata['w'].nonzero()]=1.
-                            
-                            #labels_edges=basis.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
-                            #labels_pos_eids=basis.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
-                            #labels_edges[torch.where(labels_edges!=0)[0]] = basis.edata['w'][labels_pos_eids]
-                            
-                            labels.append(basis.adjacency_matrix().to_dense())
+                        prod_graph = dgl.khop_graph(g,k=k)
+                        prod_graphs.append(prod_graph.subgraph(dst_nodes))
+                        #prod_graph=dgl.khop_out_subgraph(g, dst_nodes, store_ids=True, k=k+1)[0]
+                        #prod_graphs.append(g.edge_subgraph(prod_graph.edata['_ID'],relabel_nodes=False))
+                    import ipdb ; ipdb.set_trace()
+                    #full_e = torch.zeros(prod_graphs[-1].num_edges())
+                    #full_eids = prod_graphs[-1].edata['_ID']
+                    basis_ = prod_graphs[0]
+                    #basis_ = dgl.khop_out_subgraph(g, dst_nodes, store_ids=True, k=0)[0]
+                    #basis_ = g.edge_subgraph(basis_.edata['_ID'],relabel_nodes=False)
+                    
+                    #basis_.edata['w']=torch.ceil(basis_.edata['w'])
+                    #labels_edges=basis_.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
+                    #labels_pos_eids=basis_.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
+                    #labels_edges[torch.where(labels_edges!=0)[0]] = basis_.edata['w'][labels_pos_eids]
+                    #labels.append(labels_edges.to(graph.device))
+                    
+                    #basis_.edata['w']=torch.full(g.edges()[0].shape,1.)
+                    #basis_.edata['w'] = self.norm(basis_,(basis_.edata['w']+epsilon)).cpu()
+                    #labels.append(basis_.adjacency_matrix().to_dense().to(graph.device))
+                    for k in range(0, K+1):
+                        coeff = coeffs[k]
+                        edata = (basis_.edata['w'] * coeff[0])
+                        basis = copy.deepcopy(basis_)
+                        basis.edata['w'] = edata
+                        for i in range(1, K+1):
+                            prod_graph = prod_graphs[i]
+                            prod_graph.edata['w']*=coeff[i]
+                            basis = dgl.adj_sum_graph([prod_graph,basis],'w')
+                        if 'sample' in self.label_type:
+                            drop_edges = torch.argsort(-basis.edata['w'])[num_a_edges:]
+                            basis = dgl.remove_edges(basis,drop_edges)
+                            basis.edata['w']=torch.sigmoid(basis.edata['w'])
+                        if 'round' in self.label_type:
+                            basis.edata['w'][torch.where(basis.edata['w']<0)]=0
+                            basis.edata['w'][torch.where(basis.edata['w']>0)]=1
+                            #basis.edata['w'][basis.edata['w'].nonzero()]=1.
+                        labels_edges=basis.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
+                        labels_pos_eids=basis.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
+                        labels_edges[torch.where(labels_edges!=0)[0]] = basis.edata['w'][labels_pos_eids]
+                        labels.append(labels_edges.to(graph.device))
+                        #labels.append(basis.adjacency_matrix().to_dense().to(graph.device))
                     '''
             else:
                 labels = None
@@ -376,6 +387,7 @@ class GraphReconstruction(nn.Module):
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate']:
             recons = recons[0]
+
             #recons = [recons[graph.dstnodes()][:,graph.dstnodes()]]
             recons = [recons[dst_nodes][:,dst_nodes]]
         elif self.model_str == 'gradate':
