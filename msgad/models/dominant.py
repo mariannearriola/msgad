@@ -313,11 +313,10 @@ class DOMINANT_Base(nn.Module):
         # decode feature matrix
         x_ = self.attr_decoder(h_, edge_index)
         # decode adjacency matrix
-        h_ = self.struct_decoder(h_, edge_index)
+        h_ = self.struct_decoder(h_, edge_index)#[dst_nodes]
         #s_ = torch.sigmoid(h_ @ h_.T)
         #import ipdb ; ipdb.set_trace()
         #s_ = torch.tanh(h_ @ h_.T)
         s_ = h_@h_.T
-        x_ = s_
         # return reconstructed matrices
         return x_, s_

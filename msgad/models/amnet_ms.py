@@ -194,7 +194,8 @@ class AMNet_ms(nn.Module):
         # ADAPT TO RECONSTRUCTION
         #return self.relu(res@res.T)
         # inner product always positive
-        return torch.tanh(res@res.T)
+        return res@res.T
+        #return torch.tanh(res@res.T)
         #return res@res.T
         #return torch.sigmoid(res@res.T)
 

@@ -79,7 +79,7 @@ class GraphReconstruction(nn.Module):
         super(GraphReconstruction, self).__init__()
         self.in_size = in_size
         out_size = in_size # for reconstruction
-        self.taus = [1,2,3]
+        self.taus = [3,5,3,3]
         self.b = 1
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
@@ -162,24 +162,28 @@ class GraphReconstruction(nn.Module):
         #    needs_edges = graph.has_edges_between(pos_edges[:,0],pos_edges[:,1]).int().nonzero()
         #    graph.add_edges(pos_edges[:,0][needs_edges.T[0]][0],pos_edges[:,1][needs_edges.T[0]])
         edges, feats, graph_ = self.process_graph(graph)
-        all_edges = torch.vstack((pos_edges,neg_edges))
-        dst_nodes = torch.arange(last_batch_node+1)
+        if pos_edges is not None:
+            all_edges = torch.vstack((pos_edges,neg_edges))
+            dst_nodes = torch.arange(last_batch_node+1)
+        else:
+            dst_nodes = graph.nodes()
+        recons_x,recons_a=None,None
         if self.model_str in ['dominant','amnet']: #x, e
-            recons = [self.conv(feats, edges, dst_nodes)]
+            recons = [self.conv(feats, edges,dst_nodes)]
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
-            recons = [self.conv(feats, edges, 0, dst_nodes)]
+            recons = [self.conv(feats, edges, 0,dst_nodes)]
         elif self.model_str in ['gradate']: # adjacency matrix
             loss, ano_score = self.conv(graph_, graph_.adjacency_matrix(), feats, False)
             #import ipdb ; ipdb.set_trace()
         if self.model_str == 'bwgnn':
-            recons = [self.conv(graph_,feats,dst_nodes)]
+            recons_a = [self.conv(graph_,feats)]
         if 'multi-scale' in self.model_str: # g
-            recons,labels = [],[]
+            recons_a,labels = [],[]
             for i in self.module_list:
                 if self.model_str == 'multi-scale-amnet':
-                    recons.append(i(feats,edges,dst_nodes))
+                    recons_a.append(i(feats,edges,dst_nodes))
                 elif self.model_str == 'multi-scale-bwgnn':
-                    recons.append(i(graph,feats,dst_nodes))
+                    recons_a.append(i(graph,feats,dst_nodes))
 
             # collect multi-scale labels
             g = dgl.graph(graph.edges()).cpu()
@@ -189,32 +193,14 @@ class GraphReconstruction(nn.Module):
 
             if not self.dataload:
                 if 'norm' in self.label_type:
+                    epsilon = 1e-8
                     g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
                 if 'prods' in self.label_type:
                     labels = []
-                    epsilon = 1e-8
-
-                    for k in range(0,3):
-                        prod_graph=dgl.khop_out_subgraph(g, dst_nodes, k=k+1)[0].cpu()
-                        label=g.edge_subgraph(prod_graph.edata['_ID'],relabel_nodes=False)
-                        if 'sample' in self.label_type:
-                            drop_edges = torch.argsort(-label.edata['w'])[num_a_edges:]
-                            label = dgl.remove_edges(label,drop_edges)
-                            label.edata['w']=torch.sigmoid(label.edata['w'])
-                        elif 'round' in self.label_type:
-                            label.edata['w'][label.edata['w'].nonzero()]=1.
-                        labels.append(label)
-            
-                    label_idx = [0,1,2]
-                    label_edges = []
-                    for label_id in label_idx:
-                        label_edge=labels[label_id].has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
-                        labels_pos_eids=labels[label_id].edge_ids(all_edges[:,0].cpu()[label_edge.nonzero()].flatten(),all_edges[:,1].cpu()[label_edge.nonzero()].flatten())
-                        label_edge[torch.where(label_edge!=0)[0]] = labels[label_id].edata['w'][labels_pos_eids]
-
-                        label_edges.append(label_edge.to(graph.device))
-                    import ipdb ; ipdb.set_trace()
-                    labels = label_edges
+                    adj_label = graph.adjacency_matrix().to_dense().to(graph.device)
+                    for k in range(3):
+                        labels.append(adj_label)
+                        adj_label = adj_label@adj_label
                 elif self.label_type == 'single':
                     labels = []
                     '''
@@ -224,7 +210,6 @@ class GraphReconstruction(nn.Module):
                     '''
                     for k in range(3):
                         labels.append(graph.adjacency_matrix().to_dense().to(graph.device))
-                        #labels.append(edges.to(graph.device))
                 if 'random-walk' in self.label_type:
                     nx_graph = nx.to_undirected(dgl.to_networkx(g.cpu()))
                     #node_ids = graph.ndata['_ID']['_N']
@@ -233,8 +218,8 @@ class GraphReconstruction(nn.Module):
                     node_dict = {k:v.item() for k,v in zip(list(nx_graph.nodes),node_ids)}
                     labels = []
                     full_labels = [torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device),torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device),torch.zeros((g.num_nodes(),g.num_nodes())).to(graph.device)]
-                    #import ipdb ; ipdb.set_trace()
-                    labels.append(graph.adjacency_matrix().to_dense())
+             
+                    labels.append(graph.adjacency_matrix().to_dense().to(graph.device))
                     for connected_graph_nodes in connected_graphs:
                         subgraph = dgl.from_networkx(nx_graph.subgraph(connected_graph_nodes))
                         nodes_sel = [node_dict[j] for j in list(connected_graph_nodes)]
@@ -256,8 +241,19 @@ class GraphReconstruction(nn.Module):
                             res = torch.tensor(R).to(graph.device)
                             lbl_idx = torch.tensor(nodes_sel).to(torch.long)
                             full_labels[i][lbl_idx.reshape(-1,1),lbl_idx]=res
-                            #full_labels[i][nodes_sel][:,nodes_sel]=res
-                    labels = full_labels
+                    # post-cleaning label
+                    for i in range(3):
+                        upper_tri=torch.triu(full_labels[i],1)
+                        nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
+                        sorted_idx = torch.argsort(-nz)
+                        drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
+                        full_labels[i][drop_idx[:,0],drop_idx[:,1]]=0
+                        full_labels[i][drop_idx[:,1],drop_idx[:,0]]=0
+                        
+                        #full_labels[i][torch.where(full_labels[i]>0)[0],torch.where(full_labels[i]>0)[1]]=1
+                        #full_labels[i][torch.where(full_labels[i]<0)[0],torch.where(full_labels[i]<0)[1]]=0
+                        labels.append(full_labels[i].to(graph.device))
+           
 
                 if 'filter' in self.label_type:   
                     K = 5
@@ -268,11 +264,8 @@ class GraphReconstruction(nn.Module):
                         coeffs = calculate_theta2(K)
                         label_idx=[0,2,4]
                     labels = []
-                    prods = []
-                    prod_graphs = []
-                    prod_adjs = []
                     
-                    adj_label = graph.adjacency_matrix().to_dense().cuda()#[dst_nodes].cuda()
+                    adj_label = graph.adjacency_matrix().to_dense().to(graph.device)#[dst_nodes].cuda()
                     num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
                     labels = []
                     for k in range(0, K+1):
@@ -285,7 +278,6 @@ class GraphReconstruction(nn.Module):
                             adj_label_ = adj_label_@adj_label_
                             basis += adj_label_ * coeff[i]
                         
-                        top_edges = torch.argsort(basis)
                         upper_tri=torch.triu(basis,1)
                         nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
                         sorted_idx = torch.argsort(-nz)
@@ -293,16 +285,9 @@ class GraphReconstruction(nn.Module):
                         basis[drop_idx[:,0],drop_idx[:,1]]=0
                         basis[drop_idx[:,1],drop_idx[:,0]]=0
                         
-                        #basis[torch.where(basis!=0)[0],torch.where(basis!=0)[1]]=1
                         basis[torch.where(basis>0)[0],torch.where(basis>0)[1]]=1
                         basis[torch.where(basis<0)[0],torch.where(basis<0)[1]]=0
                         labels.append(basis)
-                        #labels.append(torch.sigmoid(basis))
-                    #labels = [adj_label,labels[0],labels[1]]
-                    #labels = [adj_label,labels[1],labels[3]]
-                    #labels=[labels[0],labels[2],labels[4]]
-                
-                    #labels=[adj_label,labels[0],labels[2]]
                     labels=[adj_label,labels[0],labels[3]]
                     
                     '''
@@ -380,16 +365,21 @@ class GraphReconstruction(nn.Module):
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:
             recons_ind = 0 if self.recons == 'feat' else 1
+            recons_x,recons_a = recons[0]
             if self.model_str == 'ho-gat':
                 return recons[0][recons_ind], recons[0][recons_ind+1], recons[0][recons_ind+2]
-            recons = [recons[0][recons_ind]]
+            recons_a = [recons_a]
+            recons_x = [recons_x]
+            #recons = [recons[0][recons_ind]]
         
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate']:
-            recons = recons[0]
-
+            recons_x,recons_a = recons[0]
+            recons_a = [recons_a]
+            recons_x = [recons_x]
             #recons = [recons[graph.dstnodes()][:,graph.dstnodes()]]
-            recons = [recons[dst_nodes][:,dst_nodes]]
+            #recons_a = [recons_a[dst_nodes][:,dst_nodes]]
+
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
-        return recons, labels
+        return recons_a,recons_x, labels

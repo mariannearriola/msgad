@@ -35,7 +35,7 @@ def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
         
 
 def init_model(feat_size,args):
-    struct_model,feat_model=None,None
+    struct_model,feat_model,params=None,None,None
     if args.model == 'gcad':
         gcad_model = GCAD(2,100,1)
     elif args.model == 'madan':
@@ -43,23 +43,16 @@ def init_model(feat_size,args):
     else:
         struct_model = GraphReconstruction(feat_size, args)
   
-    if args.device == 'cuda':
-        device = torch.device(args.device)
-        if struct_model:
-            struct_model = struct_model.to(args.device) ; struct_model.train()
-        if feat_model:
-            feat_model = feat_model.to(args.device) ; feat_model.train()
+    device = torch.device(args.device)
+    if struct_model:
+        struct_model = struct_model.to(args.device) ; struct_model.train() ; params = struct_model.parameters()
+    if feat_model:
+        feat_model = feat_model.to(args.device) ; feat_model.train() ; params = feat_model.parameters()
     
     if args.model == 'gcad':
         gcad = GCAD(2,100,4)
     elif args.model == 'madan':
         pass
-    elif args.recons == 'struct':
-        params = struct_model.parameters()
-    elif args.recons == 'feat':
-        params = feat_model.parameters()
-    elif args.recons == 'both':
-        params = list(struct_model.parameters()) + list(feat_model.parameters())
 
     return struct_model,params
 
@@ -70,7 +63,6 @@ def fetch_dataloader(adj, edges, args):
             num_neighbors = 50
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
         elif args.dataset in ['weibo','cora_triple_sc_all']:
-            #num_neighbors = 1000
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
@@ -240,7 +232,6 @@ def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, clus
     # anom_clf = MessagePassing(aggr='max')
     anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
     if 'cora' in dataset or 'weibo' in dataset:
-        import ipdb ; ipdb.set_trace()
         clf = anom_classifier(nu=0.5)
     for sc,sc_score in enumerate(scores):
         if input_scores:

@@ -1,6 +1,6 @@
 import torch
 
-def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
+def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
     """
     Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction
     label.
@@ -33,19 +33,19 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
 
     # node sampling: full reconstruction error
     all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
-    struct_error,feat_error=None,None
+    total_struct_error,total_feat_error=None,None
     if not pos_edges == None:
         edge_ids = torch.vstack((pos_edges,neg_edges))
         if type(graph) != list:
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
             edge_labels = edge_labels.to(graph.device)
-  
+    #import ipdb ; ipdb.set_trace()
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
         for ind, sc_pred in enumerate(preds):
             # structure loss
-            if recons_ind == 0:
+            if recons_ind == 0 and recons in ['struct','both']:
                 if sample:
                     # collect loss for selected positive/negative edges. adjacency not used
                     if type(graph) == list:
@@ -77,21 +77,24 @@ def loss_func(graph, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='s
                     total_struct_error = torch.mean(torch.sqrt(torch.sum(edge_struct_errors,1)))
 
             # feature loss
-            if recons_ind == 1:
-                feat_error = torch.nn.functional.mse_loss(sc_pred,feat.to(graph.device),reduction='none')
-                feat_error = torch.mean(feat_error,dim=0)
-
+            if recons_ind == 1 and recons in ['feat','both']:
+                #import ipdb ; ipdb.set_trace()
+                feat_error = torch.nn.functional.mse_loss(sc_pred,feat.to(feat.device),reduction='none')
+                total_feat_error = torch.mean(feat_error,dim=0)
+           
             # accumulate errors
             if all_costs is None:
-                if recons_ind == 0:
+                if recons_ind == 0 and total_struct_error is not None:
                     all_struct_error = (edge_struct_errors).unsqueeze(0)
                     all_costs = total_struct_error.unsqueeze(0)*alpha
-                if recons_ind == 1:
+                if recons_ind == 1 and total_feat_error is not None:
                     all_feat_error = (feat_error).unsqueeze(0)
                     all_costs = (torch.mean(all_feat_error))*(1-alpha)
             else:
-                if recons_ind == 0: all_struct_error = torch.cat((all_struct_error,(edge_struct_errors).unsqueeze(0)))
-                if recons_ind == 1: all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
+                if recons_ind == 0 and total_struct_error is not None:
+                    all_struct_error = torch.cat((all_struct_error,(edge_struct_errors).unsqueeze(0)))
+                if recons_ind == 1 and total_feat_error is not None:
+                    all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
                 all_costs = torch.cat((all_costs,torch.add(total_struct_error*alpha,torch.mean(all_feat_error)*(1-alpha)).unsqueeze(0)))
     return all_costs, all_struct_error, all_feat_error
 
