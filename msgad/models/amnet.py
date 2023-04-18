@@ -10,7 +10,9 @@ from torch.nn import Parameter
 from torch_geometric.utils import remove_self_loops
 from torch_geometric.utils import get_laplacian
 import torch
+import numpy as np
 from numpy import polynomial
+import matplotlib.pyplot as plt
 import math
 
 def glorot(tensor):
@@ -28,16 +30,17 @@ def constant(tensor, value):
         tensor.data.fill_(value)
 
 class BernConv(MessagePassing):
-    def __init__(self, hidden_channels, K, bias=False, normalization=False, **kwargs):
+    def __init__(self, hidden_channels, K, id, bias=False, normalization=False, vis_filters=False, **kwargs):
         kwargs.setdefault('aggr', 'add')
         super(BernConv, self).__init__(**kwargs)
         assert K > 0
         self.K = K
+        self.id = id
         self.in_channels = hidden_channels
         self.out_channels = hidden_channels
         self.weight = Parameter(torch.Tensor(K + 1, 1))
         self.normalization = normalization
-
+        self.vis_filters = vis_filters
         if bias:
             self.bias = Parameter(torch.Tensor(hidden_channels))
         else:
@@ -67,8 +70,16 @@ class BernConv(MessagePassing):
         edge_weight.masked_fill_(edge_weight == float('inf'), 0)
         assert edge_weight is not None
         return edge_index, edge_weight
-
-
+    def run_filter(self, bern_coeff,weight,eval):
+        out_ = 0.
+        for k in range(0, self.K+1):
+            coeff = bern_coeff[k]
+            basis_ = eval * coeff[0]
+            for i in range(1, self.K+1):
+                basis_ += eval * coeff[i]
+            out_ += basis_ * weight[k]
+        return out_
+        
     def forward(self, x, edge_index, edge_weight: OptTensor = None,
                 lambda_max: OptTensor = None):
 
@@ -105,6 +116,26 @@ class BernConv(MessagePassing):
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
             out += basis * weight[k]
+        if self.vis_filters:
+            plt.figure()
+            L = np.zeros((x.shape[0],x.shape[0]))
+            edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
+            L[edge_index[0],edge_index[1]]=norm
+            e,U = np.linalg.eigh(L)
+            e[0] = 0
+            c = np.dot(U.transpose(), out.detach().cpu().numpy())
+            M = np.zeros((15,c.shape[1]))
+            
+            for j in range(x.shape[0]):
+                #import ipdb ; ipdb.set_trace()
+                idx = min(int(e[j] / 0.1), 15-1)
+                M[idx] += c[j]**2
+            #for j in range(50):
+            #    plt.plot(M[:,j])
+            M=M/sum(M)
+            plt.plot(np.mean(M,axis=1))
+            plt.savefig(f'amnet_filter_vis_{self.id}.png')
+        #print('hi')
         return out
 
 
@@ -126,7 +157,7 @@ class BernConv(MessagePassing):
 
 
 class AMNet(nn.Module):
-    def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
+    def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3, vis_filters=False):
         super(AMNet, self).__init__()
         self.act_fn = nn.ReLU()
         self.attn_fn = nn.Tanh()
@@ -135,7 +166,8 @@ class AMNet(nn.Module):
                                                  nn.Linear(hid_channels, hid_channels),
                                                  )
         self.K = K
-        self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=True, bias=True) for _ in range(filter_num)])
+        self.vis_filters = vis_filters
+        self.filters = nn.ModuleList([BernConv(hid_channels, K, id, normalization=True, bias=True, vis_filters=vis_filters) for id in range(filter_num)])
         self.filter_num = filter_num
         self.W_f = nn.Sequential(nn.Linear(hid_channels, hid_channels),
                                  self.attn_fn,
@@ -187,10 +219,11 @@ class AMNet(nn.Module):
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
-
+        
         # ADAPT TO RECONSTRUCTION
         res = res@res.T
-        return torch.sigmoid(res)
+        return res
+        #return torch.sigmoid(res)
         #return 1 / (1 + math.exp(-res))
         #return torch.sigmoid(res@res.T)
         '''

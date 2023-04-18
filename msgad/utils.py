@@ -16,6 +16,7 @@ import copy
 import pickle as pkl
 from model import GraphReconstruction
 from models.gcad import *
+import matplotlib.pyplot as plt
 import os
 
 def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
@@ -59,22 +60,22 @@ def init_model(feat_size,args):
 def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
         #sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
-        if args.dataset in ['weibo','tfinance']:
-            num_neighbors = 50
+        if args.dataset in ['yelpchi']:
+            num_neighbors = 100
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
-        elif args.dataset in ['weibo','cora_triple_sc_all']:
+        elif args.dataset in ['weibo','cora_triple_sc_all','tfinance','elliptic']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/100)#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/1)#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=6, device=args.device)
     elif args.batch_type == 'node':
-        batch_size = args.batch_size if args.batch_size > 0 else adj.number_of_nodes()
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_nodes()/100)
         #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
         sampler = dgl.dataloading.ShaDowKHopSampler([4])
         if args.device == 'cuda':
@@ -96,7 +97,8 @@ def get_edge_batch(loaded_input):
 
 def save_batch(loaded_input,lbl,iter,setting,args):
     loaded_input[0] = loaded_input[0].to_sparse()
-    loaded_input[-1] = loaded_input[-1][0]
+    if args.batch_type == 'edge':
+        loaded_input[-1] = loaded_input[-1][0]
     if args.datadir is not None and args.datasave:
         dirpath = f'{args.datadir}/{args.dataset}/{setting}'
         if not os.path.exists(dirpath):
@@ -142,7 +144,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, top_nodes_pe
     full_anom = np.where(label==1)[0]
     true_anoms = 0
     cor_1, cor_2, cor_3, cor_single = 0,0,0,0
-    for ind,error_ in enumerate(sorted_errors[:int(all_anom.shape[0]*top_nodes_perc)]):
+    for ind,error_ in enumerate(sorted_errors[:int(full_anom.shape[0]*top_nodes_perc)]):
         error = error_#.item()
         if error in all_anom:
             true_anoms += 1
@@ -154,7 +156,7 @@ def detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, top_nodes_pe
             cor_3 += 1
         if error in full_anom and error not in all_anom:
             cor_single += 1
-    prec1,prec2,prec3,prec_all=cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0],true_anoms/all_anom.shape[0]
+    prec1,prec2,prec3,prec_all=cor_1/anom_sc1.shape[0],cor_2/anom_sc2.shape[0],cor_3/anom_sc3.shape[0],true_anoms/full_anom.shape[0]
     print(f'scale1: {cor_1}, scale2: {cor_2}, scale3: {cor_3}, single: {cor_single}, total: {true_anoms}')
     print(f'prec1: {prec1*100}, prec2: {prec2*100}, prec3: {prec3*100}, total_prec: {prec_all*100}')
     
@@ -221,101 +223,133 @@ class anom_classifier():
                 accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
         return accs, anom_preds.shape[0]
 
-def detect_anomalies(graph, scores, label, sc_label, dataset, sample=False, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
-    '''
-    Input:
-        scores: anomaly scores for all scales []
-        label: node-wise anomaly label []
-        sc_label: array containing scale-wise anomaly node ids
-        dataset: dataset string
-    '''
-    # anom_clf = MessagePassing(aggr='max')
-    anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
-    if 'cora' in dataset or 'weibo' in dataset:
-        clf = anom_classifier(nu=0.5)
-    for sc,sc_score in enumerate(scores):
-        if input_scores:
-            node_scores = sc_score
-            if -1 in node_scores:
-                print('not all node anomaly scores calculated for node sampling!')
-        else:
-            node_scores = np.mean(sc_score,axis=1)
+    def calc_prec(self, graph, scores, label, sc_label, args, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+        '''
+        Input:
+            scores: anomaly scores for all scales []
+            label: node-wise anomaly label []
+            sc_label: array containing scale-wise anomaly node ids
+            dataset: dataset string
+        '''
+        # anom_clf = MessagePassing(aggr='max')
+        anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
+        if 'cora' in args.dataset or 'weibo' in args.dataset:
+            clf = anom_classifier(nu=0.5)
+        
+        for sc,sc_score in enumerate(scores):
+            if args.recons == 'both':
+                node_scores = sc_score#.detach().cpu().numpy()
+            elif args.recons == 'feat':
+                node_scores = np.mean(sc_score,axis=1)
+            elif input_scores:
+                node_scores = sc_score
+                if -1 in node_scores:
+                    print('not all node anomaly scores calculated for node sampling!')
+            else:
+                for ind,score in enumerate(sc_score):
+                    if ind == 0:
+                        node_scores = np.array([np.mean(score[score.nonzero()])])
+                    else:
+                        node_scores = np.append(node_scores,np.array([np.mean(score[score.nonzero()])]))
+                    
+                #node_scores = np.mean(sc_score,axis=1)
+            # run graph transformer with node score attributes
+            # import ipdb ; ipdb.set_trace()
+            # anom_preds = anom_clf.forward(node_scores,graph.edges())
             
-        # run graph transformer with node score attributes
-        # import ipdb ; ipdb.set_trace()
-        # anom_preds = anom_clf.forward(node_scores,graph.edges())
+            sorted_errors = np.argsort(-node_scores)
+            rev_sorted_errors = np.argsort(node_scores)
+            rankings = label[sorted_errors]
 
-        sorted_errors = np.argsort(-node_scores)
-        rev_sorted_errors = np.argsort(node_scores)
-        rankings = []
-        
-        for error in sorted_errors:
-            rankings.append(label[error])
-        rankings = np.array(rankings)
+            full_anoms = label.nonzero()[0]
+            ms_anoms = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3))))
+            single_anoms = np.setxor1d(full_anoms,ms_anoms)
+            ms_anoms_num = full_anoms.shape[0]
 
-        print(f'SCALE {sc+1} loss',np.mean(node_scores))
+            def plot_anom_sc(sorted_errors,anom,ms_anoms_num):
+                rankings_sc = np.zeros(sorted_errors.shape[0])
+                rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
+                rankings_sc = rankings_sc.nonzero()[0]
+                rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
+                plt.plot(np.arange(ms_anoms_num),rankings_sc)
+            
+            hit_rankings = rankings.nonzero()[0]
 
-        detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
-        print('scores reverse sorted')
-        detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
-        print('')
+            #import ipdb ; ipdb.set_trace()
+            # add plots for scale-specific anomalies
+            if True:
+                plt.figure()
+                #plot_anom_sc(sorted_errors,single_anoms,ms_anoms_num)
+                plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num)
+                plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num)
+                plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num)
+                plt.plot(np.arange(ms_anoms_num),hit_rankings)
+                #plt.legend(['single','sc1','sc2','sc3','total'])
+                plt.legend(['sc1','sc2','sc3','total'])
+                plt.savefig(f'{args.dataset}_{sc}_{args.model}_hit_at_k.png')
+            print(f'SCALE {sc+1} loss',np.mean(node_scores))
 
-        if clust_inds != None:
-            clust_inds = clust_inds.detach().cpu().numpy()
-            clust_anom1,clust_anom2,clust_anom3=[],[],[]
-            try:
-                for ind,clust in enumerate(clust_inds):
-                    if np.intersect1d(clust,anom_sc1).shape[0] > 0:
-                        clust_anom1.append(ind)
-                    if np.intersect1d(clust,anom_sc2).shape[0] > 0:
-                        clust_anom2.append(ind)
-                    if np.intersect1d(clust,anom_sc3).shape[0] > 0:
-                        clust_anom3.append(ind)
-            except:
-                import ipdb ; ipdb.set_trace()
-                print('what')
-            num_anom_clusts = len(clust_anom1) + len(clust_anom2) + len(clust_anom3)
-            clust_anom_scores = torch.mean(clust_anom_mats[0],dim=1).detach().cpu().numpy()
-            clust_anom_ranks = np.argsort(-clust_anom_scores)
-            rev_clust_anom_ranks = np.argsort(clust_anom_scores)
-            detected_anom_clusts = clust_anom_ranks[:num_anom_clusts]
-            clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
-            clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
-            clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
-            print('detected anomalous clusters')
-            print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
-            print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
+            detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
+            print('scores reverse sorted')
+            detect_anom(rev_sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
+            print('')
 
-            detected_anom_clusts = rev_clust_anom_ranks[:num_anom_clusts]
-            clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
-            clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
-            clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
-            print('reverse sorted ---')
-            print('detected anomalous clusters')
-            print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
-            print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
+            if clust_inds != None:
+                clust_inds = clust_inds.detach().cpu().numpy()
+                clust_anom1,clust_anom2,clust_anom3=[],[],[]
+                try:
+                    for ind,clust in enumerate(clust_inds):
+                        if np.intersect1d(clust,anom_sc1).shape[0] > 0:
+                            clust_anom1.append(ind)
+                        if np.intersect1d(clust,anom_sc2).shape[0] > 0:
+                            clust_anom2.append(ind)
+                        if np.intersect1d(clust,anom_sc3).shape[0] > 0:
+                            clust_anom3.append(ind)
+                except:
+                    import ipdb ; ipdb.set_trace()
+                    print('what')
+                num_anom_clusts = len(clust_anom1) + len(clust_anom2) + len(clust_anom3)
+                clust_anom_scores = torch.mean(clust_anom_mats[0],dim=1).detach().cpu().numpy()
+                clust_anom_ranks = np.argsort(-clust_anom_scores)
+                rev_clust_anom_ranks = np.argsort(clust_anom_scores)
+                detected_anom_clusts = clust_anom_ranks[:num_anom_clusts]
+                clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
+                clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
+                clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
+                print('detected anomalous clusters')
+                print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
+                print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
+
+                detected_anom_clusts = rev_clust_anom_ranks[:num_anom_clusts]
+                clust1_score = np.intersect1d(clust_anom1,detected_anom_clusts).shape[0]/len(clust_anom1)
+                clust2_score = np.intersect1d(clust_anom2,detected_anom_clusts).shape[0]/len(clust_anom2)
+                clust3_score = np.intersect1d(clust_anom3,detected_anom_clusts).shape[0]/len(clust_anom3)
+                print('reverse sorted ---')
+                print('detected anomalous clusters')
+                print(f'scale 1: {clust1_score}, scale2: {clust2_score}, scale3: {clust3_score}')
+                print(f'total clusters: scale1: {len(clust_anom1)} scale2: {len(clust_anom2)} scale3: {len(clust_anom3)}')
 
 
-        all_anom = [anom_sc1,anom_sc2,anom_sc3]
-        all_anom_cat = [np.concatenate((anom_sc1,(np.concatenate((anom_sc2,anom_sc3)))))]
+            all_anom = [anom_sc1,anom_sc2,anom_sc3]
+            all_anom_cat = [np.concatenate((anom_sc1,(np.concatenate((anom_sc2,anom_sc3)))))]
 
-        # get clusters
-        if cluster:
-            clust_dicts, score_dicts = getHierClusterScores(graph,node_scores)
-            cluster_accs = [clf.classify(np.array(list(x.values())),all_anom,np.array(list(y.values()))) for x,y in zip(score_dicts,clust_dicts)]
-            print('cluster scores')
-            print(cluster_accs)
-        '''
-        # classify anoms with linear classifier
-        anom_accs = clf.classify(node_scores, all_anom)
-        print('\nnode scores')
-        print(anom_accs)
-        '''
-        
-    with open('output/{}-ranking_{}.txt'.format(dataset, sc), 'w+') as f:
-        for index in sorted_errors:
-            f.write("%s\n" % label[index])
-
+            # get clusters
+            if cluster:
+                clust_dicts, score_dicts = getHierClusterScores(graph,node_scores)
+                cluster_accs = [clf.classify(np.array(list(x.values())),all_anom,np.array(list(y.values()))) for x,y in zip(score_dicts,clust_dicts)]
+                print('cluster scores')
+                print(cluster_accs)
+            '''
+            # classify anoms with linear classifier
+            anom_accs = clf.classify(node_scores, all_anom)
+            print('\nnode scores')
+            print(anom_accs)
+            '''
+            
+        with open('output/{}-ranking_{}.txt'.format(args.dataset, sc), 'w+') as f:
+            for index in sorted_errors:
+                f.write("%s\n" % label[index])
+                
 def sparse_matrix_to_tensor(coo,feat):
     coo = scipy.sparse.coo_matrix(coo)
     v = torch.FloatTensor(coo.data)

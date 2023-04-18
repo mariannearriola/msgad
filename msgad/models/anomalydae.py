@@ -342,7 +342,7 @@ class AnomalyDAE_Base(nn.Module):
         s_, h = self.structure_ae(x, edge_index, dst_nodes)
         if batch_size < self.num_center_nodes:
             x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
-        return s_,s_
+    
         x_ = self.attribute_ae(x[:self.num_center_nodes], h)
         return x_, s_
 
@@ -397,7 +397,8 @@ class StructureAE(nn.Module):
         h = self.attention_layer(x, edge_index)[dst_nodes]
         # decoder
         # NOTE: removed because of loss formulation, results in nan feat transformer weights
-        s_ = torch.sigmoid(h @ h.T)
+        #s_ = torch.sigmoid(h @ h.T)
+        s_ = h@h.T
         #s_ = h @ h.T
 
         if True in torch.isnan(s_):

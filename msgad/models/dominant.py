@@ -318,5 +318,6 @@ class DOMINANT_Base(nn.Module):
         #import ipdb ; ipdb.set_trace()
         #s_ = torch.tanh(h_ @ h_.T)
         s_ = h_@h_.T
+        #s_ = torch.sigmoid(s_)
         # return reconstructed matrices
         return x_, s_

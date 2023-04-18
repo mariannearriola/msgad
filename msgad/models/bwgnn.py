@@ -58,12 +58,12 @@ class BWGNN(nn.Module):
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
             
-        x = self.linear3(all_h)[dst_nodes]
+        #x = self.linear3(all_h)#[dst_nodes]
         x = x@x.T
         #x = torch.mm(x,torch.transpose(x,0,1))
         #x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()
-        #return x
-        return torch.sigmoid(x)
+        return x
+        #return torch.sigmoid(x)
 
 class PolyConv(nn.Module):
     def __init__(self,
@@ -88,18 +88,18 @@ class PolyConv(nn.Module):
         def unnLaplacian(h, D_invsqrt, graph):
             h_src = h
             h_dst = h[:graph.number_of_dst_nodes()]
-            graph.srcdata['h'] = h_src * D_invsqrt[graph.srcnodes()]
-            graph.dstdata['h'] = h_dst * D_invsqrt[graph.dstnodes()]
+            graph.srcdata['hu'] = h_src * D_invsqrt[graph.srcnodes()]
+            graph.dstdata['hv'] = h_dst * D_invsqrt[graph.dstnodes()]
 
             # message pass src -> dst
-            graph.update_all(fn.copy_u('h','m'), fn.sum('m','h'))
+            graph.update_all(fn.copy_u('hu','m'), fn.sum('m','hv'))
 
             #graph.dstdata['self'] = h_dst * D_invsqrt[graph.dstnodes()]
             # message pass src -> dst
             #graph.update_all(fn.copy_u('self','m'), fn.sum('m','self'))
 
             # are srcs updated in message passing? read tutorials
-            return h_dst - graph.dstdata.pop('h') * D_invsqrt[graph.dstnodes()]
+            return h_dst - graph.dstdata.pop('hv') * D_invsqrt[graph.dstnodes()]
 
         with graph.local_scope():
             D_invsqrt = torch.pow(graph.out_degrees().float().clamp(

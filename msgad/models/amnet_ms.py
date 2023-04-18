@@ -10,6 +10,7 @@ from torch.nn import Parameter
 from torch_geometric.utils import remove_self_loops
 from torch_geometric.utils import get_laplacian
 import torch
+import numpy as np
 from numpy import polynomial
 import math
 
@@ -161,6 +162,18 @@ class AMNet_ms(nn.Module):
     def reset_parameters(self):
         pass
 
+    def __norm__(self, edge_index, num_nodes: Optional[int],
+                    edge_weight: OptTensor, normalization: Optional[str],
+                    lambda_max, dtype: Optional[int] = None):
+            edge_index, edge_weight = remove_self_loops(edge_index, edge_weight)
+            edge_index, edge_weight = get_laplacian(edge_index, edge_weight,
+                                                    normalization, dtype,
+                                                    num_nodes)
+
+            edge_weight = edge_weight / lambda_max
+            edge_weight.masked_fill_(edge_weight == float('inf'), 0)
+            assert edge_weight is not None
+            return edge_index, edge_weight
 
     def forward(self, x, edge_index, label=None):
         """
@@ -191,10 +204,18 @@ class AMNet_ms(nn.Module):
             import ipdb ; ipdb.set_trace()
             print('nan')
 
+        edge_index, norm = self.__norm__(edge_index, x.shape[0],
+                                         None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
+
+        L = np.zeros((x.shape[0],x.shape[0]))
+        edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
+        L[edge_index[0],edge_index[1]]=norm
+        self.L = L
+
         # ADAPT TO RECONSTRUCTION
         #return self.relu(res@res.T)
         # inner product always positive
-        return res@res.T
+        return res@res.T,res
         #return torch.tanh(res@res.T)
         #return res@res.T
         #return torch.sigmoid(res@res.T)

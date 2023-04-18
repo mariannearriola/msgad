@@ -32,7 +32,8 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
     if not alpha: alpha = 1 if recons=='struct' else 0
 
     # node sampling: full reconstruction error
-    all_costs, all_struct_error, all_feat_error = None, torch.tensor(0.), torch.tensor(0.)
+    all_costs, all_struct_error, all_feat_error = None, None, None
+    scale_weights=[1,1,1]
     total_struct_error,total_feat_error=None,None
     if not pos_edges == None:
         edge_ids = torch.vstack((pos_edges,neg_edges))
@@ -40,7 +41,6 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
             edge_labels = edge_labels.to(graph.device)
-    #import ipdb ; ipdb.set_trace()
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
         for ind, sc_pred in enumerate(preds):
@@ -52,17 +52,17 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                         #edge_labels = torch.round(graph[inds_label[ind]][edge_ids[:,0],edge_ids[:,1]])
                         #import ipdb; ipdb.set_trace()
                         edge_labels = graph[ind]
-
                     total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
   
                 else:
                     # collect loss for all edges/non-edges in reconstruction
                     if type(graph) != list:
                         if not pos_edges == None:
-                            adj_label=torch.sparse_coo_tensor(edge_ids.T,edge_labels)
-                            num_nodes = graph.num_dst_nodes()
-                            adj_label=adj_label.sparse_resize_((num_nodes,num_nodes),adj_label.sparse_dim(),adj_label.dense_dim())
-                            adj_label=adj_label.to_dense()
+                            adj_label=graph.adjacency_matrix().to_dense()
+                            #adj_label=torch.sparse_coo_tensor(edge_ids.T,edge_labels)
+                            #num_nodes = graph.num_dst_nodes()
+                            #adj_label=adj_label.sparse_resize_((num_nodes,num_nodes),adj_label.sparse_dim(),adj_label.dense_dim())
+                            #adj_label=adj_label.to_dense()
                         else:
                             if type(graph) == torch.Tensor:
                                 adj_label = graph
@@ -72,15 +72,15 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                                 num_nodes = graph.num_dst_nodes()
                     else:
                         adj_label = graph[ind].to(pos_edges.device)
-                        
                     edge_struct_errors = torch.pow(sc_pred - adj_label, 2)
-                    total_struct_error = torch.mean(torch.sqrt(torch.sum(edge_struct_errors,1)))
+                    total_struct_error = torch.sqrt(torch.sum(edge_struct_errors,1))
+                    #total_struct_error = torch.mean(torch.sqrt(torch.sum(edge_struct_errors,1)),)
 
             # feature loss
             if recons_ind == 1 and recons in ['feat','both']:
                 #import ipdb ; ipdb.set_trace()
                 feat_error = torch.nn.functional.mse_loss(sc_pred,feat.to(feat.device),reduction='none')
-                total_feat_error = torch.mean(feat_error,dim=0)
+                total_feat_error = torch.mean(feat_error,dim=1)
            
             # accumulate errors
             if all_costs is None:
@@ -94,8 +94,16 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                 if recons_ind == 0 and total_struct_error is not None:
                     all_struct_error = torch.cat((all_struct_error,(edge_struct_errors).unsqueeze(0)))
                 if recons_ind == 1 and total_feat_error is not None:
-                    all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
-                all_costs = torch.cat((all_costs,torch.add(total_struct_error*alpha,torch.mean(all_feat_error)*(1-alpha)).unsqueeze(0)))
+                    if all_feat_error is None:
+                        all_feat_error = (feat_error).unsqueeze(0)
+                    else:
+                        all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
+                    # assuming both is NOT multi-scale
+                    if recons != 'both':
+                        all_costs = torch.cat((all_costs,torch.add(total_struct_error*alpha*scale_weights[recons_ind],torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)))
+                    else:
+                        all_costs = torch.add(total_struct_error*alpha,torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)
+         
     return all_costs, all_struct_error, all_feat_error
 
 def get_sampled_losses(pred,edges,label):
