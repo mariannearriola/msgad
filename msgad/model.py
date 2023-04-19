@@ -5,6 +5,7 @@ import numpy.linalg as npla
 import sympy
 import math
 import copy
+import os
 from numpy import polynomial
 import networkx as nx
 from dgl.nn import EdgeWeightNorm
@@ -23,6 +24,21 @@ from models.amnet_ms import *
 from models.gcad import *
 from models.hogat import *
 from models.gradate import *
+
+def plot_spectrum(e,U,signal):
+    c = np.dot(U.transpose(), signal)
+    M = np.zeros((15,c.shape[1]))
+    c = np.array(c)
+    for j in range(signal.shape[0]):
+        idx = min(int(e[j] / 0.1), 15-1)
+        M[idx] += c[j]**2
+    M=M/sum(M)
+    y = M[:,0]
+    x = np.arange(y.shape[0])
+    spline = make_interp_spline(x, y)
+    X_ = np.linspace(x.min(), x.max(), 500)
+    Y_ = spline(X_)
+    plt.plot(X_,Y_)
 
 def edge_index_select(t, query_row, query_col):
     t_idx = t.indices()
@@ -85,9 +101,11 @@ class GraphReconstruction(nn.Module):
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
         self.d = args.d
+        self.epoch = args.epoch
         self.label_type = args.label_type
         self.dataload = args.dataload
         self.recons = args.recons
+        self.dataset = args.dataset
         self.model_str = args.model
         dropout = 0
         self.embed_act = act
@@ -99,9 +117,9 @@ class GraphReconstruction(nn.Module):
             self.module_list = nn.ModuleList()
             for i in range(3):
                 if 'multi-scale-amnet' == args.model:
-                    self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 2, 5, 5))
+                    self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 2, 2, 3))
                 elif 'multi-scale-bwgnn' == args.model:
-                    self.module_list.append(MSGAD(in_size,args.hidden_dim,d=(self.d)))
+                    self.module_list.append(MSGAD(in_size,args.hidden_dim,d=5))
 
         elif args.model == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
             self.conv = GRADATE(in_size,args.hidden_dim,'prelu',1,1,'avg',5)
@@ -150,7 +168,7 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
             
-    def forward(self,graph,last_batch_node,pos_edges,neg_edges,vis=False):
+    def forward(self,graph,last_batch_node,pos_edges,neg_edges,vis=False,vis_name=""):
         '''
         Input:
             graph: input dgl graph
@@ -185,40 +203,36 @@ class GraphReconstruction(nn.Module):
                 if self.model_str == 'multi-scale-amnet':
                     recons,res = i(feats,edges,dst_nodes)
                     recons_a.append(recons)
+                    L = i.L
+                elif self.model_str == 'multi-scale-bwgnn':
+                    recons,res = i(graph,feats,dst_nodes)
+                    recons_a.append(recons)
+                    if ind == 0 and vis == True:
+                        
+                        adj = graph.adjacency_matrix().to_dense()
+                        d = np.zeros(adj.shape[0])
+                        degree_in = np.ravel(adj.sum(axis=0))
+                        degree_out = np.ravel(adj.sum(axis=1))
+                        dw = (degree_in + degree_out) / 2
+                        disconnected = (dw == 0)
+                        np.power(dw, -0.5, where=~disconnected, out=d)
+                        D = scipy.sparse.diags(d)
+                        L = scipy.sparse.identity(adj.shape[0]) - D * adj * D
+                        L[disconnected, disconnected] = 0
+                
                 if ind == 0 and vis == True:
                     plt.figure()
-                    L = i.L
                     e,U = np.linalg.eigh(L)
                     e[0] = 0
-                    c = np.dot(U.transpose(), feats.detach().cpu().numpy())
-                    M = np.zeros((15,c.shape[1]))
-                    
-                    for j in range(feats.shape[0]):
-                        #import ipdb ; ipdb.set_trace()
-                        idx = min(int(e[j] / 0.1), 15-1)
-                        M[idx] += c[j]**2
-                    #for j in range(50):
-                    #    plt.plot(M[:,j])
-                    M=M/sum(M)
-                    plt.plot(M[:,0])
-                elif self.model_str == 'multi-scale-bwgnn':
-                    recons_a.append(i(graph,feats,dst_nodes))
                 if vis == True:
-                    c = np.dot(U.transpose(), res.detach().cpu().numpy())
-                    M = np.zeros((15,c.shape[1]))
-                    
-                    for j in range(feats.shape[0]):
-                        #import ipdb ; ipdb.set_trace()
-                        idx = min(int(e[j] / 0.1), 15-1)
-                        M[idx] += c[j]**2
-                    #for j in range(50):
-                    #    plt.plot(M[:,j])
-                    M=M/sum(M)
-                    plt.plot(M[:,0])
-                    #plt.plot(np.mean(M,axis=1))
+                    plot_spectrum(e,U,res.detach().cpu().numpy())
+            
             if vis == True:
                 plt.legend(['og','sc1','sc2','sc3'])
-                plt.savefig(f'filter_vis_{self.label_type}.png')
+                fpath = f'filter_vis/{self.dataset}'
+                if not os.path.exists(fpath):
+                    os.makedirs(fpath)
+                plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_{vis_name}.png')
             # collect multi-scale labels
             g = dgl.graph(graph.edges()).cpu()
             g.edata['_ID'] = graph.edata['_ID'].cpu()
@@ -231,10 +245,53 @@ class GraphReconstruction(nn.Module):
                     g.edata['w'] = self.norm(graph,(graph.edata['w']+epsilon)).cpu()
                 if 'prods' in self.label_type:
                     labels = []
-                    adj_label = graph.adjacency_matrix().to_dense().to(graph.device)
-                    for k in range(3):
-                        labels.append(adj_label)
+                    #graph_.add_edges(graph_.dstnodes(),graph_.dstnodes())
+                    adj_label = graph_.adjacency_matrix().to_dense().to(graph.device)
+                    for k in range(5):
+                        adj_label_ = adj_label
+                        upper_tri=torch.triu(adj_label_,1)
+                        nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
+                        sorted_idx = torch.argsort(-nz)
+                        drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
+                        adj_label_[drop_idx[:,0],drop_idx[:,1]]=0
+                        adj_label_[drop_idx[:,1],drop_idx[:,0]]=0
+                        adj_label_[torch.where(adj_label_>0)[0],torch.where(adj_label_>0)[1]]=1
+                        adj_label_[torch.where(adj_label_<0)[0],torch.where(adj_label_<0)[1]]=0
+                        labels.append(adj_label_)
                         adj_label = adj_label@adj_label
+                    if vis == True:
+                        legend = []
+                        plt.figure()
+                        #import ipdb ; ipdb.set_trace()
+                        for label_ind,label in enumerate(labels):
+                            d = np.zeros(label.shape[0])
+                            degree_in = np.ravel(label.sum(axis=0))
+                            degree_out = np.ravel(label.sum(axis=1))
+                            dw = (degree_in + degree_out) / 2
+                            disconnected = (dw == 0)
+                            np.power(dw, -0.5, where=~disconnected, out=d)
+                            D = scipy.sparse.diags(d)
+                            L = scipy.sparse.identity(label.shape[0]) - D * label * D
+                            L[disconnected, disconnected] = 0
+                            '''
+                            edge_index, edge_weight = get_laplacian(edge_index, edge_weight,
+                                                                    'sym', feats.dtype,
+                                                                    label.shape[0])
+                            edge_weight.masked_fill_(edge_weight == float('inf'), 0)
+                            edge_index = edge_index.detach().cpu().numpy() ; edge_weight = edge_weight.detach().cpu().numpy()
+                            #edge_weight = edge_weight / 2
+                            L = np.zeros((label.shape[0],label.shape[0]))
+                            L[edge_index[0],edge_index[1]]=edge_weight
+                            '''
+                            e, U = scipy.linalg.eigh(np.array(L), overwrite_a=True)
+                            plot_spectrum(e,U,feats.detach().cpu().numpy())
+                        
+                            legend.append(str(label_ind))
+                        plt.legend(legend)
+                        fpath = f'label_vis/{self.dataset}'
+                        if not os.path.exists(fpath):
+                            os.makedirs(fpath)
+                        plt.savefig(f'{fpath}/labels_{self.label_type}_{self.epoch}_{vis_name}.png')
                 elif self.label_type == 'single':
                     labels = []
                     '''
@@ -290,7 +347,7 @@ class GraphReconstruction(nn.Module):
            
 
                 if 'filter' in self.label_type:   
-                    K = 5
+                    K = 3
                     if 'amnet' in self.label_type:
                         coeffs =  get_bern_coeff(K)
                         label_idx=[0,2,3]
@@ -298,13 +355,15 @@ class GraphReconstruction(nn.Module):
                         coeffs = calculate_theta2(K)
                         label_idx=[0,2,4]
                     labels = []
-                    
+                    #graph_.add_edges(graph_.dstnodes(),graph_.dstnodes())
+                    #adj_label = graph_.adjacency_matrix().to_dense().to(graph.device)
                     adj_label = graph.adjacency_matrix().to_dense().to(graph.device)#[dst_nodes].cuda()
                     num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
                     labels = [adj_label]
                     for k in range(0, K+1):
                         adj_label_norm = self.norm_adj(adj_label.nonzero().contiguous().T)
                         adj_label_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
+                        #adj_label_ = adj_label
                         adj_label_[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
                         coeff = coeffs[k]
                         basis = adj_label_ * coeff[0]
@@ -321,15 +380,14 @@ class GraphReconstruction(nn.Module):
                         
                         basis[torch.where(basis>0)[0],torch.where(basis>0)[1]]=1
                         basis[torch.where(basis<0)[0],torch.where(basis<0)[1]]=0
+                        
                         labels.append(basis)
                     #labels=[adj_label,labels[0],labels[3]]
-   
+                    #labels=[labels[1],labels[3],labels[-1]]
                     if vis == True:
                         plt.figure()
                         legend = []
                         for label_ind,label in enumerate(labels):
-                            # remove self loop
-                            label.fill_diagonal_(0)
                             edge_index = label.nonzero().T
                             edge_weight = torch.ones(edge_index.shape[-1]).to(label.device)
                             edge_index, edge_weight = remove_self_loops(edge_index, edge_weight)
@@ -338,87 +396,20 @@ class GraphReconstruction(nn.Module):
                                                                     label.shape[0])
                             edge_weight.masked_fill_(edge_weight == float('inf'), 0)
                             edge_index = edge_index.detach().cpu().numpy() ; edge_weight = edge_weight.detach().cpu().numpy()
-                            edge_weight = edge_weight / 2
+                            #edge_weight = edge_weight / 2
                             L = np.zeros((label.shape[0],label.shape[0]))
                             L[edge_index[0],edge_index[1]]=edge_weight
                             e,U = np.linalg.eigh(L)
                             e[0] = 0
-                            c = np.dot(U.transpose(), feats.detach().cpu().numpy())
-                            M = np.zeros((15,c.shape[1]))
-                            
-                            for j in range(feats.shape[0]):
-                                #import ipdb ; ipdb.set_trace()
-                                idx = min(int(e[j] / 0.1), 15-1)
-                                M[idx] += c[j]**2
-                            #for j in range(50):
-                            #    plt.plot(M[:,j])
-                            M=M/sum(M)
-                            y = M[:,0]
-                            
-                            x = np.arange(y.shape[0])
-                            spline = make_interp_spline(x, y)
- 
-                            # Returns evenly spaced numbers
-                            # over a specified interval.
-                            X_ = np.linspace(x.min(), x.max(), 500)
-                            Y_ = spline(X_)
-                            plt.plot(X_,Y_)
-                            
+                            plot_spectrum(e,U,feats.detach().cpu().numpy())
                             #plt.plot(y)
                             legend.append(str(label_ind))
                         plt.legend(legend)
-                        plt.savefig(f'labels_{self.label_type}.png')
-                    labels=[labels[0],labels[4],labels[-1]]
-                    '''
-                    g= dgl.graph(graph.edges()).cpu()
-                    g.edata['w'] = torch.full(graph.edges()[0].shape,1.)
-                    epsilon = 1e-8
-                    g.edata['w'] = self.norm(g,(g.edata['w']+epsilon)).cpu()
-                    import ipdb ; ipdb.set_trace()
-                    for k in range(0,K+1):
-                        prod_graph = dgl.khop_graph(g,k=k)
-                        prod_graphs.append(prod_graph.subgraph(dst_nodes))
-                        #prod_graph=dgl.khop_out_subgraph(g, dst_nodes, store_ids=True, k=k+1)[0]
-                        #prod_graphs.append(g.edge_subgraph(prod_graph.edata['_ID'],relabel_nodes=False))
-                    import ipdb ; ipdb.set_trace()
-                    #full_e = torch.zeros(prod_graphs[-1].num_edges())
-                    #full_eids = prod_graphs[-1].edata['_ID']
-                    basis_ = prod_graphs[0]
-                    #basis_ = dgl.khop_out_subgraph(g, dst_nodes, store_ids=True, k=0)[0]
-                    #basis_ = g.edge_subgraph(basis_.edata['_ID'],relabel_nodes=False)
-                    
-                    #basis_.edata['w']=torch.ceil(basis_.edata['w'])
-                    #labels_edges=basis_.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
-                    #labels_pos_eids=basis_.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
-                    #labels_edges[torch.where(labels_edges!=0)[0]] = basis_.edata['w'][labels_pos_eids]
-                    #labels.append(labels_edges.to(graph.device))
-                    
-                    #basis_.edata['w']=torch.full(g.edges()[0].shape,1.)
-                    #basis_.edata['w'] = self.norm(basis_,(basis_.edata['w']+epsilon)).cpu()
-                    #labels.append(basis_.adjacency_matrix().to_dense().to(graph.device))
-                    for k in range(0, K+1):
-                        coeff = coeffs[k]
-                        edata = (basis_.edata['w'] * coeff[0])
-                        basis = copy.deepcopy(basis_)
-                        basis.edata['w'] = edata
-                        for i in range(1, K+1):
-                            prod_graph = prod_graphs[i]
-                            prod_graph.edata['w']*=coeff[i]
-                            basis = dgl.adj_sum_graph([prod_graph,basis],'w')
-                        if 'sample' in self.label_type:
-                            drop_edges = torch.argsort(-basis.edata['w'])[num_a_edges:]
-                            basis = dgl.remove_edges(basis,drop_edges)
-                            basis.edata['w']=torch.sigmoid(basis.edata['w'])
-                        if 'round' in self.label_type:
-                            basis.edata['w'][torch.where(basis.edata['w']<0)]=0
-                            basis.edata['w'][torch.where(basis.edata['w']>0)]=1
-                            #basis.edata['w'][basis.edata['w'].nonzero()]=1.
-                        labels_edges=basis.has_edges_between(all_edges[:,0].cpu(),all_edges[:,1].cpu()).float()
-                        labels_pos_eids=basis.edge_ids(all_edges[:,0].cpu()[labels_edges.nonzero()].flatten(),all_edges[:,1].cpu()[labels_edges.nonzero()].flatten())
-                        labels_edges[torch.where(labels_edges!=0)[0]] = basis.edata['w'][labels_pos_eids]
-                        labels.append(labels_edges.to(graph.device))
-                        #labels.append(basis.adjacency_matrix().to_dense().to(graph.device))
-                    '''
+                        fpath = f'label_vis/{self.dataset}'
+                        if not os.path.exists(fpath):
+                            os.makedirs(fpath)
+                        plt.savefig(f'{fpath}/labels_{self.label_type}_{self.epoch}_{vis_name}.png')
+                    labels = [labels[1],labels[2],labels[3]]
             else:
                 labels = None
             '''
@@ -434,13 +425,7 @@ class GraphReconstruction(nn.Module):
         elif not self.dataload:
             labels = [graph.adjacency_matrix().to_dense().to(graph.device)]
         # single scale reconstruction label
-        '''
-        if 'multi-scale' not in self.model_str:
-            edges = graph.has_edges_between(all_edges[:,0],all_edges[:,1]).float()
-            #labels_pos_eids=graph.edge_ids(all_edges[:,0][edges.nonzero()].flatten(),all_edges[:,1][edges.nonzero()].flatten())
-            #edges[torch.where(edges!=0)[0]] = 1.#graph.edata['w'][labels_pos_eids]
-            labels = [edges]
-        '''
+        
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:
             recons_x,recons_a = recons[0]
@@ -453,8 +438,6 @@ class GraphReconstruction(nn.Module):
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         elif self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate']:
             recons_a = [recons[0]]
-            #recons = [recons[graph.dstnodes()][:,graph.dstnodes()]]
-            #recons_a = [recons_a[dst_nodes][:,dst_nodes]]
 
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
