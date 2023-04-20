@@ -56,6 +56,8 @@ def graph_anomaly_detection(args):
     best_loss = torch.tensor(float('inf')).to(args.device)    
     A_hat, X_hat = None,None
     seconds = time.time()
+     # epoch x 3 x num filters x nodes
+    train_attn_w = torch.zeros((args.epoch,3,3,adj.number_of_nodes()))
     for epoch in range(args.epoch):
         epoch_l = 0
         if epoch > 0 and (args.datasave is True or args.dataload is True):
@@ -130,7 +132,8 @@ def graph_anomaly_detection(args):
             optimizer.zero_grad()
     
             if struct_model:
-                A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges)
+                vis = True if (epoch == 0 and iter == dataloader.__len__()-1 and args.vis_filters == True) else False
+                A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,vis=vis,vis_name='epoch1')
                 if args.datasave:
                     lbl = model_lbl
                     
@@ -145,7 +148,7 @@ def graph_anomaly_detection(args):
                 loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
 
             if 'multi-scale' in args.model:
-                l = torch.sum(torch.mean(loss,dim=1))
+                l = torch.sum(torch.mean(loss))
             else:
                 l = torch.mean(loss)
             '''
@@ -166,23 +169,33 @@ def graph_anomaly_detection(args):
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
-            l.backward()
-            optimizer.step()
-        epoch_l = torch.sum(epoch_l)
-        #epoch_l.backward()
-        #optimizer.step()
+            #l.backward()
+            #optimizer.step()
+
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
-
         if args.model != 'madan' and 'multi-scale' in args.model:
-            print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3), "losses=",torch.round(torch.mean(loss,dim=1),decimals=4).detach().cpu())
+            print("Epoch:", '%04d' % (epoch), "train_loss=", round(torch.sum(epoch_l).item(),3), "losses=",torch.round(loss,decimals=4).detach().cpu())
         else:
              print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3))
         print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
 
+        epoch_l = torch.sum(epoch_l)
+        epoch_l.backward()
+        optimizer.step()
+        if struct_model:
+            if struct_model.attn_weights != None:
+                # epoch x 3 x num filters x nodes
+                train_attn_w[epoch,:,:,in_nodes]=torch.unsqueeze(struct_model.attn_weights,0)
+
     print('best loss:', best_loss)
+    if struct_model.attn_weights != None:
+        plot_attn_scores(train_attn_w,norms,f'{args.dataset}_norms')
+        plot_attn_scores(train_attn_w,anoms,f'{args.dataset}_anoms')
     
     #model = torch.load('best_model.pt')
+    if args.vis_filters == True:
+        print('hi')
 
     # accumulate node-wise anomaly scores via model evaluation
     if args.model not in ['madan','gcad']:
@@ -207,7 +220,7 @@ def graph_anomaly_detection(args):
         dataloader = fetch_dataloader(adj, edges, args)
     #import ipdb ; ipdb.set_trace()
     for loaded_input in dataloader:
-        vis = True if iter == 0 else False
+        vis = True if (args.vis_filters == True and iter == 0) else False
         if args.dataload:
             loaded_input,lbl=load_batch(loaded_input,'test',args)
         # collect input
@@ -227,7 +240,8 @@ def graph_anomaly_detection(args):
     
         # run evaluation
         if struct_model and args.model != 'gcad':
-            A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,vis=vis)
+            
+            A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,vis=vis,vis_name='test')
             if args.datasave:
                 lbl = model_lbl
         if args.model == 'gcad':

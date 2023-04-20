@@ -19,6 +19,18 @@ from models.gcad import *
 import matplotlib.pyplot as plt
 import os
 
+def plot_attn_scores(attn_weights,nodes,fname):
+    # epoch x 3 x num filters x nodes
+    import ipdb ; ipdb.set_trace()
+    for scale in range(attn_weights.shape[1]):
+        plt.figure()
+        legend = []
+        for filter in range(attn_weights.shape[2]):
+            plt.plot(attn_weights[:,scale,filter,nodes].detach().cpu().numpy()[0])
+            legend.append(f'filter{filter}')
+        plt.legend(legend)
+        plt.savefig(f'{fname}_{scale}.png')
+
 def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
     edge_ids_,node_ids_=None,None
     if args.batch_type == 'edge':
@@ -63,13 +75,13 @@ def fetch_dataloader(adj, edges, args):
         if args.dataset in ['yelpchi']:
             num_neighbors = 100
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
-        elif args.dataset in ['weibo','cora_triple_sc_all','tfinance','elliptic']:
+        elif args.dataset in ['cora_ori','weibo','cora_triple_sc_all','tfinance','elliptic','cora_triple_sc3_test','cora_no_anom']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/1)#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/100)#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
@@ -232,7 +244,10 @@ class anom_classifier():
             dataset: dataset string
         '''
         # anom_clf = MessagePassing(aggr='max')
-        anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
+        if len(sc_label[0]) > 0:
+            anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
+        else:
+            anom_sc1,anom_sc2,anom_sc3=[],[],[]
         if 'cora' in args.dataset or 'weibo' in args.dataset:
             clf = anom_classifier(nu=0.5)
         
@@ -286,8 +301,11 @@ class anom_classifier():
                 plt.plot(np.arange(ms_anoms_num),hit_rankings)
                 #plt.legend(['single','sc1','sc2','sc3','total'])
                 plt.legend(['sc1','sc2','sc3','total'])
-                plt.savefig(f'{args.dataset}_{sc}_{args.model}_hit_at_k.png')
-            print(f'SCALE {sc+1} loss',np.mean(node_scores))
+                fpath = f'hit_at_k/{args.dataset}'
+                if not os.path.exists(fpath):
+                    os.makedirs(fpath)
+                plt.savefig(f'{fpath}/{sc}_{args.model}_{args.epoch}_hit_at_k.png')
+            print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
 
             detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)
             print('scores reverse sorted')
@@ -373,8 +391,8 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         adj = data_mat['Network']
 
     truth = data_mat['Label'].flatten()
-
-    sc_label = data_mat['scale_anomaly_label']
+    sc_label = data_mat['scale_anomaly_label'] if 'scale_anomaly_label' in data_mat.keys() else []
+    
     
     if 'tfinance' in dataset:
         sc_label = sc_label[0]
@@ -382,8 +400,13 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
     elif 'weibo' in dataset:
         sc_label = sc_label[0]
         anom_sc1,anom_sc2,anom_sc3 = sc_label[0][0],sc_label[1][0],sc_label[2][0]
+    elif '_test' in dataset:
+        anom_sc1,anom_sc2,anom_sc3,_ = sc_label.T
     elif 'cora' in dataset:
-        anom_sc1,anom_sc2,anom_sc3=sc_label[0]
+        if len(sc_label) > 0:
+            anom_sc1,anom_sc2,anom_sc3=sc_label[0]
+        else:
+            anom_sc1,anom_sc2,anom_sc3=[],[],[]
     elif 'yelpchi' in dataset:
         anom_sc1,anom_sc2,anom_sc3=sc_label[0]
     elif 'elliptic' in dataset:

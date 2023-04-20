@@ -43,7 +43,7 @@ class MSGAD(nn.Module):
         self.linear2 = nn.Linear(h_dim*2, h_dim)
         self.act = nn.LeakyReLU()
         self.d = d
-        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
+        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d+1,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
         self.relu = torch.nn.ReLU()
         
     def forward(self, graph, in_feat, dst_nodes):
@@ -69,7 +69,7 @@ class MSGAD(nn.Module):
         # inner-product decoder
         all_h = all_h[dst_nodes]
         recons = all_h@all_h.T
-        return recons
+        return recons,all_h
 
 class PolyConv(nn.Module):
     def __init__(self,

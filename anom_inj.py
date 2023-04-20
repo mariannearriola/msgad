@@ -101,8 +101,6 @@ seed = 10
 m = 15  #num of fully connected nodes  #10 15 20   5 (clique size)
 k = 50
 s = 9 # number of scales
-#scale_sizes = np.array([5,15,45])
-#n = np.array([2,1,1])
 scale=3
 num_clust=93
 size=50
@@ -113,20 +111,15 @@ prob_connect=0.05
 prob_connect = 0.3
 #prob_connect=prob_connects[scale-1]
 #prob_connect=0.98
-scale_sizes = np.array([10,50,150,1])
+scale_sizes = np.array([5,5,5,1])
 #scale_sizes = np.full((num_clust,),size)
 #n = np.array([30,6,2,1])
 #n= np.array([5,2,2])
 #n = np.full((num_clust,),1)
-n = np.array([1,1,1,90])
+n = np.array([1,1,1,5])
 #attr_scales = np.array([3,1,1,1])
 #attr_scales = np.array([1,1,1,1])
 attr_scales = np.full((num_clust,),1)
-#probs = np.array([0.2,0.87,0.9335])
-#probs = np.array([0.05,0.3,0.5])
-#probs = np.array([0.5,0.5,0.5])
-#probs = np.full((num_clust,),prob_connect)
-#prob = np.array([0.1,0.1,0.1])
 
 
 # Set seed
@@ -373,7 +366,8 @@ print('Saving mat file...')
 attribute = dense_to_sparse(attribute_dense)
 adj = dense_to_sparse(adj_dense)
 
-savedir = './pygsp-master/pygsp/data/ms_data'
+#savedir = './pygsp-master/pygsp/data/ms_data'
+savedir = './msgad/data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
 #import ipdb ; ipdb.set_trace()

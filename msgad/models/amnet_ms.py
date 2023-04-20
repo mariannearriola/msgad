@@ -3,6 +3,10 @@ import torch.nn.functional as F
 from itertools import chain
 import torch.nn as nn
 
+import scipy
+import scipy.sparse as sp
+import sympy
+
 from typing import Optional
 from torch_geometric.typing import OptTensor
 from torch_geometric.nn import MessagePassing
@@ -64,7 +68,7 @@ class BernConv(MessagePassing):
                                                 normalization, dtype,
                                                 num_nodes)
 
-        edge_weight = edge_weight / lambda_max
+        edge_weight = edge_weight #/ lambda_max
         edge_weight.masked_fill_(edge_weight == float('inf'), 0)
         assert edge_weight is not None
         return edge_index, edge_weight
@@ -108,10 +112,10 @@ class BernConv(MessagePassing):
             out += basis * weight[k]
         return out
 
-
+    
     @staticmethod
     def get_bern_coeff(degree):
-
+        
         def Bernstein(de, i):
             coefficients = [0, ] * i + [math.comb(de, i)]
             first_term = polynomial.polynomial.Polynomial(coefficients)
@@ -124,7 +128,18 @@ class BernConv(MessagePassing):
             out.append(Bernstein(degree, i).coef)
 
         return out
-
+        '''
+        thetas = []
+        x = sympy.symbols('x')
+        for i in range(degree+1):
+            f = sympy.poly((x/2) ** i * (1 - x/2) ** (degree-i) / (scipy.special.beta(i+1, degree+1-i)))
+            coeff = f.all_coeffs()
+            inv_coeff = []
+            for i in range(degree+1):
+                inv_coeff.append(float(coeff[degree-i]))
+            thetas.append(inv_coeff)
+        return thetas
+        '''
 
 class AMNet_ms(nn.Module):
     def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
@@ -149,7 +164,7 @@ class AMNet_ms(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hid_channels, num_class))
 
-        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
+        #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
 
         self.attn = list(self.W_x.parameters())
         self.attn.extend(list(self.W_f.parameters()))
@@ -197,9 +212,10 @@ class AMNet_ms(nn.Module):
         soft_score = F.softmax(score_logit, dim=1)
         score = soft_score
 
-        res = h_filters[:, 0, :] * score[:, 0]
+        # attention for various freq. profiles
+        res = h_filters[:, 0, :] * score[:, 0]# * torch.sigmoid(self.lam[0])
         for i in range(1, self.filter_num):
-            res += torch.sigmoid(self.lam[i])*(h_filters[:, i, :] * score[:, i])
+            res += (h_filters[:, i, :] * score[:, i])#*torch.sigmoid(self.lam[i])
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
@@ -211,14 +227,8 @@ class AMNet_ms(nn.Module):
         edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
         L[edge_index[0],edge_index[1]]=norm
         self.L = L
-
-        # ADAPT TO RECONSTRUCTION
-        #return self.relu(res@res.T)
-        # inner product always positive
-        return res@res.T,res
-        #return torch.tanh(res@res.T)
-        #return res@res.T
-        #return torch.sigmoid(res@res.T)
+        #import ipdb ; ipdb.set_trace()
+        return res@res.T,res,torch.squeeze(score,-1).T
 
 
 
