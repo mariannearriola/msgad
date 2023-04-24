@@ -19,18 +19,6 @@ from models.gcad import *
 import matplotlib.pyplot as plt
 import os
 
-def plot_attn_scores(attn_weights,nodes,fname):
-    # epoch x 3 x num filters x nodes
-    import ipdb ; ipdb.set_trace()
-    for scale in range(attn_weights.shape[1]):
-        plt.figure()
-        legend = []
-        for filter in range(attn_weights.shape[2]):
-            plt.plot(attn_weights[:,scale,filter,nodes].detach().cpu().numpy()[0])
-            legend.append(f'filter{filter}')
-        plt.legend(legend)
-        plt.savefig(f'{fname}_{scale}.png')
-
 def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
     edge_ids_,node_ids_=None,None
     if args.batch_type == 'edge':
@@ -42,6 +30,7 @@ def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
         rev_id_dict = {v: k for k, v in edge_id_dict.items()}
         edge_ids_=np.vectorize(edge_id_dict.get)(edge_ids)
         #edge_ids = np.vectorize(rev_id_dict.get)(edge_ids)
+        node_ids_ = node_ids_score
     else:
         node_ids_ = g_batch.ndata['_ID']
     return edge_ids_,node_ids_
@@ -71,17 +60,16 @@ def init_model(feat_size,args):
 
 def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
-        #sampler = dgl.dataloading.MultiLayerFullNeighborSampler(4)
         if args.dataset in ['yelpchi']:
-            num_neighbors = 100
-            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
+            num_neighbors = 5
+            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors])#,num_neighbors])
         elif args.dataset in ['cora_ori','weibo','cora_triple_sc_all','tfinance','elliptic','cora_triple_sc3_test','cora_no_anom']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/100)#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())#/10)#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
@@ -117,6 +105,9 @@ def save_batch(loaded_input,lbl,iter,setting,args):
             os.makedirs(dirpath)
         with open (f'{dirpath}/{iter}.pkl','wb') as fout:
             pkl.dump({'loaded_input':loaded_input,'label':[l.to_sparse() for l in lbl]},fout)
+    for i in range(len(loaded_input)):
+        del loaded_input[0]
+    torch.cuda.empty_cache()
 
 def load_batch(iter,setting,args):
     dirpath = f'{args.datadir}/{args.dataset}/{setting}'
@@ -271,7 +262,7 @@ class anom_classifier():
             # run graph transformer with node score attributes
             # import ipdb ; ipdb.set_trace()
             # anom_preds = anom_clf.forward(node_scores,graph.edges())
-            
+            node_scores[np.isnan(node_scores).nonzero()] = 0.
             sorted_errors = np.argsort(-node_scores)
             rev_sorted_errors = np.argsort(node_scores)
             rankings = label[sorted_errors]
@@ -301,10 +292,13 @@ class anom_classifier():
                 plt.plot(np.arange(ms_anoms_num),hit_rankings)
                 #plt.legend(['single','sc1','sc2','sc3','total'])
                 plt.legend(['sc1','sc2','sc3','total'])
-                fpath = f'hit_at_k/{args.dataset}'
+                fpath = f'hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
                 if not os.path.exists(fpath):
                     os.makedirs(fpath)
-                plt.savefig(f'{fpath}/{sc}_{args.model}_{args.epoch}_hit_at_k.png')
+                plt.ylabel('# predictions')
+                plt.xlabel('# multi-scale anomalies detected')
+                plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
+   
             print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
 
             detect_anom(sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, 1)

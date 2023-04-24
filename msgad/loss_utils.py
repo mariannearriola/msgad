@@ -67,8 +67,8 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                     else:
                         adj_label = graph[ind].to(pos_edges.device)
                     edge_struct_errors = torch.pow(sc_pred - adj_label, 2)
-                    
-                    total_struct_error = torch.sqrt(torch.sum(edge_struct_errors,1))
+                    epsilon = 1e-8
+                    total_struct_error = torch.sqrt(torch.sum(edge_struct_errors)+epsilon)
 
             # feature loss
             if recons_ind == 1 and recons in ['feat','both']:
@@ -119,10 +119,18 @@ def get_sampled_losses(pred,edges,label):
         edge_errors : array-like, shape=[]
             edge-wise errors
     """
+    #edge_errors = pred[edges[:,0],edges[:,1]]
+    #edge_errors=torch.sigmoid(pred[edges[:,0],edges[:,1]])
     edge_errors = pred[edges[:,0],edges[:,1]]
     label = label[edges[:,0],edges[:,1]]
-    label[torch.where(label<0)]=0.
-    label[torch.where(label>0)]=1.
+    #label[torch.where(label<0)]=0.
+    #label[torch.where(label>0)]=1.
+    #edge_errors = torch.sigmoid(edge_errors)
+    #edge_errors[torch.where(edge_errors<0)]=0.
+    #edge_errors[torch.where(edge_errors>0)]=1.
+    #return torch.nn.functional.binary_cross_entropy(edge_errors,label), torch.nn.functional.binary_cross_entropy(edge_errors,label,reduction='none')
+    #import ipdb ; ipdb.set_trace()
     edge_errors = torch.pow(torch.abs(edge_errors-label),2)
+    #epsilon=1e-8
     total_error = torch.sqrt(torch.sum(edge_errors))
     return total_error, torch.sqrt(edge_errors)

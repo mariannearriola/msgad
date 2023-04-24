@@ -110,12 +110,23 @@ class BernConv(MessagePassing):
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
             out += basis * weight[k]
+        del lambda_max
+        del basis
+        del weight
+        del Bx
+        del bern_coeff
+        del Bx_next
+        del Bx_0
+        del edge_index
+        del norm
+        torch.cuda.empty_cache()
+        
         return out
 
     
     @staticmethod
     def get_bern_coeff(degree):
-        
+        '''
         def Bernstein(de, i):
             coefficients = [0, ] * i + [math.comb(de, i)]
             first_term = polynomial.polynomial.Polynomial(coefficients)
@@ -138,14 +149,20 @@ class BernConv(MessagePassing):
             for i in range(degree+1):
                 inv_coeff.append(float(coeff[degree-i]))
             thetas.append(inv_coeff)
+        del x
+        del inv_coeff
+        del coeff
+        del f
+        torch.cuda.empty_cache()
         return thetas
-        '''
+        
 
 class AMNet_ms(nn.Module):
     def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
         super(AMNet_ms, self).__init__()
         self.act_fn = nn.ReLU()
         self.attn_fn = nn.Tanh()
+        self.act_sg = nn.Sigmoid()
         self.linear_transform_in = nn.Sequential(nn.Linear(in_channels, hid_channels),
                                                  self.act_fn,
                                                  nn.Linear(hid_channels, hid_channels),
@@ -203,15 +220,18 @@ class AMNet_ms(nn.Module):
         for i, filter_ in enumerate(self.filters):
             h = filter_(x, edge_index)
             h_list.append(h)
+            del filter_
+            del h
+        torch.cuda.empty_cache()
 
         h_filters = torch.stack(h_list, dim=1)
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
 
         score_logit = torch.bmm(h_filters_proj, x_proj)
-        soft_score = F.softmax(score_logit, dim=1)
-        score = soft_score
-
+        #soft_score = F.softmax(score_logit, dim=1)
+        #score = soft_score
+        score = score_logit
         # attention for various freq. profiles
         res = h_filters[:, 0, :] * score[:, 0]# * torch.sigmoid(self.lam[0])
         for i in range(1, self.filter_num):
@@ -220,15 +240,25 @@ class AMNet_ms(nn.Module):
             import ipdb ; ipdb.set_trace()
             print('nan')
 
-        edge_index, norm = self.__norm__(edge_index, x.shape[0],
-                                         None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
+        #edge_index, norm = self.__norm__(edge_index, x.shape[0],
+        #                                 None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
 
-        L = np.zeros((x.shape[0],x.shape[0]))
-        edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
-        L[edge_index[0],edge_index[1]]=norm
-        self.L = L
-        #import ipdb ; ipdb.set_trace()
-        return res@res.T,res,torch.squeeze(score,-1).T
+        #L = np.zeros((x.shape[0],x.shape[0]))
+        #edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
+        #L[edge_index[0],edge_index[1]]=norm
+        #self.L = L
+        #res_ = torch.sigmoid(res@res.T)
+        res_ = res@res.T
+        del h_filters
+        del x
+        del score_logit
+        del x_proj
+        del h_filters_proj
+        for i in range(len(h_list)):
+            del h_list[0]
+        torch.cuda.empty_cache()
+
+        return res_,res,torch.squeeze(score,-1).T
 
 
 

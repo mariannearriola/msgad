@@ -10,15 +10,6 @@ import dgl
 import torch
 import numpy as np
 
-def normalize_adj(adj):
-    """Symmetrically normalize adjacency matrix."""
-    adj = sp.coo_matrix(adj)
-    rowsum = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
-
 
 class MSGAD(nn.Module):
     """
@@ -41,34 +32,40 @@ class MSGAD(nn.Module):
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
         self.linear = nn.Linear(in_dim, h_dim*2)
         self.linear2 = nn.Linear(h_dim*2, h_dim)
-        self.act = nn.LeakyReLU()
+        #self.act = nn.LeakyReLU()
+        self.act = nn.ReLU()
         self.d = d
         self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d+1,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
-        self.relu = torch.nn.ReLU()
+        #self.relu = torch.nn.ReLU()
         
     def forward(self, graph, in_feat, dst_nodes):
         dst_nodes = graph.dstnodes()
         if graph.is_block: graph = dgl.block_to_graph(graph)
         # add self-loop
-        graph.add_edges(graph.dstnodes(),graph.dstnodes())
+        #graph.add_edges(graph.dstnodes(),graph.dstnodes())
 
         # feature transformer
         h = self.linear(in_feat)
         h = self.act(h)
         h = self.linear2(h)
         h = self.act(h)
-        
+        #return h@h.T,h 
         # scale-wise embeddings via multi-frequency graph wavelet        
         for ind,conv in enumerate(self.conv):
             h0 = conv(graph, h)
             if ind == 0:
-                all_h = torch.sigmoid(self.lam[0])*h0
+                all_h = h0#*torch.sigmoid(self.lam[0])
             else:
-                all_h += torch.sigmoid(self.lam[ind])*h0
+                all_h += h0#*torch.sigmoid(self.lam[0])
+            del h0
+            torch.cuda.empty_cache()
 
         # inner-product decoder
         all_h = all_h[dst_nodes]
         recons = all_h@all_h.T
+        del h
+
+        torch.cuda.empty_cache()
         return recons,all_h
 
 class PolyConv(nn.Module):
@@ -110,7 +107,8 @@ class PolyConv(nn.Module):
             for k in range(1, self._k):
                 feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
                 h += self._theta[k]*feat[graph.dstnodes()]
-
+                del feat
+                torch.cuda.empty_cache()
         return h
 
 def calculate_theta2(d):

@@ -1,31 +1,25 @@
-from scipy.sparse import data
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch_geometric
 import numpy as np
-import scipy.sparse as sp
-import scipy.io
-from datetime import datetime
 import argparse
-import scipy
 import networkx as nx
-import torch_geometric
-from torch.utils.data import DataLoader
-from scipy import stats
 from utils import *
 from loss_utils import *
-import pickle as pkl
 import random 
 import time
+import gc
 from models.gcad import *
+from model import *
 import MADAN.Madan as md
+from visualization import *
+from GPUtil import showUtilization as gpu_usage
+
 import warnings
 warnings.filterwarnings("ignore")
 
 def graph_anomaly_detection(args):
     """Pipeline for autoencoder-based graph anomaly detection"""
     # load data
+    torch.manual_seed(1)
     sp_adj, edge_idx, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     anoms,norms=np.where(truth==1)[0],np.where(truth==0)[0]
     if sp_adj is not None:
@@ -37,7 +31,6 @@ def graph_anomaly_detection(args):
         adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feats.shape[0])
         adj.ndata['feature'] = feats
     edges=adj.edges('eid')
-
     if args.dataload:
         dataloader = np.arange(len(os.listdir(f'{args.datadir}/{args.dataset}/train')))
     else:
@@ -46,6 +39,7 @@ def graph_anomaly_detection(args):
 
     # intialize model (on given device)
     adj = adj.to(args.device)
+    feats = feats#.to(args.device)
     struct_model,feat_model=None,None
     struct_model,params = init_model(feats.size(1),args)
 
@@ -53,15 +47,19 @@ def graph_anomaly_detection(args):
         optimizer = torch.optim.Adam(params, lr = args.lr)
     
     # begin model training
-    best_loss = torch.tensor(float('inf')).to(args.device)    
+    #best_loss = torch.tensor(float('inf')).to(args.device)    
     A_hat, X_hat = None,None
+    struct_loss,feat_loss=None,None
     seconds = time.time()
      # epoch x 3 x num filters x nodes
-    train_attn_w = torch.zeros((args.epoch,3,3,adj.number_of_nodes()))
+    train_attn_w = torch.zeros((args.epoch,3,5,adj.number_of_nodes())).to(args.device)
+    print(dataloader.__len__())
+    
     for epoch in range(args.epoch):
         epoch_l = 0
         if epoch > 0 and (args.datasave is True or args.dataload is True):
-            random.shuffle(dataloader)
+            pass
+            #random.shuffle(dataloader)
         if args.model == 'gcad': break
         iter=0
         for data_ind in dataloader:
@@ -128,12 +126,26 @@ def graph_anomaly_detection(args):
                     import ipdb ; ipdb.set_trace()
                 iter += 1
                 continue
-            
             optimizer.zero_grad()
-    
+            node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
+            batch_sc_label = []
+            in_nodes_ = in_nodes.detach().cpu().numpy()
+            for sc_ in sc_label:
+                sc_labels = []
+                if len(sc_) == 0: continue
+                for sc__ in sc_:
+                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__[0]).shape[0]>0:
+                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__[0])))
+
+                if len(sc_labels)>0:
+                    batch_sc_label.append(np.array(sc_labels))
+            #rev_node_dict = {v: k for k, v in node_dict.items()}
+
+            #for anom in sc_label:
+
             if struct_model:
-                vis = True if (epoch == 0 and iter == dataloader.__len__()-1 and args.vis_filters == True) else False
-                A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,vis=vis,vis_name='epoch1')
+                vis = True if (epoch == 0 and iter == 0 and args.vis_filters == True) else False
+                A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='epoch1')
                 if args.datasave:
                     lbl = model_lbl
                     
@@ -169,9 +181,41 @@ def graph_anomaly_detection(args):
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
-            #l.backward()
-            #optimizer.step()
+            print('iter',iter)
 
+            del g_batch
+            #import ipdb ; ipdb.set_trace()
+            for k in range(len(loaded_input)):
+                del loaded_input[0]
+            for k in range(len(sc_labels)):
+                del sc_labels[0]
+            for k in range(len(batch_sc_label)):
+                del batch_sc_label[0]
+            for k in range(len(A_hat)):
+                del A_hat[0]
+            for k in range(len(res_a)):
+                del res_a[0]
+            for k in range(len(model_lbl)):
+                del model_lbl[0]
+            if X_hat is not None:
+                for k in range(len(X_hat)):
+                    del X_hat[0]
+            del struct_loss
+            del loss
+            del node_dict
+            #del l
+            #del in_nodes
+            del in_nodes_
+            del pos_edges
+            del neg_edges
+            if feat_loss is not None:
+                del feat_loss
+
+            torch.cuda.empty_cache()
+            gc.collect()
+            l.backward()
+            optimizer.step()
+        '''
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
         if args.model != 'madan' and 'multi-scale' in args.model:
@@ -179,23 +223,17 @@ def graph_anomaly_detection(args):
         else:
              print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3))
         print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
-
+        '''
+        print('epoch done',epoch)
         epoch_l = torch.sum(epoch_l)
-        epoch_l.backward()
-        optimizer.step()
+        #epoch_l.backward()
+        #optimizer.step()
         if struct_model:
             if struct_model.attn_weights != None:
                 # epoch x 3 x num filters x nodes
                 train_attn_w[epoch,:,:,in_nodes]=torch.unsqueeze(struct_model.attn_weights,0)
-
-    print('best loss:', best_loss)
-    if struct_model.attn_weights != None:
-        plot_attn_scores(train_attn_w,norms,f'{args.dataset}_norms')
-        plot_attn_scores(train_attn_w,anoms,f'{args.dataset}_anoms')
     
     #model = torch.load('best_model.pt')
-    if args.vis_filters == True:
-        print('hi')
 
     # accumulate node-wise anomaly scores via model evaluation
     if args.model not in ['madan','gcad']:
@@ -207,17 +245,21 @@ def graph_anomaly_detection(args):
         struct_scores, feat_scores = torch.zeros(len(A_hat),adj.number_of_nodes()).to(args.device),torch.zeros(args.d,adj.number_of_nodes()).to(args.device)
     iter = 0
 
-    edge_anom_mats,node_anom_mats = [],[]
+    edge_anom_mats,node_anom_mats,recons_a,res_a_all = [],[],[],[]
     scales = 3 if 'multi-scale' in args.model else 1
     for i in range(scales):
         am = np.zeros((adj.number_of_nodes(),adj.number_of_nodes()))
         edge_anom_mats.append(am)
         node_anom_mats.append(np.full((adj.number_of_nodes(),adj.ndata['feature'].shape[1]),-1.))
+        recons_a.append(am)
+        res_a_all.append(np.full((adj.number_of_nodes(),args.hidden_dim),-1.))
     all_samps = []
     if args.datadir is not None and args.dataload:
-        random.shuffle(dataloader)
+        pass
+        #random.shuffle(dataloader)
     else:
         dataloader = fetch_dataloader(adj, edges, args)
+
     #import ipdb ; ipdb.set_trace()
     for loaded_input in dataloader:
         vis = True if (args.vis_filters == True and iter == 0) else False
@@ -234,14 +276,25 @@ def graph_anomaly_detection(args):
             neg_edges = sub_graph_neg.edges()
         else:
             in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
+            edge_ids = torch.vstack((pos_edges,neg_edges))
             if args.datasave:
                 g_batch = g_batch[0]
             #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
     
         # run evaluation
         if struct_model and args.model != 'gcad':
-            
-            A_hat,X_hat,model_lbl = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,vis=vis,vis_name='test')
+            node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
+            batch_sc_label = []
+            in_nodes_ = in_nodes.detach().cpu().numpy()
+            for sc_ in sc_label:
+                sc_labels = []
+                for sc__ in sc_:
+                    if np.intersect1d(in_nodes_,sc__[0]).shape[0]>0:
+                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_,sc__[0])))
+                if len(sc_labels)>0:
+                    batch_sc_label.append(np.array(sc_labels))
+            #import ipdb ; ipdb.set_trace()
+            A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='test')
             if args.datasave:
                 lbl = model_lbl
         if args.model == 'gcad':
@@ -288,6 +341,11 @@ def graph_anomaly_detection(args):
                 else:
                     edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()
                     edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
+                    recons_a[sc] = A_hat[sc].detach().cpu().numpy()
+                    #recons_a[sc][tuple(edge_ids_)] =A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                    #recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
+                    res_a_all[sc] = res_a[sc].detach().cpu().numpy()
+                    #res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
 
             else:
                 if args.batch_type == 'node':
@@ -297,12 +355,18 @@ def graph_anomaly_detection(args):
                 else:
                     edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc][edge_ids_[0],edge_ids_[1]].detach().cpu().numpy()
                     edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
+                    recons_a[sc] = A_hat[sc].detach().cpu().numpy()
+                    #recons_a[sc][tuple(edge_ids_)] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                    #recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
+                    res_a_all[sc] = res_a[sc].detach().cpu().numpy()
+                    #res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         
-        if iter % 100 == 0 and args.debug:
-            print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=',round(l.item(),3))
+        #if iter % 100 == 0 and args.debug:
+        #    print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=',round(l.item(),3))
         
         iter += 1
-            
+
+
     # anomaly detection with final scores
     a_clf = anom_classifier()
     print('structure scores')
@@ -321,9 +385,15 @@ def graph_anomaly_detection(args):
             a_clf.calc_prec(None,node_anom_mats, truth, sc_label, args, cluster=False, input_scores=True)
         else:
             a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, args, cluster=False)
- 
+    if args.vis_filters == True:
+        visualizer = Visualizer(adj,feats,args,sc_label,norms,anoms)
+        visualizer.plot_recons(recons_a)
+        visualizer.plot_filters(res_a_all)
+        visualizer.plot_attn_scores(train_attn_w)
     for i in struct_model.module_list:
         print(torch.sigmoid(i.lam))
+
+        
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
