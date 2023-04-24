@@ -1,14 +1,10 @@
 import scipy
-import scipy.sparse as sp
-from torch_geometric.nn.conv import APPNP
 import sympy
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 import dgl.function as fn
 import dgl
 import torch
-import numpy as np
 
 
 class MSGAD(nn.Module):

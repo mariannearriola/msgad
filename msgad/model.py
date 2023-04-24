@@ -1,21 +1,11 @@
-import dgl
 import torch
 import numpy as np
-import numpy.linalg as npla
-import sympy
-import math
-import time
 import gc
 import os
-from numpy import polynomial
-import copy
-import networkx as nx
 from dgl.nn import EdgeWeightNorm
 import torch_geometric
 from label_generation import LabelGenerator
 from torch_geometric.nn import MLP
-from torch_geometric.transforms import GCNNorm
-from scipy.interpolate import make_interp_spline
 from models.dominant import *
 from models.anomalydae import *
 from models.gcnae import *
@@ -32,7 +22,6 @@ class GraphReconstruction(nn.Module):
     def __init__(self, in_size, args, act = nn.LeakyReLU(), label_type='single'):
         super(GraphReconstruction, self).__init__()
         self.in_size = in_size
-        out_size = in_size # for reconstruction
         self.taus = [3,4,4]
         self.attn_weights = None
         self.b = 1
@@ -158,10 +147,6 @@ class GraphReconstruction(nn.Module):
         '''
         res_a = None
         labels = None
-        #if self.model_str != 'bwgnn':
-        #    graph.add_edges(graph.dstnodes(),graph.dstnodes())
-        #    needs_edges = graph.has_edges_between(pos_edges[:,0],pos_edges[:,1]).int().nonzero()
-        #    graph.add_edges(pos_edges[:,0][needs_edges.T[0]][0],pos_edges[:,1][needs_edges.T[0]])
         edges, feats, graph_ = self.process_graph(graph)
         if pos_edges is not None:
             all_edges = torch.vstack((pos_edges,neg_edges))
@@ -182,9 +167,6 @@ class GraphReconstruction(nn.Module):
             
             for ind,i in enumerate(self.module_list):
                 if self.model_str == 'multi-scale-amnet':
-                    #print('running model')
-                    #seconds = time.time()
-                    #import ipdb ; ipdb.set_trace()
                     oom = False
                     mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
                     print(mem)
@@ -195,31 +177,25 @@ class GraphReconstruction(nn.Module):
                     if oom:
                         print('oom')
                         import ipdb ; ipdb.set_trace()
+
                     if ind == 0:
                         self.attn_weights = torch.unsqueeze(attn_scores,0)
                     else:
                         self.attn_weights = torch.cat((self.attn_weights,torch.unsqueeze(attn_scores,0)))
-                    try:
-                        recons_a.append(recons[graph.dstnodes()][:,graph.dstnodes()])
-                        res_a.append(res[graph.dstnodes()])
-                    except Exception as e:
-                        print(e)
-                        import ipdb ; ipdb.set_trace()
-                    del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
-                    #print("Seconds to run model", (time.time()-seconds)/60)
+
                 elif self.model_str == 'multi-scale-bwgnn':
                     oom = False
                     try:
-                         recons,res = i(graph,feats,dst_nodes)
+                        recons,res = i(graph,feats,dst_nodes)
                     except RuntimeError:
                         oom = True
                     if oom:
                         print('out of memory')
                         import ipdb ; ipdb.set_trace()
-                    recons_a.append(recons)
-                    res_a.append(res)
-                    del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
-    
+
+                recons_a.append(recons[graph.dstnodes()][:,graph.dstnodes()])
+                res_a.append(res[graph.dstnodes()])
+                del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
             # collect multi-scale labels
             if not self.dataload:
                 lg = LabelGenerator(graph,feats,vis,vis_name,anoms)

@@ -11,7 +11,6 @@ from models.gcad import *
 from model import *
 import MADAN.Madan as md
 from visualization import *
-from GPUtil import showUtilization as gpu_usage
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -184,32 +183,16 @@ def graph_anomaly_detection(args):
             print('iter',iter)
 
             del g_batch
-            #import ipdb ; ipdb.set_trace()
-            for k in range(len(loaded_input)):
-                del loaded_input[0]
-            for k in range(len(sc_labels)):
-                del sc_labels[0]
-            for k in range(len(batch_sc_label)):
-                del batch_sc_label[0]
-            for k in range(len(A_hat)):
-                del A_hat[0]
-            for k in range(len(res_a)):
-                del res_a[0]
-            for k in range(len(model_lbl)):
-                del model_lbl[0]
+            for k in range(len(loaded_input)): del loaded_input[0]
+            for k in range(len(sc_labels)): del sc_labels[0]
+            for k in range(len(batch_sc_label)): del batch_sc_label[0]
+            for k in range(len(A_hat)): del A_hat[0]
+            for k in range(len(res_a)): del res_a[0]
+            for k in range(len(model_lbl)): del model_lbl[0]
             if X_hat is not None:
-                for k in range(len(X_hat)):
-                    del X_hat[0]
-            del struct_loss
-            del loss
-            del node_dict
-            #del l
-            #del in_nodes
-            del in_nodes_
-            del pos_edges
-            del neg_edges
-            if feat_loss is not None:
-                del feat_loss
+                for k in range(len(X_hat)): del X_hat[0]
+            del struct_loss, loss, node_dict, in_nodes_,pos_edges,neg_edges
+            if feat_loss is not None: del feat_loss
 
             torch.cuda.empty_cache()
             gc.collect()

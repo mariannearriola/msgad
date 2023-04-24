@@ -28,12 +28,12 @@ class Visualizer:
         plt.figure()
         legend = ['og']
         try:
-            e_adj,U_adj= get_spectrum(self.adj.adjacency_matrix().to_dense().to(self.device))
+            e_adj,U_adj= self.get_spectrum(self.adj.adjacency_matrix().to_dense().to(self.device))
         except Exception as e:
             print(e)
             import ipdb ; ipdb.set_trace()
         e_adj,U_adj = e_adj.detach().cpu(),U_adj.detach().cpu()
-        plot_spectrum(e_adj,U_adj,self.feats[self.adj.dstnodes()])
+        self.plot_spectrum(e_adj,U_adj,self.feats[self.adj.dstnodes()])
         for r_ind,r_ in enumerate(recons_a):
             #r_ = torch.tensor(np.ceil(r_)).detach().to(self.device)
             #r_ = torch.sigmoid(torch.tensor(r_)).to(self.device)
@@ -47,12 +47,12 @@ class Visualizer:
             if len(torch.nonzero(r_symm))==0:
                 import ipdb ; ipdb.set_trace()
             try:
-                e,U= get_spectrum(r_symm)
+                e,U= self.get_spectrum(r_symm)
             except Exception as e:
                 print(e)
                 import ipdb ; ipdb.set_trace()
             e,U = e.detach().cpu(),U.detach().cpu()
-            plot_spectrum(e,U,self.feats[self.adj.dstnodes()])
+            self.plot_spectrum(e,U,self.feats[self.adj.dstnodes()])
             legend.append(f'{r_ind}')
         import ipdb ; ipdb.set_trace()
         fpath = f'vis/recons_vis/{self.dataset}/{self.model}/{self.label_type}'
@@ -69,8 +69,8 @@ class Visualizer:
         adj_label=torch.maximum(adj_label, adj_label.T).to(self.adj.device) 
         adj_label += torch.eye(adj_label.shape[0]).to(self.adj.device)
         try:
-            e_adj,U_adj= get_spectrum(adj_label)
-            plot_spectrum(e_adj.detach().cpu(),U_adj.detach().cpu(),self.feats[self.adj.dstnodes()])
+            e_adj,U_adj = self.get_spectrum(adj_label)
+            self.plot_spectrum(e_adj.detach().cpu(),U_adj.detach().cpu(),self.feats[self.adj.dstnodes()])
         except Exception as e:
             print(e)
             import ipdb ; ipdb.set_trace()
@@ -79,7 +79,7 @@ class Visualizer:
         for res in res_a_all:
             res = torch.tensor(res).to(self.device).to(torch.float32)
             try:
-                plot_spectrum(e_adj,U_adj,res[self.adj.dstnodes()])
+                self.plot_spectrum(e_adj,U_adj,res[self.adj.dstnodes()])
             except Exception as e:
                 print(e)
                 import ipdb ; ipdb.set_trace()
