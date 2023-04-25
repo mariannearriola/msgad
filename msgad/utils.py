@@ -69,7 +69,7 @@ def fetch_dataloader(adj, edges, args):
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())#/10)#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/10)#int(adj.number_of_edges()/5)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
@@ -272,12 +272,12 @@ class anom_classifier():
             single_anoms = np.setxor1d(full_anoms,ms_anoms)
             ms_anoms_num = full_anoms.shape[0]
 
-            def plot_anom_sc(sorted_errors,anom,ms_anoms_num):
+            def plot_anom_sc(sorted_errors,anom,ms_anoms_num,color):
                 rankings_sc = np.zeros(sorted_errors.shape[0])
                 rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
                 rankings_sc = rankings_sc.nonzero()[0]
                 rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
-                plt.plot(np.arange(ms_anoms_num),rankings_sc)
+                plt.plot(np.arange(ms_anoms_num),rankings_sc,color=color)
             
             hit_rankings = rankings.nonzero()[0]
 
@@ -286,17 +286,19 @@ class anom_classifier():
             if True:
                 plt.figure()
                 #plot_anom_sc(sorted_errors,single_anoms,ms_anoms_num)
-                plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num)
-                plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num)
-                plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num)
-                plt.plot(np.arange(ms_anoms_num),hit_rankings)
+                plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+                plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red')
+                plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue')
+                plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple')
                 #plt.legend(['single','sc1','sc2','sc3','total'])
-                plt.legend(['sc1','sc2','sc3','total'])
+                plt.legend(['total','sc1','sc2','sc3'])
                 fpath = f'hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
                 if not os.path.exists(fpath):
                     os.makedirs(fpath)
                 plt.ylabel('# predictions')
                 plt.xlabel('# multi-scale anomalies detected')
+                #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
+                #plt.ylim(top=ms_anoms_num*2)
                 plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
    
             print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))

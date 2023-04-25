@@ -132,5 +132,5 @@ def get_sampled_losses(pred,edges,label):
     #import ipdb ; ipdb.set_trace()
     edge_errors = torch.pow(torch.abs(edge_errors-label),2)
     #epsilon=1e-8
-    total_error = torch.sqrt(torch.sum(edge_errors))
+    total_error = torch.mean(torch.sqrt(edge_errors))
     return total_error, torch.sqrt(edge_errors)

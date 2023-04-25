@@ -1,5 +1,6 @@
 
 import matplotlib.pyplot as plt
+from scipy.interpolate import make_interp_spline
 from model import *
 
 class Visualizer:
@@ -15,6 +16,55 @@ class Visualizer:
         self.anom=anoms
         self.sc_label=sc_label
         pass
+
+    def plot_spectrum(self,e,U,signal):
+        c = U.T@signal
+        M = torch.zeros((15,c.shape[1])).to(e.device)
+        for j in range(e.shape[0]):
+            idx = min(int(e[j] / 0.1), 15-1)
+            M[idx] += c[j]**2
+        M=M/sum(M)
+        y = M[:,0].detach().cpu().numpy()
+        x = np.arange(y.shape[0])
+        try:
+            spline = make_interp_spline(x, y)
+        except:
+            import ipdb ; ipdb.set_trace()
+        X_ = np.linspace(x.min(), x.max(), 500)
+        Y_ = spline(X_)
+        plt.xlabel('lambda')
+        plt.plot(X_,Y_)
+
+    def get_spectrum(self,mat):
+    
+        d_ = np.zeros(mat.shape[0])
+        degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
+        degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
+        dw = (degree_in + degree_out) / 2
+        disconnected = (dw == 0)
+        np.power(dw, -0.5, where=~disconnected, out=d_)
+        D = scipy.sparse.diags(d_)
+        L = torch.eye(mat.shape[0])
+        L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
+        L[disconnected, disconnected] = 0
+        L = L.to(mat.device)
+        print('eig')
+        try:
+            e,U = torch.linalg.eigh(L)
+        except Exception as e:
+            print(e)
+            return
+        del L, D
+        print('eig done')
+        '''
+        try:
+            assert -1e-5 < e[0] < 1e-5
+        except:
+            print('Eigenvalues out of bounds')
+            import ipdb ; ipdb.set_trace()
+            e[0] = 0
+        '''
+        return e, U.to(torch.float32)
 
     def flatten_label(self,anoms):
         anom_flat = anoms[0][0]
@@ -54,7 +104,6 @@ class Visualizer:
             e,U = e.detach().cpu(),U.detach().cpu()
             self.plot_spectrum(e,U,self.feats[self.adj.dstnodes()])
             legend.append(f'{r_ind}')
-        import ipdb ; ipdb.set_trace()
         fpath = f'vis/recons_vis/{self.dataset}/{self.model}/{self.label_type}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)

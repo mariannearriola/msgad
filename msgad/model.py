@@ -45,14 +45,14 @@ class GraphReconstruction(nn.Module):
             self.module_list = nn.ModuleList()
             for i in range(3):
                 if 'multi-scale-amnet' == args.model:
-                    self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 1, 5, 5))
+                    self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 1, 10, 5))
                 elif 'multi-scale-bwgnn' == args.model:
-                    self.module_list.append(MSGAD(in_size,args.hidden_dim,d=1))
+                    self.module_list.append(MSGAD(in_size,args.hidden_dim,d=10))
 
         elif args.model == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
             self.conv = GRADATE(in_size,args.hidden_dim,'prelu',1,1,'avg',5)
         elif args.model == 'bwgnn':
-            self.conv = BWGNN(in_size, args.hidden_dim, d=5)
+            self.conv = BWGNN(in_size, args.hidden_dim, d=10)
         elif args.model in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
             self.conv = AnomalyDAE_Base(in_size,args.batch_size,args.hidden_dim,args.hidden_dim,dropout=dropout,act=act)
         elif args.model == 'dominant':
@@ -95,48 +95,6 @@ class GraphReconstruction(nn.Module):
             import ipdb ; ipdb.set_trace()
             print(e)
         return pi
-
-    def filter_anoms(self,labels,anoms,vis_name):
-        #np.random.seed(seed=1)
-        es,Us = [],[]
-        signal = np.random.randn(labels[0].shape[0],labels[0].shape[0])
-        for label in labels:
-            label=torch.maximum(label, label.T)
-            e,U = get_spectrum(label)
-            es.append(e)
-            Us.append(U)
-            del e, U ; torch.cuda.empty_cache()
-            
-        for i in range(len(es)):
-            plt.figure()
-            try:
-                plot_spectrum(es[i].detach().cpu(),Us[i].detach().cpu(),signal+1)
-            except Exception as e:
-                print(e)
-                import ipdb ; ipdb.set_trace()
-            for anom_ind,anom in enumerate(anoms):
-                #anom = anom.flatten()
-                anom = self.flatten_label(anom)
-                signal_ = np.copy(signal)
-                signal_[anom]*=400
-                signal_ += 1
-                plot_spectrum(es[i].detach().cpu(),Us[i].detach().cpu(),signal_)
-                plt.legend(['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal'])
-      
-                fpath = f'vis/filter_anom_vis/{self.dataset}/{self.model_str}/{self.label_type}'
-                if not os.path.exists(fpath):
-                    os.makedirs(fpath)
-                plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_{vis_name}_filter{i}.png')
-
-        for i in range(len(es)):
-            del es[0], Us[0]
-        torch.cuda.empty_cache()
-
-    def flatten_label(self,anoms):
-        anom_flat = anoms[0]
-        for i in anoms[1:]:
-            anom_flat=np.concatenate((anom_flat,i))
-        return anom_flat
 
     def forward(self,graph,last_batch_node,pos_edges,neg_edges,anoms,vis=False,vis_name=""):
         '''
@@ -198,13 +156,13 @@ class GraphReconstruction(nn.Module):
                 del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
             # collect multi-scale labels
             if not self.dataload:
-                lg = LabelGenerator(graph,feats,vis,vis_name,anoms)
-                lg.construct_labels()
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
+                labels=lg.construct_labels()
         #elif not self.dataload:
         else:
             if not self.dataload:
-                lg = LabelGenerator(graph,feats,vis,vis_name,anoms)
-                lg.construct_labels()
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
+                labels=lg.construct_labels()
             else:
                 adj_label=graph.adjacency_matrix().to_dense()[graph.dstnodes()][:,graph.dstnodes()]
                 adj_label=np.maximum(adj_label, adj_label.T).to(graph.device) 

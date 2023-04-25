@@ -58,7 +58,7 @@ class BWGNN(nn.Module):
             else:
                 all_h = torch.cat((all_h,h0),dim=1)
             
-        #x = self.linear3(all_h)#[dst_nodes]
+        x = self.linear3(all_h)#[dst_nodes]
         x = x@x.T
         #x = torch.mm(x,torch.transpose(x,0,1))
         #x = torch.sparse.mm(x.to_sparse(),torch.transpose(x.to_sparse(),0,1)).to_dense()

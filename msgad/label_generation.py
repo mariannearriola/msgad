@@ -3,20 +3,71 @@ import torch
 import numpy as np
 import sympy
 import math
+import scipy
+import scipy.sparse as sp
 import os
 from numpy import polynomial
 import copy
 import networkx as nx
 import torch_geometric
 from scipy.interpolate import make_interp_spline
+import matplotlib.pyplot as plt
 
 class LabelGenerator:
-    def __init__(self,graph,feats,vis,vis_name,anoms):
+    def __init__(self,graph,dataset,model_str,epoch,label_type,feats,vis,vis_name,anoms):
         self.graph = graph
         self.feats = feats
+        self.dataset=dataset
+        self.epoch = epoch
+        self.model_str = model_str
+        self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
+        self.label_type = label_type
         self.vis_name = vis_name
         self.vis = vis
         self.anoms= anoms
+
+    def flatten_label(self,anoms):
+        anom_flat = anoms[0]
+        for i in anoms[1:]:
+            anom_flat=np.concatenate((anom_flat,i))
+        return anom_flat
+
+    def filter_anoms(self,labels,anoms,vis_name):
+        #np.random.seed(seed=1)
+        es,Us = [],[]
+        signal = np.random.randn(labels[0].shape[0],labels[0].shape[0])
+        for label in labels:
+            label=torch.maximum(label, label.T)
+            e,U = self.get_spectrum(label)
+            es.append(e)
+            Us.append(U)
+            del e, U ; torch.cuda.empty_cache()
+            
+        for i in range(len(es)):
+            plt.figure()
+            try:
+                self.plot_spectrum(es[i].detach().cpu(),Us[i].detach().cpu(),signal+1)
+            except Exception as e:
+                print(e)
+                import ipdb ; ipdb.set_trace()
+            for anom_ind,anom in enumerate(anoms):
+                #anom = anom.flatten()
+                anom = self.flatten_label(anom)
+                signal_ = np.copy(signal)
+                signal_[anom]*=400
+                signal_ += 1
+                self.plot_spectrum(es[i].detach().cpu(),Us[i].detach().cpu(),signal_)
+                plt.legend(['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal'])
+      
+                fpath = f'vis/filter_anom_vis/{self.dataset}/{self.model_str}/{self.label_type}'
+                if not os.path.exists(fpath):
+                    os.makedirs(fpath)
+                plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_{vis_name}_filter{i}.png')
+
+        for i in range(len(es)):
+            del es[0], Us[0]
+        torch.cuda.empty_cache()
+
 
     def calculate_theta2(self,d):
         thetas = []
@@ -123,13 +174,45 @@ class LabelGenerator:
             g.edata['w'] = self.norm(self.graph,(self.graph.edata['w']+epsilon)).cpu()
         if 'prods' in self.label_type:
             labels = []
-            #graph_.add_edges(graph_.dstnodes(),graph_.dstnodes())
+            
             adj_label = self.graph.adjacency_matrix()
             adj_label.sparse_resize_((adj_label.size(0), adj_label.size(0)), adj_label.sparse_dim(), adj_label.dense_dim())
-            adj_label = adj_label.to_dense()
-            adj_label=np.maximum(adj_label, adj_label.T).to(self.graph.device)  #?
+            adj_label = adj_label.to_dense()[self.graph.dstnodes()][:,self.graph.dstnodes()]
+            adj_label=np.maximum(adj_label, adj_label.T).to(self.graph.device) #?
+            '''
+            if self.vis==True and 'test' not in self.vis_name:
+                e_adj,U_adj = self.get_spectrum(torch.tensor(adj_label).to(self.graph.device))
+            num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
+            adj_label_norm = self.norm_adj(adj_label.nonzero().contiguous().T)
+            adj_label_norm_ = torch_geometric.utils.to_dense_adj(adj_label_norm[0])[0]
+            adj_label_norm_[adj_label_norm[0][0],adj_label_norm[0][1]]=adj_label_norm[1]
+            adj_label_norm_=adj_label_norm_
+            adj_label_ = adj_label_norm_#.to(graph.device)
+            zero_rows = adj_label.shape[0] - adj_label_.shape[0]
+            adj_label_ = torch.nn.functional.pad(adj_label_,(0,zero_rows,0,zero_rows))
+            adj_label_ = adj_label_.to_sparse()
+            #g=dgl.graph(('coo',(adj_label_.indices()))).to('cpu')
+            '''
+            #g.edata['w']=adj_label_.values()
+            #graph_.add_edges(graph_.dstnodes(),graph_.dstnodes())
+            
+            #adj_label = self.graph.adjacency_matrix()#[self.graph.dstnodes()]
+            #adj_label.sparse_resize_((adj_label.size(0), adj_label.size(0)), adj_label.sparse_dim(), adj_label.dense_dim())
+            #adj_label = adj_label.to_dense()
+            #adj_label=np.maximum(adj_label, adj_label.T).to(self.graph.device)  #?
+            #prods = [g]
+            #adj_label_norm_ = adj_label_norm_.cuda()
+            #del adj_label_norm, adj_label_norm_, adj_label ; torch.cuda.empty_cache()
+            #g_prod = copy.deepcopy(g)
+            #for i in range(1,5):
+            #    print('prod',i)
+            #    g_prod = dgl.adj_product_graph(g_prod,g,'w')
+            #    labels.append(g_prod.adjacency_matrix().to_dense().to(self.graph.device))
+            #    torch.cuda.empty_cache() #?
+            #coeffs = self.calculate_theta2(5)
+            #labels.append(adj_label)
+            adj_label_ = adj_label
             for k in range(5):
-                adj_label_ = adj_label
                 upper_tri=torch.triu(adj_label_,1)
                 nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
                 sorted_idx = torch.argsort(-nz)
@@ -139,8 +222,10 @@ class LabelGenerator:
                 adj_label_[drop_idx[:,1],drop_idx[:,0]]=0.
                 adj_label_[keep_idx[:,0],keep_idx[:,1]]=1.
                 adj_label_[keep_idx[:,1],keep_idx[:,0]]=1.
+                #adj_label_.fill_diagonal_(1.)
                 labels.append(adj_label_)
-                adj_label = adj_label@adj_label
+                adj_label_ = adj_label_@adj_label
+            labels = [labels[1],labels[2],labels[3]]
             
 
         elif self.label_type == 'single':
@@ -151,7 +236,7 @@ class LabelGenerator:
             edges[torch.where(edges!=0)[0]] = graph.edata['w'][labels_pos_eids]
             '''
             for k in range(3):
-                adj = self.graph.adjacency_matrix().to_dense()
+                adj = self.graph.adjacency_matrix().to_dense()[self.graph.dstnodes()]
                 adj=np.maximum(adj, adj.T).to(self.graph.device) 
                 labels.append(adj)
             
@@ -188,6 +273,7 @@ class LabelGenerator:
                     res = torch.tensor(R).to(self.graph.device)
                     lbl_idx = torch.tensor(nodes_sel).to(torch.long)
                     full_labels[i][lbl_idx.reshape(-1,1),lbl_idx]=res
+                    
             # post-cleaning label
             for i in range(3):
                 upper_tri=torch.triu(full_labels[i],1)
@@ -205,17 +291,23 @@ class LabelGenerator:
             if 'amnet' in self.label_type:
                 coeffs =  self.get_bern_coeff(K)
                 #label_idx = [0,1,2,3,4,5,6,7,8,9,10]
-                label_idx=[1,2,3]
+                #label_idx=[1,2,3]
+                #label_idx=[0]
+                label_idx=[0,1,2,3,5,6,7,8,9,10]
+                #label_idx = [0,1]
+                label_idx = [6,8,10]
             elif 'bwgnn' in self.label_type:
                 coeffs = self.calculate_theta2(K)
-                #label_idx=[0,1,2,3,5,6,7,8,9,10]
-                label_idx = [0,1,2]
+                label_idx=[0,1,2,3,5,6,7,8,9,10]
+                #label_idx = [4,5,6]#,2]
+                label_idx=[2,4]
             labels = []
+            
             adj_label = self.graph.adjacency_matrix()
             adj_label.sparse_resize_((adj_label.size(0), adj_label.size(0)), adj_label.sparse_dim(), adj_label.dense_dim())
-            #adj_label = dgl.block_to_graph(graph).subgraph({'_N_src':graph.dstnodes(),'_N_dst':graph.dstnodes()})
             adj_label = adj_label.to_dense()[self.graph.dstnodes()][:,self.graph.dstnodes()]
             adj_label=np.maximum(adj_label, adj_label.T)#.to(graph.device) #?
+            
             if self.vis==True and 'test' not in self.vis_name:
                 e_adj,U_adj = self.get_spectrum(torch.tensor(adj_label).to(self.graph.device))
             num_a_edges = torch.triu(adj_label,1).nonzero().shape[0]
@@ -229,42 +321,86 @@ class LabelGenerator:
             adj_label_ = adj_label_.to_sparse()
             g=dgl.graph(('coo',(adj_label_.indices()))).to('cpu')
             g.edata['w']=adj_label_.values()
+            #import ipdb ; ipdb.set_trace()
             num_a_edges = self.graph.num_edges()
-            
-            g_prod = g
+        
+            # NOTE : remove if og wanted
+            #labels = [adj_label.to(self.graph.device)]
+
+            del adj_label, adj_label_norm_, adj_label_ ; torch.cuda.empty_cache()
+
+            #import ipdb ; ipdb.set_trace()
+            '''
+            g_prod = copy.deepcopy(g)
             adj_label_ = g_prod.adjacency_matrix().to_dense()#.to(graph.device)
             adj_label_[g_prod.edges()]=g_prod.edata['w']
             prods = [g]
             adj_label_norm_ = adj_label_norm_.cuda()
             del adj_label_norm, adj_label_norm_, adj_label ; torch.cuda.empty_cache()
-            
+            '''
+
+            '''
+            adj_label = self.graph.adjacency_matrix()
+            adj_label.sparse_resize_((adj_label.size(0), adj_label.size(0)), adj_label.sparse_dim(), adj_label.dense_dim())
+            adj_label = adj_label.to_dense()[self.graph.dstnodes()][:,self.graph.dstnodes()]
+            adj_label=np.maximum(adj_label, adj_label.T).to(self.graph.device) #?
+            adj_label_ = adj_label_norm_
+            for k in range(K+1):
+                prods.append(adj_label_)
+                adj_label_ = adj_label_@adj_label_
+            '''
+            #adj_label_ = adj_label_norm_
+            prods = [g]
+            #prods = [adj_label_]
+            g_prod = copy.deepcopy(g)
             for i in range(1, K+1):
+                print('prod',i)
                 g_prod = dgl.adj_product_graph(g_prod,g,'w')
                 prods.append(g_prod)
-                torch.cuda.empty_cache() #?
-                
+                #adj_label_ = adj_label_@adj_label_norm_
+                #prods.append(adj_label_)
+
             del g_prod ; torch.cuda.empty_cache()
-            
+            print('generating labels')
+
+            #labels=[]
             for label_id in label_idx:
                 coeff = coeffs[label_id]
                 basis = copy.deepcopy(g)
-                g_prod = copy.deepcopy(g)
                 basis.edata['w'] *= coeff[0]
+                #basis = prods[0] * coeff[0]
                 for i in range(1, K+1):
-                    basis_ = prods[i-1]
+                    basis_ = prods[i]
                     basis_.edata['w'] *= coeff[i]
                     basis = dgl.adj_sum_graph([basis,basis_],'w')
-
+                    #basis += prods[i] * coeff[i]
                     del basis_
                     torch.cuda.empty_cache()
-                    
-                del g_prod ; torch.cuda.empty_cache()
+                '''
+                upper_tri=torch.triu(basis,1)
+                nz = upper_tri[upper_tri.nonzero()[:,0],upper_tri.nonzero()[:,1]]
+                sorted_idx = torch.argsort(-nz)
+                drop_idx=upper_tri.nonzero()[sorted_idx][num_a_edges:]
+                keep_idx=upper_tri.nonzero()[sorted_idx][:num_a_edges]
+                basis[drop_idx[:,0],drop_idx[:,1]]=0.
+                basis[drop_idx[:,1],drop_idx[:,0]]=0.
+                basis[keep_idx[:,0],keep_idx[:,1]]=1.
+                basis[keep_idx[:,1],keep_idx[:,0]]=1.
+                basis.fill_diagonal_(1.)
+                if basis.nonzero().shape[0] == basis.shape[0]:
+                    print('only diagonal label')
+                    import ipdb ; ipdb.set_trace()
+                labels.append(basis.to(self.graph.device))
+                continue
+                '''
                 nz = basis.edata['w'].unique()
                 if nz.shape[0] < num_a_edges:
+                    print('hi')
                     basis_ = basis.adjacency_matrix().to_dense()
                     basis_[basis.edges()[0]][:,basis.edges()[1]] = 1.
                     basis_ = torch.nn.functional.pad(basis_,(0,zero_rows,0,zero_rows))
                 else:
+                    ''''
                     try:
                         sorted_idx = torch.min(torch.topk(nz,num_a_edges).values)
                     except Exception as e:
@@ -272,22 +408,42 @@ class LabelGenerator:
                         import ipdb ; ipdb.set_trace()
 
                     edges_rem=torch.where(basis.edata['w']<sorted_idx)[0]
-                    
+                    import ipdb ;ipdb.set_trace()
                     basis=dgl.remove_edges(basis,edges_rem)
+                    '''
+
+
+                    
+                    sorted_idx = torch.topk(nz,num_a_edges).indices
+                    basis = dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
                     basis_ = basis.adjacency_matrix().to_dense()
                     basis_[basis.edges()[0]][:,basis.edges()[1]] = 1.
                     basis_ = torch.nn.functional.pad(basis_,(0,zero_rows,0,zero_rows))
+                    # TO ADD:  basis_.fill_diagonal_(1.)
                     del nz, sorted_idx
+                    
+                #import ipdb ;ipdb.set_trace()
+                #labels.append(basis.to(self.graph.device))
                 
                 labels.append(basis_.to(self.graph.device))
                 del basis, basis_ ; torch.cuda.empty_cache()
+                
+                #del basis ; torch.cuda.empty_cache()
             for i in range(len(prods)):
                 del prods[0]
             torch.cuda.empty_cache()
+            print('done')
             #print("Seconds to get labels", (time.time()-seconds)/60)
-
+            
         if self.vis == True and 'test' not in self.vis_name:
+            print('visualizing labels')
             plt.figure()
+            #import ipdb ; ipdb.set_trace()
+            adj_label = self.graph.adjacency_matrix()
+            adj_label.sparse_resize_((adj_label.size(0), adj_label.size(0)), adj_label.sparse_dim(), adj_label.dense_dim())
+            adj_label = adj_label.to_dense()[self.graph.dstnodes()][:,self.graph.dstnodes()]
+            adj_label=np.maximum(adj_label, adj_label.T).to(self.graph.device) #?
+            e_adj,U_adj = self.get_spectrum(torch.tensor(adj_label).to(self.graph.device))
             self.plot_spectrum(e_adj, U_adj,self.feats[self.graph.dstnodes()])
             legend = ['original adj.']
             for label_ind,label in enumerate(labels):

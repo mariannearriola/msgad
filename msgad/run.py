@@ -49,6 +49,7 @@ def graph_anomaly_detection(args):
     #best_loss = torch.tensor(float('inf')).to(args.device)    
     A_hat, X_hat = None,None
     struct_loss,feat_loss=None,None
+    res_a = None
     seconds = time.time()
      # epoch x 3 x num filters x nodes
     train_attn_w = torch.zeros((args.epoch,3,5,adj.number_of_nodes())).to(args.device)
@@ -133,8 +134,8 @@ def graph_anomaly_detection(args):
                 sc_labels = []
                 if len(sc_) == 0: continue
                 for sc__ in sc_:
-                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__[0]).shape[0]>0:
-                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__[0])))
+                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
+                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
 
                 if len(sc_labels)>0:
                     batch_sc_label.append(np.array(sc_labels))
@@ -144,6 +145,7 @@ def graph_anomaly_detection(args):
 
             if struct_model:
                 vis = True if (epoch == 0 and iter == 0 and args.vis_filters == True) else False
+            
                 A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='epoch1')
                 if args.datasave:
                     lbl = model_lbl
@@ -187,11 +189,12 @@ def graph_anomaly_detection(args):
             for k in range(len(sc_labels)): del sc_labels[0]
             for k in range(len(batch_sc_label)): del batch_sc_label[0]
             for k in range(len(A_hat)): del A_hat[0]
-            for k in range(len(res_a)): del res_a[0]
+            if res_a:
+                for k in range(len(res_a)): del res_a[0]
             for k in range(len(model_lbl)): del model_lbl[0]
             if X_hat is not None:
                 for k in range(len(X_hat)): del X_hat[0]
-            del struct_loss, loss, node_dict, in_nodes_,pos_edges,neg_edges
+            del struct_loss, loss, node_dict,pos_edges,neg_edges
             if feat_loss is not None: del feat_loss
 
             torch.cuda.empty_cache()
@@ -211,6 +214,7 @@ def graph_anomaly_detection(args):
         epoch_l = torch.sum(epoch_l)
         #epoch_l.backward()
         #optimizer.step()
+        
         if struct_model:
             if struct_model.attn_weights != None:
                 # epoch x 3 x num filters x nodes
@@ -271,12 +275,14 @@ def graph_anomaly_detection(args):
             in_nodes_ = in_nodes.detach().cpu().numpy()
             for sc_ in sc_label:
                 sc_labels = []
+                if len(sc_) == 0: continue
                 for sc__ in sc_:
-                    if np.intersect1d(in_nodes_,sc__[0]).shape[0]>0:
-                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_,sc__[0])))
+                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
+                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
+
                 if len(sc_labels)>0:
                     batch_sc_label.append(np.array(sc_labels))
-            #import ipdb ; ipdb.set_trace()
+            del in_nodes_
             A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='test')
             if args.datasave:
                 lbl = model_lbl
@@ -324,11 +330,12 @@ def graph_anomaly_detection(args):
                 else:
                     edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()
                     edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
-                    recons_a[sc] = A_hat[sc].detach().cpu().numpy()
-                    #recons_a[sc][tuple(edge_ids_)] =A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                    #recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
-                    res_a_all[sc] = res_a[sc].detach().cpu().numpy()
-                    #res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
+                    #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
+                    recons_a[sc][tuple(edge_ids_)] =A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                    recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
+                    if res_a:
+                        #res_a_all[sc] = res_a[sc].detach().cpu().numpy()
+                        res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
 
             else:
                 if args.batch_type == 'node':
@@ -338,11 +345,12 @@ def graph_anomaly_detection(args):
                 else:
                     edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc][edge_ids_[0],edge_ids_[1]].detach().cpu().numpy()
                     edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
-                    recons_a[sc] = A_hat[sc].detach().cpu().numpy()
-                    #recons_a[sc][tuple(edge_ids_)] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                    #recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
-                    res_a_all[sc] = res_a[sc].detach().cpu().numpy()
-                    #res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
+                    #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
+                    recons_a[sc][tuple(edge_ids_)] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                    recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
+                    if res_a:
+                        #res_a_all[sc] = res_a[sc].detach().cpu().numpy()
+                        res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         
         #if iter % 100 == 0 and args.debug:
         #    print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=',round(l.item(),3))

@@ -126,7 +126,7 @@ class BernConv(MessagePassing):
     
     @staticmethod
     def get_bern_coeff(degree):
-        '''
+        
         def Bernstein(de, i):
             coefficients = [0, ] * i + [math.comb(de, i)]
             first_term = polynomial.polynomial.Polynomial(coefficients)
@@ -155,8 +155,7 @@ class BernConv(MessagePassing):
         del f
         torch.cuda.empty_cache()
         return thetas
-        
-
+        '''
 class AMNet_ms(nn.Module):
     def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
         super(AMNet_ms, self).__init__()
@@ -171,15 +170,20 @@ class AMNet_ms(nn.Module):
         self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=True, bias=True) for _ in range(filter_num)])
         self.filter_num = filter_num
         
-        self.W_f = nn.Sequential(nn.Linear(hid_channels, hid_channels),
+        self.W_f = nn.Sequential(nn.Linear(hid_channels, in_channels),
                                  self.attn_fn,
                                  )
-        self.W_x = nn.Sequential(nn.Linear(hid_channels, hid_channels),
+        
+        self.W_x = nn.Sequential(nn.Linear(hid_channels, in_channels),
                                  self.attn_fn,
                                  )
+        
+        self.out_l = nn.Linear(hid_channels, hid_channels)
+        
+        '''
         self.linear_cls_out = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hid_channels, num_class))
+            nn.Linear(in_channels, num_class))
 
         #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
 
@@ -188,6 +192,9 @@ class AMNet_ms(nn.Module):
         self.lin = list(self.linear_transform_in.parameters())
         self.lin.extend(list(self.linear_cls_out.parameters()))
         self.relu = torch.nn.ReLU()
+        '''
+        #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
+
         self.reset_parameters()
 
 
@@ -222,12 +229,11 @@ class AMNet_ms(nn.Module):
             h_list.append(h)
             del filter_
             del h
+        
         torch.cuda.empty_cache()
-
         h_filters = torch.stack(h_list, dim=1)
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
-
         score_logit = torch.bmm(h_filters_proj, x_proj)
         #soft_score = F.softmax(score_logit, dim=1)
         #score = soft_score
@@ -239,7 +245,8 @@ class AMNet_ms(nn.Module):
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
-
+            
+        res = self.out_l(res)
         #edge_index, norm = self.__norm__(edge_index, x.shape[0],
         #                                 None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
 
@@ -248,6 +255,7 @@ class AMNet_ms(nn.Module):
         #L[edge_index[0],edge_index[1]]=norm
         #self.L = L
         #res_ = torch.sigmoid(res@res.T)
+        
         res_ = res@res.T
         del h_filters
         del x
@@ -257,7 +265,8 @@ class AMNet_ms(nn.Module):
         for i in range(len(h_list)):
             del h_list[0]
         torch.cuda.empty_cache()
-
+        #if res_.gt(0.5).nonzero().shape[0]>0:
+        #    import ipdb ; ipdb.set_trace()
         return res_,res,torch.squeeze(score,-1).T
 
 

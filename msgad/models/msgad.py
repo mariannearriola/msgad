@@ -26,10 +26,11 @@ class MSGAD(nn.Module):
         self.conv = []
         for i in range(len(self.thetas)): # exclude high pass
             self.conv.append(PolyConv(h_dim, h_dim, d+1, i, self.thetas[i]))
-        self.linear = nn.Linear(in_dim, h_dim*2)
-        self.linear2 = nn.Linear(h_dim*2, h_dim)
-        #self.act = nn.LeakyReLU()
         self.act = nn.ReLU()
+        self.linear_transform_in = nn.Sequential(nn.Linear(in_dim, h_dim*2),
+                                                 self.act,
+                                                 nn.Linear(h_dim*2, h_dim)
+                                                 )
         self.d = d
         self.lam = nn.Parameter(data=torch.normal(mean=torch.full((d+1,),0.),std=1))#.cuda())#, requires_grad=True).cuda()
         #self.relu = torch.nn.ReLU()
@@ -41,27 +42,25 @@ class MSGAD(nn.Module):
         #graph.add_edges(graph.dstnodes(),graph.dstnodes())
 
         # feature transformer
-        h = self.linear(in_feat)
-        h = self.act(h)
-        h = self.linear2(h)
-        h = self.act(h)
+        h = self.linear_transform_in(in_feat)
         #return h@h.T,h 
         # scale-wise embeddings via multi-frequency graph wavelet        
         for ind,conv in enumerate(self.conv):
             h0 = conv(graph, h)
             if ind == 0:
-                all_h = h0#*torch.sigmoid(self.lam[0])
+                all_h = h0*torch.sigmoid(self.lam[0])
             else:
-                all_h += h0#*torch.sigmoid(self.lam[0])
-            del h0
-            torch.cuda.empty_cache()
+                all_h += h0*torch.sigmoid(self.lam[0])
+            #del h0
+            #torch.cuda.empty_cache()
 
         # inner-product decoder
-        all_h = all_h[dst_nodes]
+        #all_h = all_h[dst_nodes]
         recons = all_h@all_h.T
-        del h
+        #del h
+        recons = torch.sigmoid(recons)
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
         return recons,all_h
 
 class PolyConv(nn.Module):
@@ -101,10 +100,11 @@ class PolyConv(nn.Module):
             h = self._theta[0]*feat[graph.dstnodes()]
 
             for k in range(1, self._k):
-                feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
-                h += self._theta[k]*feat[graph.dstnodes()]
-                del feat
-                torch.cuda.empty_cache()
+                #feat[graph.dstnodes()] = unnLaplacian(feat, D_invsqrt, graph)
+                feat = unnLaplacian(feat, D_invsqrt, graph)
+                h += self._theta[k]*feat#[graph.dstnodes()]
+            #del feat
+            #torch.cuda.empty_cache()
         return h
 
 def calculate_theta2(d):
