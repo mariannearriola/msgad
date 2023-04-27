@@ -19,6 +19,19 @@ from models.gcad import *
 import matplotlib.pyplot as plt
 import os
 
+def get_batch_sc_label(in_nodes,sc_label,g_batch,node_dict):
+    batch_sc_label = {}
+    batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
+    in_nodes_ = in_nodes.detach().cpu().numpy()
+    for sc_ind,sc_ in enumerate(sc_label):
+        sc_labels = []
+        if len(sc_) == 0: sc_labels.append([])
+        for sc__ in sc_:
+            if np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
+                sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
+        batch_sc_label[batch_sc_label_keys[sc_ind]] = np.array(sc_labels)
+    return batch_sc_label
+
 def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
     edge_ids_,node_ids_=None,None
     if args.batch_type == 'edge':
@@ -60,16 +73,18 @@ def init_model(feat_size,args):
 
 def fetch_dataloader(adj, edges, args):
     if args.batch_type == 'edge':
-        if args.dataset in ['yelpchi']:
-            num_neighbors = 5
+        if args.dataset in ['tfinance']:
+            num_neighbors = 15
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors])#,num_neighbors])
-        elif args.dataset in ['cora_ori','weibo','cora_triple_sc_all','tfinance','elliptic','cora_triple_sc3_test','cora_no_anom']:
+        elif args.dataset in ['yelpchi_rtr','cora_ori','weibo','cora_triple_sc_all','tfinance','elliptic','cora_triple_sc3_test','cora_no_anom','cora_outsparse','cora_outnormal']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
-        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges()/10)#int(adj.number_of_edges()/5)
+        batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())
+        if args.dataset in ['yelpchi_rtr','elliptic']:
+            batch_size /= 10 ; batch_size = int(batch_size)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
@@ -236,7 +251,7 @@ class anom_classifier():
         '''
         # anom_clf = MessagePassing(aggr='max')
         if len(sc_label[0]) > 0:
-            anom_sc1,anom_sc2,anom_sc3 = flatten_label(sc_label)
+            anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
         if 'cora' in args.dataset or 'weibo' in args.dataset:
@@ -260,7 +275,6 @@ class anom_classifier():
                     
                 #node_scores = np.mean(sc_score,axis=1)
             # run graph transformer with node score attributes
-            # import ipdb ; ipdb.set_trace()
             # anom_preds = anom_clf.forward(node_scores,graph.edges())
             node_scores[np.isnan(node_scores).nonzero()] = 0.
             sorted_errors = np.argsort(-node_scores)
@@ -268,8 +282,6 @@ class anom_classifier():
             rankings = label[sorted_errors]
 
             full_anoms = label.nonzero()[0]
-            ms_anoms = np.concatenate((anom_sc1,np.concatenate((anom_sc2,anom_sc3))))
-            single_anoms = np.setxor1d(full_anoms,ms_anoms)
             ms_anoms_num = full_anoms.shape[0]
 
             def plot_anom_sc(sorted_errors,anom,ms_anoms_num,color):
@@ -285,14 +297,13 @@ class anom_classifier():
             # add plots for scale-specific anomalies
             if True:
                 plt.figure()
-                #plot_anom_sc(sorted_errors,single_anoms,ms_anoms_num)
-                plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+                plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan')
                 plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red')
                 plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue')
                 plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple')
-                #plt.legend(['single','sc1','sc2','sc3','total'])
-                plt.legend(['total','sc1','sc2','sc3'])
-                fpath = f'hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
+                plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+                plt.legend(['single','sc1','sc2','sc3','total'])
+                fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
                 if not os.path.exists(fpath):
                     os.makedirs(fpath)
                 plt.ylabel('# predictions')
@@ -368,10 +379,17 @@ def sparse_matrix_to_tensor(coo,feat):
     coo = scipy.sparse.coo_matrix(coo)
     v = torch.FloatTensor(coo.data)
     i = torch.LongTensor(np.vstack((coo.row, coo.col)))
-    dgl_graph = dgl.graph((i[0],i[1]))
+    dgl_graph = dgl.graph((i[0],i[1]),num_nodes=feat.shape[0])
     dgl_graph.edata['w'] = v
     dgl_graph.ndata['feature'] = feat
     return dgl_graph
+
+def rearrange_anoms(anom):
+    anom = anom[0]
+    ret_anom = []
+    for anom_ in anom:
+        ret_anom.append(anom_[0])
+    return ret_anom
 
 def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
     """Load anomaly detection graph dataset for model training & anomaly detection"""
@@ -385,31 +403,12 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         edge_idx = data_mat['Edge-index']
     elif 'Network' in data_mat.keys():
         adj = data_mat['Network']
-
     truth = data_mat['Label'].flatten()
-    sc_label = data_mat['scale_anomaly_label'] if 'scale_anomaly_label' in data_mat.keys() else []
+    anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
+    if 'weibo' in dataset:
+        anom1=rearrange_anoms(anom1) ; anom2=rearrange_anoms(anom2) ; anom3=rearrange_anoms(anom3) ; anom_single = anom_single[0]
+    sc_label=[anom1,anom2,anom3,anom_single]
     
-    
-    if 'tfinance' in dataset:
-        sc_label = sc_label[0]
-        anom_sc1,anom_sc2,anom_sc3 = sc_label[0][0],[],sc_label[2][0]
-    elif 'weibo' in dataset:
-        sc_label = sc_label[0]
-        anom_sc1,anom_sc2,anom_sc3 = sc_label[0][0],sc_label[1][0],sc_label[2][0]
-    elif '_test' in dataset:
-        anom_sc1,anom_sc2,anom_sc3,_ = sc_label.T
-    elif 'cora' in dataset:
-        if len(sc_label) > 0:
-            anom_sc1,anom_sc2,anom_sc3=sc_label[0]
-        else:
-            anom_sc1,anom_sc2,anom_sc3=[],[],[]
-    elif 'yelpchi' in dataset:
-        anom_sc1,anom_sc2,anom_sc3=sc_label[0]
-    elif 'elliptic' in dataset:
-        anom_sc1,anom_sc2,anom_sc3=sc_label[0][0][0],sc_label[0][1][0],sc_label[0][2][0]
-
-    sc_label = [anom_sc1,anom_sc2,anom_sc3]
- 
     return adj, edge_idx, feats, truth, sc_label
 
 def normalize_adj(adj):

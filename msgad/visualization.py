@@ -36,7 +36,6 @@ class Visualizer:
         plt.plot(X_,Y_)
 
     def get_spectrum(self,mat):
-    
         d_ = np.zeros(mat.shape[0])
         degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
         degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
@@ -54,7 +53,7 @@ class Visualizer:
         except Exception as e:
             print(e)
             return
-        del L, D
+        del L, D ; torch.cuda.empty_cache()
         print('eig done')
         '''
         try:
@@ -142,23 +141,29 @@ class Visualizer:
 
     def plot_attn_scores(self,attn_weights):
         def flatten_label_attn(sc_label):
-            anom_flat = sc_label[0][0]
+            anom_flat = sc_label[0]#[0]
             for i in sc_label[1:]:
-                anom_flat=np.concatenate((anom_flat,i[0]))
+                anom_flat=np.concatenate((anom_flat,i))#[0]))
             return anom_flat
 
         # epoch x 3 x num filters x nodes
         attn_weights_arr = [attn_weights[:,:,:,self.norms]]
-        for anom in self.sc_label:
+        for anom_ind,anom in enumerate(self.sc_label):
             if 'cora'in self.dataset:
-                attn_weights_arr.append(attn_weights[:,:,:,self.anom.flatten()])
+                attn_weights_arr.append(attn_weights[:,:,:,anom.flatten()])
             else:
-                attn_weights_arr.append(attn_weights[:,:,:,flatten_label_attn(self.anom)])
+                try:
+                    if anom_ind == 0:
+                        anom_tot = flatten_label_attn(anom)
+                    else:
+                        anom_tot = np.append(anom_tot,flatten_label_attn(anom))
+                    attn_weights_arr.append(attn_weights[:,:,:,flatten_label_attn(anom)])
+                except Exception as e:
+                    attn_weights_arr.append(attn_weights[:,:,:,anom])
 
-        #import ipdb ; ipdb.set_trace()
         legend = []
-        colors=['green','red','purple','blue']
-        legend=['norm','anom sc1','anom sc2','anom sc3']
+        colors=['green','red','blue','purple','yellow']
+        legend=['norm','anom sc1','anom sc2','anom sc3','single']
         for scale in range(attn_weights.shape[1]):
             p_min,p_max=np.inf,-np.inf
             plt.figure()

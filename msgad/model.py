@@ -122,15 +122,20 @@ class GraphReconstruction(nn.Module):
             recons_a = [self.conv(graph_,feats,dst_nodes)]
         if 'multi-scale' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
+            # collect multi-scale labels
+            if not self.dataload:
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
+                labels=lg.construct_labels()
             
             for ind,i in enumerate(self.module_list):
                 if self.model_str == 'multi-scale-amnet':
                     oom = False
-                    mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
-                    print(mem)
+                    #mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
+                    #print(mem)
                     try:
                         recons,res,attn_scores = i(feats,edges,dst_nodes)
-                    except RuntimeError:
+                    except Exception as e:
+                        print(e)
                         oom = True
                     if oom:
                         print('oom')
@@ -154,10 +159,7 @@ class GraphReconstruction(nn.Module):
                 recons_a.append(recons[graph.dstnodes()][:,graph.dstnodes()])
                 res_a.append(res[graph.dstnodes()])
                 del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
-            # collect multi-scale labels
-            if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
-                labels=lg.construct_labels()
+            
         #elif not self.dataload:
         else:
             if not self.dataload:

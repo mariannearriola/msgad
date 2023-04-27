@@ -20,7 +20,9 @@ def graph_anomaly_detection(args):
     # load data
     torch.manual_seed(1)
     sp_adj, edge_idx, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
+    
     anoms,norms=np.where(truth==1)[0],np.where(truth==0)[0]
+    #import ipdb ; ipdb.set_trace()
     if sp_adj is not None:
         adj = sparse_matrix_to_tensor(sp_adj,feats)
     lbl,last_batch_node,pos_edges,neg_edges=None,None,None,None
@@ -34,7 +36,7 @@ def graph_anomaly_detection(args):
         dataloader = np.arange(len(os.listdir(f'{args.datadir}/{args.dataset}/train')))
     else:
         dataloader = fetch_dataloader(adj, edges, args)
-    print('sample train',args.sample_train,'sample test',args.sample_test)
+    print('sample train',args.sample_train,'sample test',args.sample_test, 'epochs',args.epoch, 'saving?', args.datasave, 'loading?',args.dataload)
 
     # intialize model (on given device)
     adj = adj.to(args.device)
@@ -57,9 +59,6 @@ def graph_anomaly_detection(args):
     
     for epoch in range(args.epoch):
         epoch_l = 0
-        if epoch > 0 and (args.datasave is True or args.dataload is True):
-            pass
-            #random.shuffle(dataloader)
         if args.model == 'gcad': break
         iter=0
         for data_ind in dataloader:
@@ -127,22 +126,11 @@ def graph_anomaly_detection(args):
                 iter += 1
                 continue
             optimizer.zero_grad()
+
             node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
-            batch_sc_label = []
-            in_nodes_ = in_nodes.detach().cpu().numpy()
-            for sc_ in sc_label:
-                sc_labels = []
-                if len(sc_) == 0: continue
-                for sc__ in sc_:
-                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
-                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
-
-                if len(sc_labels)>0:
-                    batch_sc_label.append(np.array(sc_labels))
+            batch_sc_label = get_batch_sc_label(in_nodes.detach().cpu(),sc_label,g_batch,node_dict)
             #rev_node_dict = {v: k for k, v in node_dict.items()}
-
-            #for anom in sc_label:
-
+            
             if struct_model:
                 vis = True if (epoch == 0 and iter == 0 and args.vis_filters == True) else False
             
@@ -150,7 +138,7 @@ def graph_anomaly_detection(args):
                 if args.datasave:
                     lbl = model_lbl
                     
-            #print('alcing loss')
+                    
             if args.batch_type == 'node':
                 if args.model == 'gradate':
                     loss = A_hat[0]
@@ -159,9 +147,10 @@ def graph_anomaly_detection(args):
             else:
                 recons_label = g_batch if lbl is None else lbl
                 loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
-
+            
             if 'multi-scale' in args.model:
-                l = torch.sum(torch.mean(loss))
+                #l = torch.sum(torch.mean(loss))
+                l = torch.sum(loss)
             else:
                 l = torch.mean(loss)
             '''
@@ -169,14 +158,10 @@ def graph_anomaly_detection(args):
                 best_loss = dl
                 torch.save(model,'best_model.pt')
             '''
-            if iter == 0:
-                epoch_l = l.unsqueeze(0)
-            else:
-                epoch_l = torch.cat((epoch_l,l.unsqueeze(0)))
+            epoch_l = l.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
 
             # save batch info
-            if args.datasave:
-                save_batch(loaded_input,lbl,iter,'train',args)
+            if args.datasave: save_batch(loaded_input,lbl,iter,'train',args)
             if args.debug:
                 if iter % 100 == 0:
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
@@ -186,15 +171,14 @@ def graph_anomaly_detection(args):
 
             del g_batch
             for k in range(len(loaded_input)): del loaded_input[0]
-            for k in range(len(sc_labels)): del sc_labels[0]
-            for k in range(len(batch_sc_label)): del batch_sc_label[0]
+            del batch_sc_label
             for k in range(len(A_hat)): del A_hat[0]
             if res_a:
                 for k in range(len(res_a)): del res_a[0]
             for k in range(len(model_lbl)): del model_lbl[0]
             if X_hat is not None:
                 for k in range(len(X_hat)): del X_hat[0]
-            del struct_loss, loss, node_dict,pos_edges,neg_edges
+            del struct_loss, loss, node_dict, pos_edges, neg_edges
             if feat_loss is not None: del feat_loss
 
             torch.cuda.empty_cache()
@@ -271,21 +255,13 @@ def graph_anomaly_detection(args):
         # run evaluation
         if struct_model and args.model != 'gcad':
             node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
-            batch_sc_label = []
-            in_nodes_ = in_nodes.detach().cpu().numpy()
-            for sc_ in sc_label:
-                sc_labels = []
-                if len(sc_) == 0: continue
-                for sc__ in sc_:
-                    if np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
-                        sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes_[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
-
-                if len(sc_labels)>0:
-                    batch_sc_label.append(np.array(sc_labels))
-            del in_nodes_
+            batch_sc_label = get_batch_sc_label(in_nodes.detach().cpu(),sc_label,g_batch,node_dict)
+            #rev_node_dict = {v: k for k, v in node_dict.items()}
+            
             A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='test')
             if args.datasave:
                 lbl = model_lbl
+
         if args.model == 'gcad':
             adj_ = g_batch.adjacency_matrix() 
             adj_=adj_.sparse_resize_((g_batch.num_src_nodes(),g_batch.num_src_nodes()), adj_.sparse_dim(),adj_.dense_dim())
@@ -343,6 +319,8 @@ def graph_anomaly_detection(args):
                     if struct_loss is not None:
                         edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
                 else:
+                    continue
+            
                     edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc][edge_ids_[0],edge_ids_[1]].detach().cpu().numpy()
                     edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
                     #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
@@ -375,12 +353,16 @@ def graph_anomaly_detection(args):
                 raise('node not sampled')
             a_clf.calc_prec(None,node_anom_mats, truth, sc_label, args, cluster=False, input_scores=True)
         else:
-            a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, args, cluster=False)
+            if not args.sample_test:
+                a_clf.calc_prec(adj.adjacency_matrix().to_dense(), struct_loss.detach().cpu().numpy(), truth, sc_label, args, cluster=False, input_scores=True)
+            else:
+                a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, args, cluster=False)
     if args.vis_filters == True:
         visualizer = Visualizer(adj,feats,args,sc_label,norms,anoms)
         visualizer.plot_recons(recons_a)
         visualizer.plot_filters(res_a_all)
         visualizer.plot_attn_scores(train_attn_w)
+
     for i in struct_model.module_list:
         print(torch.sigmoid(i.lam))
 

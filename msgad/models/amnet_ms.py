@@ -110,6 +110,7 @@ class BernConv(MessagePassing):
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
             out += basis * weight[k]
+
         del lambda_max
         del basis
         del weight
@@ -179,13 +180,11 @@ class AMNet_ms(nn.Module):
                                  )
         
         self.out_l = nn.Linear(hid_channels, hid_channels)
-        
+        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
         '''
         self.linear_cls_out = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(in_channels, num_class))
-
-        #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
 
         self.attn = list(self.W_x.parameters())
         self.attn.extend(list(self.W_f.parameters()))
@@ -226,7 +225,7 @@ class AMNet_ms(nn.Module):
         h_list = []
         for i, filter_ in enumerate(self.filters):
             h = filter_(x, edge_index)
-            h_list.append(h)
+            h_list.append(h * torch.sigmoid(self.lam[i]))
             del filter_
             del h
         
@@ -235,13 +234,13 @@ class AMNet_ms(nn.Module):
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
         score_logit = torch.bmm(h_filters_proj, x_proj)
-        #soft_score = F.softmax(score_logit, dim=1)
-        #score = soft_score
-        score = score_logit
+        #soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
+        score = score_logit # shape: [ num_nodes, K, num_filters ] ; node-wise attention
+
         # attention for various freq. profiles
-        res = h_filters[:, 0, :] * score[:, 0]# * torch.sigmoid(self.lam[0])
+        res = h_filters[:, 0, :] * score[:, 0]
         for i in range(1, self.filter_num):
-            res += (h_filters[:, i, :] * score[:, i])#*torch.sigmoid(self.lam[i])
+            res += (h_filters[:, i, :] * score[:, i])
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')

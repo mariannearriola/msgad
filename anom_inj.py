@@ -111,12 +111,12 @@ prob_connect=0.05
 prob_connect = 0.3
 #prob_connect=prob_connects[scale-1]
 #prob_connect=0.98
-scale_sizes = np.array([5,5,5,1])
+scale_sizes = np.array([15,50,150,1])
 #scale_sizes = np.full((num_clust,),size)
 #n = np.array([30,6,2,1])
 #n= np.array([5,2,2])
 #n = np.full((num_clust,),1)
-n = np.array([1,1,1,5])
+n = np.array([10,3,1,10])
 #attr_scales = np.array([3,1,1,1])
 #attr_scales = np.array([1,1,1,1])
 attr_scales = np.full((num_clust,),1)
@@ -222,14 +222,15 @@ for ind,n_ in enumerate(n):
                     adj_dense[j,i]=1.
                 '''
                 
-            '''
+            
             for jind_,j_ in enumerate(current_nodes):
                 if jind_ > ind_:
                     break
                 if np.random.rand() > .6:
                     adj_dense[i, j_] = 0.
                     adj_dense[j_, i] = 0
-            '''
+            
+            
         # removes self loops
         #adj_dense[current_nodes,current_nodes] = 0.
         
@@ -371,7 +372,9 @@ savedir = './msgad/data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
 #import ipdb ; ipdb.set_trace()
-sio.savemat('{}/{}_triple_sc{}_test.mat'.format(savedir,dataset_str,str(scale)),\
+sio.savemat('{}/{}_outsparse.mat'.format(savedir,dataset_str,str(scale)),\
             {'Network': adj, 'Label': label, 'Attributes': attribute,\
-            'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label, 'scale_anomaly_label': all_anom_sc, 'l_comms': l_comms})
+            'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label,
+            'anom_sc1':all_anom_sc[0], 'anom_sc2':all_anom_sc[1], 'anom_sc3': all_anom_sc[2], 'anom_single': all_anom_sc[3],
+            'l_comms': l_comms})
 print('Done. The file is save as: anom_data/{}.mat \n'.format(dataset_str))
