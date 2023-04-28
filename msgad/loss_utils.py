@@ -41,6 +41,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
             edge_labels = edge_labels.to(graph.device)
+    
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
         for ind, sc_pred in enumerate(preds):
@@ -49,9 +50,10 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                 if sample:
                     # collect loss for selected positive/negative edges. adjacency not used
                     if type(graph) == list:
-                        edge_labels = graph[ind]
+                        edge_labels = graph[ind]#.to_dense()
                         
                     total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
+                    del edge_labels ; torch.cuda.empty_cache()
   
                 else:
                     # collect loss for all edges/non-edges in reconstruction
@@ -69,6 +71,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                         adj_label = graph[ind].to(pos_edges.device)
                     edge_struct_errors = torch.sqrt(torch.sum(torch.pow(sc_pred - adj_label, 2),1))
                     total_struct_error = torch.mean(edge_struct_errors)
+                    del edge_labels ; torch.cuda.empty_cache()
 
             # feature loss
             if recons_ind == 1 and recons in ['feat','both']:
@@ -87,17 +90,19 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             else:
                 if recons_ind == 0 and total_struct_error > -1:
                     all_struct_error = torch.cat((all_struct_error,(edge_struct_errors).unsqueeze(0)))
-                if recons_ind == 1 and total_feat_error > -1:
+                elif recons_ind == 1 and total_feat_error > -1:
                     if all_feat_error is None:
                         all_feat_error = (feat_error).unsqueeze(0)
                     else:
                         all_feat_error = torch.cat((all_feat_error,(feat_error).unsqueeze(0)))
+                else:
+                    continue
                 # assuming both is NOT multi-scale
                 if recons != 'both':
                     all_costs = torch.cat((all_costs,torch.add(total_struct_error*alpha*scale_weights[recons_ind],torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)))
                 else:
                     all_costs = torch.add(total_struct_error*alpha,torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)
-         
+    del feat, total_feat_error, total_struct_error ; torch.cuda.empty_cache()
     return all_costs, all_struct_error, all_feat_error
 
 def get_sampled_losses(pred,edges,label):
@@ -119,10 +124,10 @@ def get_sampled_losses(pred,edges,label):
         edge_errors : array-like, shape=[]
             edge-wise errors
     """
-    edge_errors=torch.sigmoid(pred[edges[:,0],edges[:,1]])
-    #edge_errors = pred[edges[:,0],edges[:,1]]
+    #edge_errors=torch.sigmoid(pred[edges[:,0],edges[:,1]])
+    edge_errors = pred[edges[:,0],edges[:,1]]
     label = label[edges[:,0],edges[:,1]]
-    #return torch.nn.functional.binary_cross_entropy(edge_errors,label), torch.nn.functional.binary_cross_entropy(edge_errors,label,reduction='none')
+    #return torch.nn.functional.binary_cross_entropy_with_logits(edge_errors,label), torch.nn.functional.binary_cross_entropy_with_logits(edge_errors,label,reduction='none')
 
     #edge_errors = torch.pow(torch.abs(edge_errors-label),2)
     edge_errors = torch.abs(edge_errors-label)

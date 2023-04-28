@@ -273,7 +273,8 @@ def hier_cluster(graph,adj):
     sc2_label = np.array(sc2_label)[conns_2] if len(conns_2) > 0 else []
     sc3_label = np.array(sc3_label)[conns_3] if len(conns_3) > 0 else []
     print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
-
+    if 'elliptic' in args.dataset:
+        return sc3_label,sc2_label,sc1_label
     clust1 = getScaleClusts(dend,1)
     clust2 = getScaleClusts(dend,2)
     clust3 = getScaleClusts(dend,3)

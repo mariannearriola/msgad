@@ -28,6 +28,7 @@ class GraphReconstruction(nn.Module):
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
         self.d = args.d
+        self.batch_size = args.batch_size
         self.e_adj, self.U_adj = None,None
         self.epoch = args.epoch
         self.label_type = args.label_type
@@ -124,7 +125,7 @@ class GraphReconstruction(nn.Module):
             recons_a,labels,res_a = [],[],[]
             # collect multi-scale labels
             if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size)
                 labels=lg.construct_labels()
             
             for ind,i in enumerate(self.module_list):
@@ -134,6 +135,7 @@ class GraphReconstruction(nn.Module):
                     #print(mem)
                     try:
                         recons,res,attn_scores = i(feats,edges,dst_nodes)
+                        #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
                     except Exception as e:
                         print(e)
                         oom = True
@@ -163,7 +165,7 @@ class GraphReconstruction(nn.Module):
         #elif not self.dataload:
         else:
             if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms)
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size)
                 labels=lg.construct_labels()
             else:
                 adj_label=graph.adjacency_matrix().to_dense()[graph.dstnodes()][:,graph.dstnodes()]
@@ -186,5 +188,4 @@ class GraphReconstruction(nn.Module):
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
         
-        #import ipdb ; ipdb.set_trace()
         return recons_a,recons_x,labels,res_a

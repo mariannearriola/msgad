@@ -72,19 +72,21 @@ def init_model(feat_size,args):
     return struct_model,params
 
 def fetch_dataloader(adj, edges, args):
+    dgl.seed(1)
     if args.batch_type == 'edge':
-        if args.dataset in ['tfinance']:
-            num_neighbors = 15
-            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors])#,num_neighbors])
-        elif args.dataset in ['yelpchi_rtr','cora_ori','weibo','cora_triple_sc_all','tfinance','elliptic','cora_triple_sc3_test','cora_no_anom','cora_outsparse','cora_outnormal']:
+        if 'tfinance' in args.dataset:
+            num_neighbors = 10
+            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors])
+        elif args.dataset in ['yelpchi_rtr','yelpchi_aug','tfinance_aug']:
+            num_neighbors = 10
+            sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
+        elif args.dataset in ['elliptic_aug','yelpchi_rtr','yelpchi_aug','cora_ori','weibo','weibo_aug','cora_triple_sc_all','tfinance','tfinance_aug','elliptic','cora_no_anom','cora_anom']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
         batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())
-        if args.dataset in ['yelpchi_rtr','elliptic']:
-            batch_size /= 10 ; batch_size = int(batch_size)
         if args.device == 'cuda':
             dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
         else:
@@ -114,12 +116,11 @@ def save_batch(loaded_input,lbl,iter,setting,args):
     loaded_input[0] = loaded_input[0].to_sparse()
     if args.batch_type == 'edge':
         loaded_input[-1] = loaded_input[-1][0]
-    if args.datadir is not None and args.datasave:
-        dirpath = f'{args.datadir}/{args.dataset}/{setting}'
-        if not os.path.exists(dirpath):
-            os.makedirs(dirpath)
-        with open (f'{dirpath}/{iter}.pkl','wb') as fout:
-            pkl.dump({'loaded_input':loaded_input,'label':[l.to_sparse() for l in lbl]},fout)
+    dirpath = f'{args.datadir}/{args.dataset}/{setting}'
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+    with open (f'{dirpath}/{iter}.pkl','wb') as fout:
+        pkl.dump({'loaded_input':loaded_input,'label':[l.to_sparse() for l in lbl]},fout)
     for i in range(len(loaded_input)):
         del loaded_input[0]
     torch.cuda.empty_cache()
@@ -131,8 +132,13 @@ def load_batch(iter,setting,args):
     loaded_input = batch_dict['loaded_input']
     lbl = batch_dict['label']
     loaded_input[0] = loaded_input[0].to_dense()
-    lbl = [l.to_dense() for l in lbl]
-    return loaded_input,lbl
+    lbl_ = []
+    for l in lbl:
+        lbl_.append(l.to_dense().detach().cpu())
+        del l ; torch.cuda.empty_cache()
+    #lbl = [l.to_dense() for l in lbl]
+    del lbl ; torch.cuda.empty_cache()
+    return loaded_input,lbl_
 
 def getScaleClusts(dend,thresh):
     clust_labels = postprocess.cut_straight(dend,threshold=thresh)
@@ -284,33 +290,39 @@ class anom_classifier():
             full_anoms = label.nonzero()[0]
             ms_anoms_num = full_anoms.shape[0]
 
-            def plot_anom_sc(sorted_errors,anom,ms_anoms_num,color):
+            def plot_anom_sc(sorted_errors,anom,ms_anoms_num,color,scale_name,args):
                 rankings_sc = np.zeros(sorted_errors.shape[0])
                 rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
                 rankings_sc = rankings_sc.nonzero()[0]
                 rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
                 plt.plot(np.arange(ms_anoms_num),rankings_sc,color=color)
+                fpath = f'vis/hit_at_k_model_wise/{args.dataset}/rankings/{scale_name}'
+                if not os.path.exists(fpath):
+                    os.makedirs(fpath)
+                fname = f'{fpath}/{args.model}.pkl'
+                with open(fname,'wb') as fout:
+                    pkl.dump(rankings_sc,fout)
             
             hit_rankings = rankings.nonzero()[0]
 
             #import ipdb ; ipdb.set_trace()
             # add plots for scale-specific anomalies
-            if True:
-                plt.figure()
-                plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan')
-                plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red')
-                plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue')
-                plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple')
-                plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
-                plt.legend(['single','sc1','sc2','sc3','total'])
-                fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
-                if not os.path.exists(fpath):
-                    os.makedirs(fpath)
-                plt.ylabel('# predictions')
-                plt.xlabel('# multi-scale anomalies detected')
-                #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
-                #plt.ylim(top=ms_anoms_num*2)
-                plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
+
+            plt.figure()
+            plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single',args)
+            plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args)
+            plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2',args)
+            plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3',args)
+            plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+            plt.legend(['single','sc1','sc2','sc3','total'])
+            fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+            plt.ylabel('# predictions')
+            plt.xlabel('# multi-scale anomalies detected')
+            #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
+            #plt.ylim(top=ms_anoms_num*2)
+            plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
    
             print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
 
@@ -385,7 +397,6 @@ def sparse_matrix_to_tensor(coo,feat):
     return dgl_graph
 
 def rearrange_anoms(anom):
-    anom = anom[0]
     ret_anom = []
     for anom_ in anom:
         ret_anom.append(anom_[0])
@@ -405,8 +416,12 @@ def load_anomaly_detection_dataset(dataset, sc, datadir='data'):
         adj = data_mat['Network']
     truth = data_mat['Label'].flatten()
     anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
-    if 'weibo' in dataset:
+   
+    if 'yelpchi' in dataset:
         anom1=rearrange_anoms(anom1) ; anom2=rearrange_anoms(anom2) ; anom3=rearrange_anoms(anom3) ; anom_single = anom_single[0]
+    if 'weibo' in dataset or 'elliptic' in dataset:
+        anom1=rearrange_anoms(anom1[0]) ; anom2=rearrange_anoms(anom2[0]) ; anom3=rearrange_anoms(anom3) ; anom_single = anom_single[0]
+    
     sc_label=[anom1,anom2,anom3,anom_single]
     
     return adj, edge_idx, feats, truth, sc_label

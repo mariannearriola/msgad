@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 def graph_anomaly_detection(args):
     """Pipeline for autoencoder-based graph anomaly detection"""
     # load data
-    torch.manual_seed(1)
+    torch.manual_seed(1) ; dgl.seed(1) ; np.random.seed(1)
     sp_adj, edge_idx, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     
     anoms,norms=np.where(truth==1)[0],np.where(truth==0)[0]
@@ -26,7 +26,7 @@ def graph_anomaly_detection(args):
     if sp_adj is not None:
         adj = sparse_matrix_to_tensor(sp_adj,feats)
     lbl,last_batch_node,pos_edges,neg_edges=None,None,None,None
-
+    
     # initialize data loading
     if edge_idx is not None:
         adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feats.shape[0])
@@ -37,12 +37,13 @@ def graph_anomaly_detection(args):
     else:
         dataloader = fetch_dataloader(adj, edges, args)
     print('sample train',args.sample_train,'sample test',args.sample_test, 'epochs',args.epoch, 'saving?', args.datasave, 'loading?',args.dataload)
-
+    
     # intialize model (on given device)
     adj = adj.to(args.device)
     feats = feats#.to(args.device)
     struct_model,feat_model=None,None
     struct_model,params = init_model(feats.size(1),args)
+    #print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
     if not args.model in ['gcad','madan']:
         optimizer = torch.optim.Adam(params, lr = args.lr)
@@ -53,9 +54,12 @@ def graph_anomaly_detection(args):
     struct_loss,feat_loss=None,None
     res_a = None
     seconds = time.time()
-     # epoch x 3 x num filters x nodes
-    train_attn_w = torch.zeros((args.epoch,3,5,adj.number_of_nodes())).to(args.device)
-    print(dataloader.__len__())
+    # epoch x 3 x num filters x nodes
+    # BUG: THIS IS VERY LARGE. WHEN MOVING TO MS AMNET MODEL, THIS NEEDS TO BE CHANGED
+    if 'multi-scale-amnet' in args.model:
+        train_attn_w = torch.zeros((args.epoch,3,5,adj.number_of_nodes()))#.to(args.device)
+  
+    print(dataloader.__len__(),'batches')
     
     for epoch in range(args.epoch):
         epoch_l = 0
@@ -78,6 +82,7 @@ def graph_anomaly_detection(args):
                 #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
                 if args.datasave:
                     g_batch = g_batch[0]
+                if 'cora' not in args.dataset: print('size of batch',g_batch.num_dst_nodes(),'nodes')
             
             if args.model == 'madan':
                 if args.debug:
@@ -145,7 +150,15 @@ def graph_anomaly_detection(args):
                 else:
                     loss, struct_loss, feat_cost = loss_func(g_batch, g_batch.ndata['feature'], A_hat, X_hat, None, None, sample=False, recons=args.recons, alpha=args.alpha)
             else:
-                recons_label = g_batch if lbl is None else lbl
+                if lbl is None:
+                    recons_label = g_batch
+                else:
+                    lbl_ = []
+                    for l in lbl:
+                        lbl_.append(l.to(args.device))
+                        del l ; torch.cuda.empty_cache()
+                    recons_label = lbl_
+                    del lbl_ ; torch.cuda.empty_cache()
                 loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
             
             if 'multi-scale' in args.model:
@@ -167,7 +180,7 @@ def graph_anomaly_detection(args):
                     print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
-            print('iter',iter)
+            if 'cora' not in args.dataset: print('iter',iter)
 
             del g_batch
             for k in range(len(loaded_input)): del loaded_input[0]
@@ -178,7 +191,7 @@ def graph_anomaly_detection(args):
             for k in range(len(model_lbl)): del model_lbl[0]
             if X_hat is not None:
                 for k in range(len(X_hat)): del X_hat[0]
-            del struct_loss, loss, node_dict, pos_edges, neg_edges
+            del struct_loss, node_dict, pos_edges, neg_edges
             if feat_loss is not None: del feat_loss
 
             torch.cuda.empty_cache()
@@ -189,12 +202,13 @@ def graph_anomaly_detection(args):
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
         if args.model != 'madan' and 'multi-scale' in args.model:
-            print("Epoch:", '%04d' % (epoch), "train_loss=", round(torch.sum(epoch_l).item(),3), "losses=",torch.round(loss,decimals=4).detach().cpu())
+            print("Epoch:", '%04d' % (epoch), "train_loss=", round(torch.sum(loss),3), "losses=",torch.round(loss,decimals=4).detach().cpu())
         else:
              print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3))
-        print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
+        #print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
         '''
-        print('epoch done',epoch)
+        print('epoch done',epoch,loss)
+        del loss
         epoch_l = torch.sum(epoch_l)
         #epoch_l.backward()
         #optimizer.step()
@@ -202,13 +216,15 @@ def graph_anomaly_detection(args):
         if struct_model:
             if struct_model.attn_weights != None:
                 # epoch x 3 x num filters x nodes
-                train_attn_w[epoch,:,:,in_nodes]=torch.unsqueeze(struct_model.attn_weights,0)
+                train_attn_w[epoch,:,:,in_nodes]=torch.unsqueeze(struct_model.attn_weights,0).detach().cpu()
     
     #model = torch.load('best_model.pt')
 
     # accumulate node-wise anomaly scores via model evaluation
     if args.model not in ['madan','gcad']:
         if struct_model: struct_model.eval()
+    #if 'elliptic' in args.dataset:
+    #    struct_model.dataload = False
     
     edges=adj.edges('eid')
     #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0,device=args.device)
@@ -225,7 +241,7 @@ def graph_anomaly_detection(args):
         recons_a.append(am)
         res_a_all.append(np.full((adj.number_of_nodes(),args.hidden_dim),-1.))
     all_samps = []
-    if args.datadir is not None and args.dataload:
+    if (args.datadir is not None and args.dataload):# or 'elliptic' not in args.model:
         pass
         #random.shuffle(dataloader)
     else:
@@ -234,7 +250,7 @@ def graph_anomaly_detection(args):
     #import ipdb ; ipdb.set_trace()
     for loaded_input in dataloader:
         vis = True if (args.vis_filters == True and iter == 0) else False
-        if args.dataload:
+        if args.dataload:# or 'elliptic' not in args.model:
             loaded_input,lbl=load_batch(loaded_input,'test',args)
         # collect input
         if args.batch_type == 'node':
@@ -248,7 +264,7 @@ def graph_anomaly_detection(args):
         else:
             in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
             edge_ids = torch.vstack((pos_edges,neg_edges))
-            if args.datasave:
+            if args.datasave:# or 'elliptic' in args.model:
                 g_batch = g_batch[0]
             #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
     
@@ -257,9 +273,8 @@ def graph_anomaly_detection(args):
             node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
             batch_sc_label = get_batch_sc_label(in_nodes.detach().cpu(),sc_label,g_batch,node_dict)
             #rev_node_dict = {v: k for k, v in node_dict.items()}
-            
             A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='test')
-            if args.datasave:
+            if args.datasave:# or 'elliptic' in args.model:
                 lbl = model_lbl
 
         if args.model == 'gcad':
@@ -275,7 +290,7 @@ def graph_anomaly_detection(args):
         edge_ids_,node_ids_ = collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args)
         
         # save batch info
-        if args.datasave:
+        if args.datasave:# or 'elliptic' in args.dataset:
             save_batch(loaded_input,lbl,iter,'test',args)
 
         if args.batch_type == 'node':
@@ -284,7 +299,15 @@ def graph_anomaly_detection(args):
             else:
                 loss, struct_loss, feat_cost = loss_func(g_batch, g_batch.ndata['feature'], A_hat, X_hat, None, None, sample=False, recons=args.recons, alpha=args.alpha)
         else:
-            recons_label = g_batch if lbl is None else lbl
+            if lbl is None:
+                recons_label = g_batch
+            else:
+                lbl_ = []
+                for l in lbl:
+                    lbl_.append(l.to(args.device))
+                    del l ; torch.cuda.empty_cache()
+                recons_label = lbl_
+                del lbl_ ; torch.cuda.empty_cache()
             loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
         
         if args.model in ['gradate']:
@@ -359,9 +382,13 @@ def graph_anomaly_detection(args):
                 a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, args, cluster=False)
     if args.vis_filters == True:
         visualizer = Visualizer(adj,feats,args,sc_label,norms,anoms)
-        visualizer.plot_recons(recons_a)
-        visualizer.plot_filters(res_a_all)
-        visualizer.plot_attn_scores(train_attn_w)
+        try:
+            visualizer.plot_recons(recons_a)
+            visualizer.plot_filters(res_a_all)
+        except Exception as e:
+            print(e)
+        if 'multi-scale-amnet' == args.model:
+            visualizer.plot_attn_scores(train_attn_w.numpy())
 
     for i in struct_model.module_list:
         print(torch.sigmoid(i.lam))

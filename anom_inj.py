@@ -102,7 +102,6 @@ m = 15  #num of fully connected nodes  #10 15 20   5 (clique size)
 k = 50
 s = 9 # number of scales
 scale=3
-num_clust=93
 size=50
 prob_connect=0.93
 prob_connect=0.75
@@ -111,15 +110,15 @@ prob_connect=0.05
 prob_connect = 0.3
 #prob_connect=prob_connects[scale-1]
 #prob_connect=0.98
-scale_sizes = np.array([15,50,150,1])
+scale_sizes = np.array([5,15,75,1])
 #scale_sizes = np.full((num_clust,),size)
 #n = np.array([30,6,2,1])
 #n= np.array([5,2,2])
 #n = np.full((num_clust,),1)
-n = np.array([10,3,1,10])
+n = np.array([10,3,1,100])
 #attr_scales = np.array([3,1,1,1])
 #attr_scales = np.array([1,1,1,1])
-attr_scales = np.full((num_clust,),1)
+attr_scales = np.full((np.sum(n),),1)
 
 
 # Set seed
@@ -222,13 +221,14 @@ for ind,n_ in enumerate(n):
                     adj_dense[j,i]=1.
                 '''
                 
-            
+            '''
             for jind_,j_ in enumerate(current_nodes):
                 if jind_ > ind_:
                     break
                 if np.random.rand() > .6:
                     adj_dense[i, j_] = 0.
                     adj_dense[j_, i] = 0
+            '''
             
             
         # removes self loops
@@ -290,6 +290,7 @@ print('Done. {:d} structured nodes are constructed. ({:.0f} edges are added) \n'
 
 # TODO: find connectivity of normal clusters
 nx_graph = nx.from_numpy_matrix(adj_dense)
+
 '''
 print(nx.is_connected(nx_graph))
 shortest_paths = dict(nx.shortest_path_length(nx_graph))
@@ -359,6 +360,23 @@ for ind,n_ in enumerate(n):
             else:
                 selected_freq[closest_idx] = 1
     all_anom_sc.append(anom_sc)
+
+def getCuts(nx_graph,ms_anoms):
+    import ipdb ; ipdb.set_trace()
+    comms = nx.community.louvain_communities(nx_graph)
+    norm_comms = [list(i) for i in comms if np.intersect1d(list(i),anomaly_idx).shape[0] == 0]
+    cuts = []
+    for comm in norm_comms:
+        if nx.cut_size(nx_graph,comm) > 0:
+            cuts.append(nx_graph.subgraph(comm).number_of_edges()/nx.cut_size(nx_graph,comm))
+    print('norm cuts',cuts)
+    for a_ind,a in enumerate(ms_anoms):
+        cuts = []
+        for comm in a:
+            if nx.cut_size(nx_graph,comm) > 0:
+                cuts.append(nx_graph.subgraph(comm).number_of_edges()/nx.cut_size(nx_graph,comm))
+        print('cuts for',a_ind,cuts)
+getCuts(nx_graph,all_anom_sc)
 
 print('Done. {:d} attributed nodes are constructed. \n'.format(len(attribute_anomaly_idx)))
 import ipdb ; ipdb.set_trace()

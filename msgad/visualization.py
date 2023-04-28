@@ -19,9 +19,9 @@ class Visualizer:
 
     def plot_spectrum(self,e,U,signal):
         c = U.T@signal
-        M = torch.zeros((15,c.shape[1])).to(e.device)
+        M = torch.zeros((21,c.shape[1])).to(e.device)
         for j in range(e.shape[0]):
-            idx = min(int(e[j] / 0.1), 15-1)
+            idx = min(int(e[j] / 0.1), 21-1)
             M[idx] += c[j]**2
         M=M/sum(M)
         y = M[:,0].detach().cpu().numpy()
@@ -83,15 +83,17 @@ class Visualizer:
             import ipdb ; ipdb.set_trace()
         e_adj,U_adj = e_adj.detach().cpu(),U_adj.detach().cpu()
         self.plot_spectrum(e_adj,U_adj,self.feats[self.adj.dstnodes()])
+
         for r_ind,r_ in enumerate(recons_a):
             #r_ = torch.tensor(np.ceil(r_)).detach().to(self.device)
             #r_ = torch.sigmoid(torch.tensor(r_)).to(self.device)
             r_ = torch.tensor(r_).to(self.device)
             nz = r_.flatten().unique()
-            sorted_idx = torch.min(torch.topk(nz,self.adj.number_of_edges()).values)
-            r_ = torch.gt(r_,sorted_idx).float()
+            if nz.shape[0] > self.adj.number_of_edges():
+                sorted_idx = torch.min(torch.topk(nz,self.adj.number_of_edges()).values)
+                r_ = torch.gt(r_,sorted_idx).float()
 
-            r_symm = torch.maximum(r_, r_.T)+torch.eye(r_.shape[0]).to(self.adj.device) 
+            r_symm = torch.maximum(r_, r_.T)
 
             if len(torch.nonzero(r_symm))==0:
                 import ipdb ; ipdb.set_trace()
@@ -145,7 +147,7 @@ class Visualizer:
             for i in sc_label[1:]:
                 anom_flat=np.concatenate((anom_flat,i))#[0]))
             return anom_flat
-
+            
         # epoch x 3 x num filters x nodes
         attn_weights_arr = [attn_weights[:,:,:,self.norms]]
         for anom_ind,anom in enumerate(self.sc_label):
@@ -155,37 +157,48 @@ class Visualizer:
                 try:
                     if anom_ind == 0:
                         anom_tot = flatten_label_attn(anom)
+                        attn_weights_arr.append(attn_weights[:,:,:,flatten_label_attn(anom)])
                     else:
-                        anom_tot = np.append(anom_tot,flatten_label_attn(anom))
-                    attn_weights_arr.append(attn_weights[:,:,:,flatten_label_attn(anom)])
+                        anom_f = flatten_label_attn(anom)
+                        if anom_f.ndim == 2: anom_f = anom_f[0]
+                        anom_tot = np.append(anom_tot,anom_f)
+                        attn_weights_arr.append(attn_weights[:,:,:,anom_f])
+                        del anom_f
                 except Exception as e:
                     attn_weights_arr.append(attn_weights[:,:,:,anom])
 
         legend = []
         colors=['green','red','blue','purple','yellow']
         legend=['norm','anom sc1','anom sc2','anom sc3','single']
+
         for scale in range(attn_weights.shape[1]):
             p_min,p_max=np.inf,-np.inf
-            plt.figure()
-            for ind,attn_weight in enumerate(attn_weights_arr):
-                data=attn_weight[:,scale,0,:].detach().cpu().numpy()
-                scale_attn = data.mean(axis=1)
-                if np.min(scale_attn) < p_min:
-                    p_min = np.min(scale_attn)
-                if np.max(scale_attn) > p_max:
-                    p_max = np.max(scale_attn)
-                plt.plot(scale_attn,color=colors[ind])
-                plt.fill_between(np.arange(attn_weight.shape[0]), data.mean(axis=1) - data.std(axis=1), data.mean(axis=1) + data.std(axis=1), color=colors[ind], alpha=0.1, label='_nolegend_')
+            for filter in range(attn_weights.shape[2]):
+                plt.figure()
+                for ind,attn_weight in enumerate(attn_weights_arr):
+                    data=attn_weight[:,scale,filter,:]
+                    scale_attn = data.mean(axis=1)
+                    if np.min(scale_attn) < p_min:
+                        p_min = np.min(scale_attn)
+                    if np.max(scale_attn) > p_max:
+                        p_max = np.max(scale_attn)
+                    
+                    plt.plot(scale_attn,color=colors[ind])
+                    #try:
+                    #    plt.fill_between(np.arange(data.shape[0]), data.mean(axis=1)[0] - data.std(axis=1)[0], data.mean(axis=1)[0] + data.std(axis=1)[0], color=colors[ind], alpha=0.1, label='_nolegend_')
+                    #except Exception as e:
+                    #    print(e)
+                        #import ipdb ; ipdb.set_trace()
             
-            plt.legend(legend)
-            plt.xlabel('epochs')
-            if self.sc_label is None:
-                plt.ylabel(f'mean attention value for normal nodes')
-            else:
-                plt.ylabel(f'mean attention value for anomaly scale {ind+1}')
-            fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-            plt.ylim((p_min,p_max))
-            #plt.xlim((args.epoch-3,args.epoch-1))
-            plt.savefig(f'{fpath}/model_sc{scale}.png')
+                plt.legend(legend)
+                plt.xlabel('epochs')
+                if self.sc_label is None:
+                    plt.ylabel(f'mean attention value for normal nodes')
+                else:
+                    plt.ylabel(f'mean attention value for anomaly scale {ind+1}')
+                fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}'
+                if not os.path.exists(fpath):
+                    os.makedirs(fpath)
+                plt.ylim((p_min,p_max))
+                #plt.xlim((args.epoch-3,args.epoch-1))
+                plt.savefig(f'{fpath}/model_sc{scale}_fil{filter}.png')
