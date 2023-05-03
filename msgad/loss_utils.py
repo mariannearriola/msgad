@@ -41,7 +41,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             feat = graph.ndata['feature']
             edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
             edge_labels = edge_labels.to(graph.device)
-    
+
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
         for ind, sc_pred in enumerate(preds):
@@ -129,8 +129,8 @@ def get_sampled_losses(pred,edges,label):
     label = label[edges[:,0],edges[:,1]]
     #return torch.nn.functional.binary_cross_entropy_with_logits(edge_errors,label), torch.nn.functional.binary_cross_entropy_with_logits(edge_errors,label,reduction='none')
 
-    #edge_errors = torch.pow(torch.abs(edge_errors-label),2)
-    edge_errors = torch.abs(edge_errors-label)
+    edge_errors = torch.pow(torch.abs(edge_errors-label),2)
+    #edge_errors = torch.abs(edge_errors-label)
     #total_error = torch.mean(torch.sqrt(edge_errors))
-    total_error = torch.mean(edge_errors)
+    total_error = torch.sum(edge_errors)
     return total_error, edge_errors

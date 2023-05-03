@@ -71,8 +71,8 @@ class GraphReconstruction(nn.Module):
         """Obtain graph information from input TODO: MOVE?"""
         edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
         feats = graph.ndata['feature']
-        if 'edge' == self.batch_type:
-            feats = feats['_N']
+        #if 'edge' == self.batch_type:
+        #    feats = feats['_N']
         return edges, feats, graph
 
     def stationary_distribution(self, M, device):
@@ -133,12 +133,12 @@ class GraphReconstruction(nn.Module):
                     oom = False
                     #mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
                     #print(mem)
-                    try:
-                        recons,res,attn_scores = i(feats,edges,dst_nodes)
-                        #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
-                    except Exception as e:
-                        print(e)
-                        oom = True
+                    #try:
+                    recons,res,attn_scores = i(feats,edges,dst_nodes)
+                    #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
+                    #except Exception as e:
+                    #    print(e)
+                    #    oom = True
                     if oom:
                         print('oom')
                         import ipdb ; ipdb.set_trace()

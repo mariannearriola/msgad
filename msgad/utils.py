@@ -13,6 +13,7 @@ import networkx as nx
 from igraph import Graph
 import dgl
 import copy
+import matplotlib.ticker as mtick
 import pickle as pkl
 from model import GraphReconstruction
 from models.gcad import *
@@ -27,9 +28,12 @@ def get_batch_sc_label(in_nodes,sc_label,g_batch,node_dict):
         sc_labels = []
         if len(sc_) == 0: sc_labels.append([])
         for sc__ in sc_:
+            sc_labels.append(sc__)
+            continue
             if np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
                 sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
         batch_sc_label[batch_sc_label_keys[sc_ind]] = np.array(sc_labels)
+
     return batch_sc_label
 
 def collect_batch_scores(in_nodes,g_batch,pos_edges,neg_edges,args):
@@ -82,15 +86,15 @@ def fetch_dataloader(adj, edges, args):
             sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
         elif args.dataset in ['elliptic_aug','yelpchi_rtr','yelpchi_aug','cora_ori','weibo','weibo_aug','cora_triple_sc_all','tfinance','tfinance_aug','elliptic','cora_no_anom','cora_anom']:
             sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
-
+       
         neg_sampler = dgl.dataloading.negative_sampler.Uniform(1)
         sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
         edges=adj.edges('eid')
         batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_edges())
         if args.device == 'cuda':
-            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0, device=args.device)
+            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=0, device=args.device)
         else:
-            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=6, device=args.device)
+            dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=6, device=args.device)
     elif args.batch_type == 'node':
         batch_size = args.batch_size if args.batch_size > 0 else int(adj.number_of_nodes()/100)
         #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
@@ -104,11 +108,14 @@ def fetch_dataloader(adj, edges, args):
 
 def get_edge_batch(loaded_input):
     in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
+    #in_nodes, sub_graph_pos, block = loaded_input
     pos_edges = sub_graph_pos.edges()
     neg_edges = sub_graph_neg.edges()
+    #neg_edges = None
     pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
     neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
     last_batch_node = torch.max(neg_edges)
+    #last_batch_node = torch.max(pos_edges)
     g_batch = block
     return in_nodes, pos_edges, neg_edges, g_batch, last_batch_node
 
@@ -247,6 +254,76 @@ class anom_classifier():
                 accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
         return accs, anom_preds.shape[0]
 
+    def plot_anom_sc(self,sorted_errors,anom,ms_anoms_num,color,scale_name,args):
+        rankings_sc = np.zeros(sorted_errors.shape[0])
+        rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
+        rankings_sc = rankings_sc.nonzero()[0]
+        rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
+        plt.plot(np.arange(rankings_sc.shape[0]),rankings_sc,color=color)
+        fpath = f'vis/hit_at_k_model_wise/{args.dataset}/rankings/{scale_name}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        fname = f'{fpath}/{args.model}.pkl'
+        with open(fname,'wb') as fout:
+            pkl.dump(rankings_sc,fout)
+
+    def plot_anom_perc(self,sorted_errors,anom,color,scale_name,args):
+
+        rankings_sc = np.zeros(sorted_errors.shape[0])
+        rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
+        rankings_sc = rankings_sc.nonzero()[0]
+        anom_tot = sorted_errors.shape[0]
+        percs_sc = np.zeros(anom_tot)
+        for ind,ranking_ind in enumerate(range(rankings_sc.shape[0]-1)):
+            percs_sc[rankings_sc[ranking_ind]:rankings_sc[ranking_ind+1]] = ind/rankings_sc.shape[0]
+        percs_sc[rankings_sc[-1]:] = 1.
+        #import ipdb ; ipdb.set_trace()
+        plt.plot(np.arange(percs_sc.shape[0]),percs_sc,color=color)
+        #fpath = f'vis/perc_at_k/{args.dataset}/rankings/{scale_name}'
+        #if not os.path.exists(fpath):
+        #    os.makedirs(fpath)
+        #fname = f'{fpath}/{args.model}.pkl'
+        #with open(fname,'wb') as fout:
+        #    pkl.dump(rankings_sc,fout)
+
+    def plot_percentages(self,hit_rankings,sorted_errors,args,anoms,ms_anoms_num,sc):
+    
+        plt.figure()
+        anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
+        self.plot_anom_perc(sorted_errors,anom_single,'cyan','single',args) ; plt.legend(['single']) ; plt.twinx()
+        self.plot_anom_perc(sorted_errors,anom_sc1,'red','scale1',args) ; plt.legend(['sc1']) ; plt.twinx()
+        self.plot_anom_perc(sorted_errors,anom_sc2,'blue','scale2',args) ; plt.legend(['sc2']) ;  plt.twinx()
+        self.plot_anom_perc(sorted_errors,anom_sc3,'purple','scale3',args) ; plt.legend(['sc3']) 
+        #plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+        #plt.legend(['single','sc1','sc2','sc3','total'])
+        fpath = f'vis/perc_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.xlabel('# predictions')
+        plt.ylabel('% anomaly detected')
+        #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
+        #plt.ylim(top=ms_anoms_num*2)
+        plt.savefig(f'{fpath}/sc{sc}_perc_at_k.png')
+
+
+    def hit_at_k(self,hit_rankings,sorted_errors,args,anoms,ms_anoms_num,sc):
+        plt.figure()
+        anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
+        self.plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single',args)
+        self.plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args)
+        self.plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2',args)
+        self.plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3',args)
+        plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+        plt.legend(['single','sc1','sc2','sc3','total'])
+        fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.ylabel('# predictions')
+        plt.xlabel('# multi-scale anomalies detected')
+        #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
+        #plt.ylim(top=ms_anoms_num*2)
+        plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
+
     def calc_prec(self, graph, scores, label, sc_label, args, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
@@ -289,40 +366,13 @@ class anom_classifier():
 
             full_anoms = label.nonzero()[0]
             ms_anoms_num = full_anoms.shape[0]
-
-            def plot_anom_sc(sorted_errors,anom,ms_anoms_num,color,scale_name,args):
-                rankings_sc = np.zeros(sorted_errors.shape[0])
-                rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
-                rankings_sc = rankings_sc.nonzero()[0]
-                rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
-                plt.plot(np.arange(ms_anoms_num),rankings_sc,color=color)
-                fpath = f'vis/hit_at_k_model_wise/{args.dataset}/rankings/{scale_name}'
-                if not os.path.exists(fpath):
-                    os.makedirs(fpath)
-                fname = f'{fpath}/{args.model}.pkl'
-                with open(fname,'wb') as fout:
-                    pkl.dump(rankings_sc,fout)
             
             hit_rankings = rankings.nonzero()[0]
+            self.hit_at_k(hit_rankings,sorted_errors,args,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
+            self.plot_percentages(hit_rankings,sorted_errors,args,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
 
             #import ipdb ; ipdb.set_trace()
             # add plots for scale-specific anomalies
-
-            plt.figure()
-            plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single',args)
-            plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args)
-            plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2',args)
-            plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3',args)
-            plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
-            plt.legend(['single','sc1','sc2','sc3','total'])
-            fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-            plt.ylabel('# predictions')
-            plt.xlabel('# multi-scale anomalies detected')
-            #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
-            #plt.ylim(top=ms_anoms_num*2)
-            plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
    
             print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
 

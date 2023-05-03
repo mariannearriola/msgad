@@ -101,25 +101,25 @@ class BernConv(MessagePassing):
             Bx_next = self.propagate(edge_index, x=Bx_next, norm=norm, size=None)
             #Bx_next = mat @ Bx_next
             Bx.append(Bx_next)
-
         bern_coeff =  BernConv.get_bern_coeff(self.K)
         eps = 1e-2
-        if self.normalization:
-            weight = torch.sigmoid(self.weight)
-        else:
-            weight = torch.clamp(self.weight, min = 0. + eps, max = 1. - eps)
-
+        #if self.normalization:
+        #    weight = torch.sigmoid(self.weight)
+        #else:
+        #    weight = torch.clamp(self.weight, min = 0. + eps, max = 1. - eps)
+        #print(weight)
         out = torch.zeros_like(x)
         for k in range(0, self.K + 1):
             coeff = bern_coeff[k]
             basis = Bx[0] * coeff[0]
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
-            out += basis * weight[k]
-
+            out += basis * F.softmax(self.weight)[k]
+            
+        # NOTE: out is just epsilon (need to add weights to paramter list of amnet ms)
         del lambda_max
         del basis
-        del weight
+        #del weight
         del Bx
         del bern_coeff
         del Bx_next
@@ -127,7 +127,6 @@ class BernConv(MessagePassing):
         #del edge_index
         #del norm
         torch.cuda.empty_cache()
-        
         return out
 
     
@@ -176,8 +175,10 @@ class AMNet_ms(nn.Module):
                                                  )
         self.K = K
         self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=False, bias=True) for _ in range(filter_num)])
+        #self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True)])
+        #self.filters.extend([BernConv(hid_channels, K, normalization=False, bias=True) for i in range(1, filter_num)])
         self.filter_num = filter_num
-        
+
         self.W_f = nn.Sequential(nn.Linear(hid_channels, in_channels),
                                  self.attn_fn,
                                  )
@@ -186,7 +187,7 @@ class AMNet_ms(nn.Module):
                                  self.attn_fn,
                                  )
         
-        self.out_l = nn.Linear(hid_channels, hid_channels)
+        #self.out_l = nn.Linear(hid_channels, hid_channels)
         #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
         '''
         self.linear_cls_out = nn.Sequential(
@@ -200,7 +201,6 @@ class AMNet_ms(nn.Module):
         self.relu = torch.nn.ReLU()
         '''
         self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
-
         self.reset_parameters()
 
 
@@ -232,19 +232,23 @@ class AMNet_ms(nn.Module):
 
         x = self.linear_transform_in(x)
         h_list = []
+        lams = F.softmax(self.lam)
         for i, filter_ in enumerate(self.filters):
-            h = filter_(x, edge_index)
-            h_list.append(h * torch.sigmoid(self.lam[i]))
+            #print('for filter',i,self.filters[i].weight)
+            #h = filter_(x, edge_index)
+            h = self.filters[i](x, edge_index)*lams[i]
+            h_list.append(h)
             del filter_
             del h
-        
+        print(lams)
         torch.cuda.empty_cache()
         h_filters = torch.stack(h_list, dim=1)
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
         score_logit = torch.bmm(h_filters_proj, x_proj)
-        #soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
-        score = score_logit # shape: [ num_nodes, K, num_filters ] ; node-wise attention
+        soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
+
+        #score = score_logit # shape: [ num_nodes, K, num_filters ] ; node-wise attention
         # attention for various freq. profiles
         res = h_filters[:, 0, :] * score[:, 0]
         for i in range(1, self.filter_num):
@@ -253,7 +257,7 @@ class AMNet_ms(nn.Module):
             import ipdb ; ipdb.set_trace()
             print('nan')
             
-        res = self.out_l(res)
+        #res = self.out_l(res)
         edge_index, norm = self.__norm__(edge_index, x.shape[0],
                                          None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
 
@@ -262,13 +266,13 @@ class AMNet_ms(nn.Module):
         #L[edge_index[0],edge_index[1]]=norm
         #self.L = L
         #res_ = torch.sigmoid(res@res.T)
-        
+        #import ipdb ; ipdb.set_trace()
         res_ = res@res.T
         del h_filters
         del x
-        #del score_logit
+        del score_logit
         del x_proj
-        #del h_filters_proj
+        del h_filters_proj
         for i in range(len(h_list)):
             del h_list[0]
         torch.cuda.empty_cache()

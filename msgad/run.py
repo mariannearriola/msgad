@@ -9,6 +9,7 @@ import time
 import gc
 from models.gcad import *
 from model import *
+import torch.nn.functional as F
 import MADAN.Madan as md
 from visualization import *
 
@@ -18,13 +19,14 @@ warnings.filterwarnings("ignore")
 def graph_anomaly_detection(args):
     """Pipeline for autoencoder-based graph anomaly detection"""
     # load data
-    torch.manual_seed(1) ; dgl.seed(1) ; np.random.seed(1)
+    torch.manual_seed(123) ; dgl.seed(123) ; np.random.seed(123)
     sp_adj, edge_idx, feats, truth, sc_label = load_anomaly_detection_dataset(args.dataset, args.scales)
     
     anoms,norms=np.where(truth==1)[0],np.where(truth==0)[0]
     #import ipdb ; ipdb.set_trace()
     if sp_adj is not None:
         adj = sparse_matrix_to_tensor(sp_adj,feats)
+
     lbl,last_batch_node,pos_edges,neg_edges=None,None,None,None
     
     # initialize data loading
@@ -79,11 +81,19 @@ def graph_anomaly_detection(args):
                 neg_edges = sub_graph_neg.edges()
             else:
                 in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
+      
                 #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
                 if args.datasave:
                     g_batch = g_batch[0]
+                # NOTE: EDIT: batched adjacency matrix is shuffled
+                feat = g_batch.ndata['feature']
+                g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes)][:,torch.argsort(in_nodes)]
+                src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
+                g_batch = dgl.graph((src,dst)).to(g_batch.device)
+                g_batch.ndata['feature']=feat['_N'].to(g_batch.device)
+                
                 if 'cora' not in args.dataset: print('size of batch',g_batch.num_dst_nodes(),'nodes')
-            
+
             if args.model == 'madan':
                 if args.debug:
                     if iter % 100 == 0:
@@ -142,6 +152,17 @@ def graph_anomaly_detection(args):
                 A_hat,X_hat,model_lbl,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='epoch1')
                 if args.datasave:
                     lbl = model_lbl
+
+                diffs = []
+                ranges =[]
+                for ind_,A_ in enumerate(A_hat):
+                    ranges.append(A_.max()-A_.min())
+                    if ind_ == len(A_hat)-1:
+                        break
+                    diffs.append((A_-A_hat[ind_+1]).max())
+
+                print("diffs",diffs)
+                print("ranges",ranges)
                     
                     
             if args.batch_type == 'node':
@@ -159,7 +180,8 @@ def graph_anomaly_detection(args):
                         del l ; torch.cuda.empty_cache()
                     recons_label = lbl_
                     del lbl_ ; torch.cuda.empty_cache()
-                loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
+                loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
+                #loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
             
             if 'multi-scale' in args.model:
                 #l = torch.sum(torch.mean(loss))
@@ -264,9 +286,15 @@ def graph_anomaly_detection(args):
         else:
             in_nodes, pos_edges, neg_edges, g_batch, last_batch_node = get_edge_batch(loaded_input)
             edge_ids = torch.vstack((pos_edges,neg_edges))
-            if args.datasave:# or 'elliptic' in args.model:
-                g_batch = g_batch[0]
             #g_batch.add_edges(pos_edges[:,0],pos_edges[:,1])
+            if args.datasave:
+                g_batch = g_batch[0]
+            # NOTE: EDIT: batched adjacency matrix is shuffled
+            feat = g_batch.ndata['feature']
+            g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes)][:,torch.argsort(in_nodes)]
+            src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
+            g_batch = dgl.graph((src,dst)).to(g_batch.device)
+            g_batch.ndata['feature']=feat['_N'].to(g_batch.device)
     
         # run evaluation
         if struct_model and args.model != 'gcad':
@@ -308,7 +336,8 @@ def graph_anomaly_detection(args):
                     del l ; torch.cuda.empty_cache()
                 recons_label = lbl_
                 del lbl_ ; torch.cuda.empty_cache()
-            loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
+            #loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature']['_N'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
+            loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, pos_edges, neg_edges, sample=args.sample_test, recons=args.recons,alpha=args.alpha)
         
         if args.model in ['gradate']:
             loss = A_hat[0]
@@ -381,17 +410,25 @@ def graph_anomaly_detection(args):
             else:
                 a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, args, cluster=False)
     if args.vis_filters == True:
-        visualizer = Visualizer(adj,feats,args,sc_label,norms,anoms)
-        try:
-            visualizer.plot_recons(recons_a)
-            visualizer.plot_filters(res_a_all)
-        except Exception as e:
-            print(e)
+        visualizer = Visualizer(adj,feats,args,sc_label,norms,anoms,recons_label)
+        visualizer.plot_recons(recons_a)
+        visualizer.plot_filters(res_a_all)
         if 'multi-scale-amnet' == args.model:
-            visualizer.plot_attn_scores(train_attn_w.numpy())
+            visualizer.plot_attn_scores(train_attn_w.numpy(),[F.softmax(i.lam).detach().cpu().numpy() for i in struct_model.module_list])
 
-    for i in struct_model.module_list:
-        print(torch.sigmoid(i.lam))
+    plt.figure()
+    legend = []
+    width,offset = 0.25,0
+    for ind,i in enumerate(struct_model.module_list):
+        plt.bar(np.arange(len(i.lam))+offset,F.softmax(i.lam).detach().cpu().numpy(),width=width)
+        offset += width
+        legend.append(ind)
+    plt.legend(legend)
+    fpath = f'vis/lam_vis/{args.dataset}/{args.model}/{args.label_type}'
+    if not os.path.exists(fpath):
+        os.makedirs(fpath)
+    plt.savefig(f'{fpath}/{args.epoch}_epoch.png')
+        
 
         
 
