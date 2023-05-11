@@ -4,7 +4,7 @@ from scipy.interpolate import make_interp_spline
 from model import *
 
 class Visualizer:
-    def __init__(self,adj,feats,args,sc_label,norms,anoms,recons_labels):
+    def __init__(self,adj,feats,args,sc_label,norms,anoms):
         self.device = args.device
         self.dataset = args.dataset
         self.model = args.model
@@ -15,7 +15,7 @@ class Visualizer:
         self.norms=norms
         self.anom=anoms
         self.sc_label=sc_label
-        self.recons_labels=recons_labels
+        self.exp_name=args.exp_name
         pass
 
     def plot_spectrum(self,e,U,signal,color=None):
@@ -43,6 +43,16 @@ class Visualizer:
         else:
             plt.plot(X_,Y_)
 
+    def plot_loss_curve(self,losses):
+        plt.figure()
+        for loss in losses:
+            plt.plot(loss)
+        fpath = f'vis/loss/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.legend(['sc1 model','sc2 model','sc3 model'])
+        plt.savefig(f'{fpath}/loss.png')
+
     def get_spectrum(self,mat):
         d_ = np.zeros(mat.shape[0])
         degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
@@ -64,16 +74,11 @@ class Visualizer:
         L = torch_geometric.utils.to_dense_adj(L[0],edge_attr=L[1]).to(mat.device)[0]
         #print('eig', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         '''
-        try:
-            e,U = torch.linalg.eigh(torch.tensor(L.toarray()).to(mat.device))
-            #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
-            #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
-            assert -1e-5 < e[0] < 1e-5
-            e[0] = 0
-        except Exception as e:
-            print(e)
-            import ipdb ; ipdb.set_trace()
-            return
+        e,U = torch.linalg.eigh(torch.tensor(L.toarray()).to(mat.device))
+        #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
+        #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
+        assert -1e-5 < e[0] < 1e-5
+        e[0] = 0.
         e,U = torch.tensor(e).to(mat.device),torch.tensor(U).to(mat.device)
         #del L, edges ; torch.cuda.empty_cache() ; gc.collect()
         #import ipdb ; ipdb.set_trace()
@@ -95,7 +100,7 @@ class Visualizer:
             anom_flat=np.concatenate((anom_flat,i[0]))
         return anom_flat
 
-    def plot_recons(self,recons_a):
+    def plot_recons(self,recons_a,recons_labels):
         #import ipdb ; ipdb.set_trace()
         #recons_a = recons_a.detach().cpu().numpy()
         #plt.figure()
@@ -106,11 +111,11 @@ class Visualizer:
         for r_ind,r_ in enumerate(recons_a):
             # plot label
             plt.figure()
-            e_adj,U_adj= self.get_spectrum(self.recons_labels[r_ind].to(self.device).to(torch.float64))
+            e_adj,U_adj= self.get_spectrum(recons_labels[r_ind].to(self.device).to(torch.float64))
+
             #e_adj,U_adj= self.get_spectrum(self.adj.adjacency_matrix().to_dense().to(self.device).to(torch.float64))
             e_adj,U_adj = e_adj.detach().cpu(),U_adj.detach().cpu()
             self.plot_spectrum(e_adj,U_adj,self.feats[self.adj.dstnodes()].to(U_adj.dtype))
-
 
             #r_ = torch.tensor(np.ceil(r_)).detach().to(self.device)
             #r_ = torch.sigmoid(torch.tensor(r_)).to(self.device)
@@ -123,17 +128,38 @@ class Visualizer:
             r_symm = torch.maximum(r_, r_.T)
 
             if len(torch.nonzero(r_symm))==0:
+                print(r_ind,'failed')
                 import ipdb ; ipdb.set_trace()
             e,U= self.get_spectrum(r_symm.to(torch.float64))
+            
             e,U = e.detach().cpu(),U.detach().cpu()
             self.plot_spectrum(e,U,self.feats[self.adj.dstnodes()].to(U.dtype))
             #legend.append(f'{r_ind}')
             legend = ['label','recons']
-            fpath = f'vis/recons_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}'
+            fpath = f'vis/recons_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
             if not os.path.exists(fpath):
                 os.makedirs(fpath)
             plt.legend(['original graph','sc1 recons.','sc2 recons.','sc3 recons.'])
             plt.savefig(f'{fpath}/recons_vis_{r_ind}_test.png')
+
+    def plot_final_filters(self,filters):#,lams):
+        for sc in range(len(filters)):
+            sc_filter = (filters[sc])# * np.tile(lams[sc],(filters[sc].shape[-1],1)).T)
+            plt.figure()
+            for filter in sc_filter:
+                y = filter
+                x = np.arange(y.shape[0])
+                spline = make_interp_spline(x, y)
+                X_ = np.linspace(x.min(), x.max(), 500)
+                Y_ = spline(X_)
+                plt.plot(X_,Y_)
+            fpath = f'vis/final_filter_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}{self.exp_name}'
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+            plt.legend(np.arange(len(sc_filter)))
+            plt.savefig(f'{fpath}/{sc}.png')
+
+
 
     def plot_filters(self,res_a_all):
         plt.figure()
@@ -160,7 +186,7 @@ class Visualizer:
                 print(e)
         #print("Seconds to get spectrum", (time.time()-seconds)/60)
         plt.legend(['original feats','sc1 embed.','sc2 embed.','sc3 embed.'])
-        fpath = f'vis/filter_vis/{self.dataset}/{self.model}/{self.label_type}'
+        fpath = f'vis/filter_vis/{self.dataset}/{self.model}/{self.label_type}/{self.exp_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
         plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_test.png')
@@ -199,7 +225,10 @@ class Visualizer:
         # for each scale
         for scale in range(attn_weights.shape[1]):
             p_min,p_max=np.inf,-np.inf
-            model_lams = lams[scale]
+            if lams is None:
+                model_lams  = [1.0 for i in range(attn_weights.shape[2])]
+            else:
+                model_lams = lams[scale]
             # for each filter
             for filter in range(attn_weights.shape[2]):
                 plt.figure()
@@ -225,12 +254,14 @@ class Visualizer:
                     plt.ylabel(f'mean attention value for normal nodes')
                 else:
                     plt.ylabel(f'mean attention value for anomaly scale {ind+1}')
-                fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}'
+
+                fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
                 if not os.path.exists(fpath):
                     os.makedirs(fpath)
                 plt.ylim((p_min,p_max))
                 #plt.xlim((args.epoch-3,args.epoch-1))
                 plt.savefig(f'{fpath}/model_sc{scale}_fil{filter}.png')
+        #import ipdb ; ipdb.set_trace()      
         for sc,com_att in enumerate(scale_com_atts):
             plt.figure()
             # group : filters x seq
@@ -238,4 +269,18 @@ class Visualizer:
                 plt.plot(group.sum(axis=0),color=colors[ind])
             plt.legend(legend)
             plt.savefig(f'{fpath}/combined_filters_scale{sc}.png')
+
+    def plot_filter_weights(self,filter_weights):
+        plt.figure()
+        legend = []
+        width,offset = 0.25,0
+        for ind,i in enumerate(filter_weights):
+            plt.bar(np.arange(len(i))+offset,i,width=width)
+            offset += width
+            legend.append(ind)
+        plt.legend(legend)
+        fpath = f'vis/lam_vis/{self.dataset}/{self.model}/{self.label_type}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.savefig(f'{fpath}/{self.epoch}_{self.exp_name}_epoch.png')
             

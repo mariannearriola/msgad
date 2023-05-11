@@ -6,6 +6,7 @@ from dgl.nn import EdgeWeightNorm
 import torch_geometric
 from label_generation import LabelGenerator
 from torch_geometric.nn import MLP
+from utils import *
 from models.dominant import *
 from models.anomalydae import *
 from models.gcnae import *
@@ -21,6 +22,7 @@ from models.gradate import *
 class GraphReconstruction(nn.Module):
     def __init__(self, in_size, args, act = nn.LeakyReLU(), label_type='single'):
         super(GraphReconstruction, self).__init__()
+        seed_everything()
         self.in_size = in_size
         self.taus = [3,4,4]
         self.attn_weights = None
@@ -28,6 +30,7 @@ class GraphReconstruction(nn.Module):
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
         self.d = args.d
+        self.exp_name = args.exp_name
         self.batch_size = args.batch_size
         self.e_adj, self.U_adj = None,None
         self.epoch = args.epoch
@@ -49,7 +52,6 @@ class GraphReconstruction(nn.Module):
                     self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 1, 10, 5))
                 elif 'multi-scale-bwgnn' == args.model:
                     self.module_list.append(MSGAD(in_size,args.hidden_dim,d=10))
-
         elif args.model == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
             self.conv = GRADATE(in_size,args.hidden_dim,'prelu',1,1,'avg',5)
         elif args.model == 'bwgnn':
@@ -125,7 +127,7 @@ class GraphReconstruction(nn.Module):
             recons_a,labels,res_a = [],[],[]
             # collect multi-scale labels
             if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size)
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size,self.exp_name)
                 labels=lg.construct_labels()
             
             for ind,i in enumerate(self.module_list):
@@ -134,7 +136,9 @@ class GraphReconstruction(nn.Module):
                     #mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
                     #print(mem)
                     #try:
+                    attn_scores = None
                     recons,res,attn_scores = i(feats,edges,dst_nodes)
+                    #recons,res = i(feats,edges,dst_nodes)
                     #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
                     #except Exception as e:
                     #    print(e)
@@ -142,7 +146,7 @@ class GraphReconstruction(nn.Module):
                     if oom:
                         print('oom')
                         import ipdb ; ipdb.set_trace()
-
+                    
                     if ind == 0:
                         self.attn_weights = torch.unsqueeze(attn_scores,0)
                     else:
@@ -165,7 +169,7 @@ class GraphReconstruction(nn.Module):
         #elif not self.dataload:
         else:
             if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size)
+                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size,self.exp_name)
                 labels=lg.construct_labels()
             else:
                 adj_label=graph.adjacency_matrix().to_dense()[graph.dstnodes()][:,graph.dstnodes()]

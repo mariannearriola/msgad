@@ -18,6 +18,12 @@ import numpy as np
 from numpy import polynomial
 import math
 
+def seed_everything(seed=1234):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
 def glorot(tensor):
     if tensor is not None:
         stdv = math.sqrt(6.0 / (tensor.size(-2) + tensor.size(-1)))
@@ -26,7 +32,6 @@ def glorot(tensor):
 def zeros(tensor):
     if tensor is not None:
         tensor.data.fill_(0)
-
 
 def constant(tensor, value):
     if tensor is not None:
@@ -40,19 +45,20 @@ class BernConv(MessagePassing):
         self.K = K
         self.in_channels = hidden_channels
         self.out_channels = hidden_channels
-        self.weight = Parameter(torch.Tensor(K + 1, 1))
+        #self.weight = nn.Parameter(torch.Tensor(K + 1, 1))
+        self.weight = nn.Parameter(data=torch.normal(mean=torch.full((K+1,),0.),std=4).to(torch.float64)).requires_grad_(True)
         self.normalization = normalization
 
-        if bias:
-            self.bias = Parameter(torch.Tensor(hidden_channels))
-        else:
-            self.register_parameter('bias', None)
+        #if bias:
+        #    self.bias = nn.Parameter(torch.Tensor(hidden_channels))
+        #else:
+        #    self.register_parameter('bias', None)
+        seed_everything()
 
         self.reset_parameters()
 
 
     def reset_parameters(self):
-        zeros(self.bias)
         torch.nn.init.zeros_(self.weight)
 
 
@@ -115,8 +121,10 @@ class BernConv(MessagePassing):
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
             out += basis * F.softmax(self.weight)[k]
-            
+
+        #print(self.weight)
         # NOTE: out is just epsilon (need to add weights to paramter list of amnet ms)
+        '''
         del lambda_max
         del basis
         #del weight
@@ -127,6 +135,7 @@ class BernConv(MessagePassing):
         #del edge_index
         #del norm
         torch.cuda.empty_cache()
+        '''
         return out
 
     
@@ -174,37 +183,37 @@ class AMNet_ms(nn.Module):
                                                  nn.Linear(hid_channels, hid_channels),
                                                  )
         self.K = K
-        self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=False, bias=True) for _ in range(filter_num)])
+        self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=False, bias=False) for _ in range(filter_num)])
         #self.filters = nn.ModuleList([BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True),BernConv(hid_channels, K, normalization=False, bias=True)])
         #self.filters.extend([BernConv(hid_channels, K, normalization=False, bias=True) for i in range(1, filter_num)])
+        #self.bern1 = BernConv(hid_channels, K, normalization=False, bias=False)
         self.filter_num = filter_num
 
-        self.W_f = nn.Sequential(nn.Linear(hid_channels, in_channels),
-                                 self.attn_fn,
-                                 )
+        self.W_f = nn.Sequential(nn.Linear(hid_channels, in_channels))#,
+                                 #self.attn_fn,
+                                 #)
         
-        self.W_x = nn.Sequential(nn.Linear(hid_channels, in_channels),
-                                 self.attn_fn,
-                                 )
-        
-        #self.out_l = nn.Linear(hid_channels, hid_channels)
-        #self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
+        self.W_x = nn.Sequential(nn.Linear(hid_channels, in_channels))#,
+                                 #self.attn_fn,
+                                 #)
+        self.filter_att = nn.Linear(filter_num,1)
+        self.out_l = nn.Linear(hid_channels, hid_channels)
         '''
         self.linear_cls_out = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(in_channels, num_class))
-
         self.attn = list(self.W_x.parameters())
         self.attn.extend(list(self.W_f.parameters()))
         self.lin = list(self.linear_transform_in.parameters())
         self.lin.extend(list(self.linear_cls_out.parameters()))
         self.relu = torch.nn.ReLU()
         '''
-        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=1))
+        self.lam = nn.Parameter(data=torch.normal(mean=torch.full((filter_num,),0.),std=4).to(torch.float64)).requires_grad_(True)
         self.reset_parameters()
 
 
     def reset_parameters(self):
+        torch.nn.init.zeros_(self.lam)
         pass
 
     def __norm__(self, edge_index, num_nodes: Optional[int],
@@ -232,42 +241,68 @@ class AMNet_ms(nn.Module):
 
         x = self.linear_transform_in(x)
         h_list = []
+        
         lams = F.softmax(self.lam)
+        #lams = self.lam
+        '''
+        for p in self.parameters():
+            if p.grad is None:
+                continue
+            grad = p.grad.data.nonzero()
+            print(grad)
+        '''
+        #h_list = [self.bern1(x, edge_index)]
+        
         for i, filter_ in enumerate(self.filters):
-            #print('for filter',i,self.filters[i].weight)
+            #print('for filter',i,F.softmax(self.filters[i].weight))
             #h = filter_(x, edge_index)
-            h = self.filters[i](x, edge_index)*lams[i]
+            h = self.filters[i](x, edge_index)#*lams[i]
             h_list.append(h)
-            del filter_
-            del h
-        print(lams)
-        torch.cuda.empty_cache()
+            #del filter_
+            #del h
+        
+        #torch.cuda.empty_cache()
         h_filters = torch.stack(h_list, dim=1)
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
         score_logit = torch.bmm(h_filters_proj, x_proj)
-        soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
+        #soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
 
-        #score = score_logit # shape: [ num_nodes, K, num_filters ] ; node-wise attention
+        #score = F.softmax(x_proj.sum(1))
+        #score = self.attn_fn(score_logit) # shape: [ num_nodes, K, num_filters ] ; node-wise attention
         # attention for various freq. profiles
-        res = h_filters[:, 0, :] * score[:, 0]
-        for i in range(1, self.filter_num):
-            res += (h_filters[:, i, :] * score[:, i])
+        score = score_logit
+
+        # node-wise attention on weighted filters
+        #new_scores = F.softmax(score[:,:,0],1)
+        #new_scores = lams.tile(score.shape)[:,0]*score[:,:,0]
+        self.att = F.softmax(score[:,:,0],1)
+
+        #new_scores = new_scores* (new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
+        #new_scores = F.softmax(new_scores,0) # softmax along 0 -> att. for each node sums to 1
+        #self.filter_weights = new_scores.sum(0)/new_scores.sum()
+        #self.filter_weights = F.softmax(new_scores.max(0).values-new_scores.mean(0))
+        #self.filter_weights = F.softmax(new_scores * self.filter_weights,1)
+        #self.filter_weights = (new_scores.max(0).values-new_scores.min(0).values)/(new_scores.max(0).values-new_scores.min(0).values).sum()
+        #self.filter_weights = (new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
+        #self.filter_weights = torch.ones(new_scores.sum(0).shape).to(new_scores.device)
+        #self.filter_weights = F.softmax(self.lam)
+        self.filter_weights = lams# * (new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
+
+        res = h_filters[:, 0, :] * self.att[:,0].tile(128,1).T* self.filter_weights[0]#*lams[0]#*self.filter_weights[0]).tile(128,1).T#* new_scores[:,0].tile(128,1).T * self.filter_weights[0]# score[:,0] * lams[0].tile(128,1).T#score.tile(128,1).T#[:, 0]
+        for i in range(1, len(h_list)):
+            res += (h_filters[:, i, :] * self.att[:,i].tile(128,1).T)* self.filter_weights[i]#lams[i]#*self.filter_weights[i]).tile(128,1).T) #* new_scores[:,i].tile(128,1).T * self.filter_weights[i])#* score[:,i] * lams[i].tile(128,1).T)#score.tile(128,1).T)#[:, i])
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
-            
-        #res = self.out_l(res)
-        edge_index, norm = self.__norm__(edge_index, x.shape[0],
-                                         None, 'sym', torch.tensor(2.0, dtype=x.dtype, device=x.device), dtype=x.dtype)
-
-        #L = np.zeros((x.shape[0],x.shape[0]))
-        #edge_index = edge_index.detach().cpu().numpy() ; norm = norm.detach().cpu().numpy()
-        #L[edge_index[0],edge_index[1]]=norm
-        #self.L = L
+        #res = self.out_l(res).to(torch.float64)
         #res_ = torch.sigmoid(res@res.T)
-        #import ipdb ; ipdb.set_trace()
-        res_ = res@res.T
+        #print(score)
+        #print(self.filter_weights)
+        # new_scores.sum(0)/new_scores.sum() <- influence of filters
+        #res *= F.softmax(self.filter_att(score_logit[:,:,0]).T[0]).tile(128,1).T
+        res_ = (res@res.T).to(torch.float64)
+        '''
         del h_filters
         del x
         del score_logit
@@ -276,13 +311,15 @@ class AMNet_ms(nn.Module):
         for i in range(len(h_list)):
             del h_list[0]
         torch.cuda.empty_cache()
+        '''
         #if res_.gt(0.5).nonzero().shape[0]>0:
         #    import ipdb ; ipdb.set_trace()
-        return res_,res,torch.squeeze(score,-1).T
+        #return res_,res,torch.squeeze(F.softmax(new_scores*self.filter_weights),-1).T
+        return res_,res,torch.squeeze(self.att.to(torch.float64),-1).T
 
 
 
-    @torch.no_grad()
+    #@torch.no_grad()
     def get_attn(self, label, train_index, test_index):
         anomaly, normal = label
         test_attn_anomaly = list(chain(*torch.mean(self.attn_score[test_index & anomaly], dim=0).tolist()))
@@ -292,6 +329,3 @@ class AMNet_ms(nn.Module):
 
         return (train_attn_anomaly, train_attn_normal), \
                (test_attn_anomaly, test_attn_normal)
-
-
-
