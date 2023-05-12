@@ -32,6 +32,7 @@ class LabelGenerator:
         self.vis_name = vis_name
         self.vis = vis
         self.anoms= anoms
+        self.coeffs = None
 
     def flatten_label(self,anoms):
         anom_flat = anoms[0]
@@ -254,21 +255,57 @@ class LabelGenerator:
             plt.plot(X_,Y_)
         return X_,Y_
 
-    def prep_filters(self):
-        if 'cora' in self.dataset:
-            K = 10
-        else:
-            K = 10
+    def prep_filters(self,K):
         if 'amnet' in self.label_type:
-            coeffs =  self.get_bern_coeff(K)
+            self.coeffs =  self.get_bern_coeff(K)
             label_idx=np.arange(0,K+1,1)
             #if 'cora' in self.dataset:
-            #    label_idx = [1,7,10]
+            #    label_idx = np.array([1,7,10]
         elif 'bwgnn' in self.label_type:
-            coeffs = self.calculate_theta2(K)
+            self.coeffs = self.calculate_theta2(K)
             label_idx=np.arange(0,K+1,1)
             #label_idx=np.array([5,8])
-        return coeffs,label_idx.tolist(),K
+        elif 'single' in self.label_type:
+            label_idx = np.full((3,),1)
+            label_idx = np.arange(3)
+        return label_idx.tolist()
+
+    def make_label(self,g,ind,prods):
+        if 'filter' in self.label_type:
+            coeff = self.coeffs[ind]
+            basis = copy.deepcopy(g)
+            basis.edata['w'] *= coeff[0]
+            for i in range(1, self.K+1):
+                basis_ = copy.deepcopy(prods[i])
+                basis_.edata['w'] *= coeff[i]
+                sorted_idx = torch.topk(basis_.edata['w'],int(self.num_a_edges)).indices
+                basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
+                basis = dgl.adj_sum_graph([basis,basis_],'w')
+                #basis += prods[i] * coeff[i]
+                del basis_
+                torch.cuda.empty_cache()
+            return basis
+            #nz = basis.edata['w']#.unique()
+            #sorted_idx = torch.topk(nz,int(self.num_a_edges)).indices
+            #sorted_idx = torch.topk(nz,int(num_a_edges*(label_ind+1))).indices
+            #return dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
+        elif 'random-walk' in self.label_type:
+            raise(NotImplementedError)
+        else:
+            return prods[ind]
+            
+    def prep_input(self,g):
+        prods = [g]
+        if 'filter' not in self.label_type and 'single' not in self.label_type:
+            return prods
+        g_prod = copy.deepcopy(g)
+        for i in range(1, self.K+1):
+            if 'cora' not in self.dataset: print('prod',i)
+            g_prod = dgl.adj_product_graph(g_prod,g,'w')
+            prods.append(g_prod)
+            #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+        del g_prod ; torch.cuda.empty_cache()
+        return prods
 
     def construct_labels(self):
         """
@@ -276,12 +313,15 @@ class LabelGenerator:
         :param M: Transition matrix.
         :return: Stationary distribution.
         """
-        num_a_edges = self.graph.num_edges()
+        # prep
+        self.num_a_edges = self.graph.num_edges()
+        self.K = 10 if 'filter' in self.label_type else 3
+        label_idx = self.prep_filters(self.K)
+        labels = []
+        g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
+
+        # normalize graph if needed
         if 'norm' in self.label_type:
-            epsilon = 1e-8
-            g.edata['w'] = self.norm(self.graph,(self.graph.edata['w']+epsilon)).cpu()
-        if 'prods' in self.label_type:
-            g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
             if 'cora' in self.dataset: g = g.to(self.graph.device)
             g = dgl.to_homogeneous(g).subgraph(g.srcnodes())
             num_a_edges = g.num_edges()
@@ -289,33 +329,54 @@ class LabelGenerator:
                 g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to(self.graph.device)).to(self.graph.device)
             else:
                 g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to('cpu')).to('cpu')#(self.graph.device)).to(self.graph.device)
-            labels = [g.adjacency_matrix().to_dense().to(self.graph.device)]
-            g_prod = copy.deepcopy(g)
-            for i in range(1, 3):
-                if 'cora' not in self.dataset: print('prod',i)
-                g_prod = dgl.adj_product_graph(g_prod,g,'w')
-                nz = g_prod.edata['w']#.unique()
-                sorted_idx = torch.topk(nz,int(num_a_edges)).indices
-                labels.append(dgl.edge_subgraph(g_prod,sorted_idx,relabel_nodes=False).adjacency_matrix().to_dense().to(self.graph.device))
-                #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-      
-            del g_prod ; torch.cuda.empty_cache()
-            return labels
-            
+        else:
+            g.edata['w'] = torch.ones(self.num_a_edges)
+        adj_label = g.adjacency_matrix().to_dense()
+        if self.vis == True and 'test' not in self.vis_name: self.filter_anoms(adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
+        labels = [g]
 
-        elif self.label_type == 'single':
-            labels = []
-            '''
-            edges = graph.has_edges_between(all_edges[:,0],all_edges[:,1]).float()
-            labels_pos_eids=graph.edge_ids(all_edges[:,0][edges.nonzero()].flatten(),all_edges[:,1][edges.nonzero()].flatten())
-            edges[torch.where(edges!=0)[0]] = graph.edata['w'][labels_pos_eids]
-            '''
-            for k in range(3):
-                adj = self.graph.adjacency_matrix().to_dense()[self.graph.dstnodes()]
-                adj=np.maximum(adj, adj.T).to(self.graph.device)
-                labels.append(adj)
-            return labels
+        # visualize input
+        if self.vis == True and 'test' not in self.vis_name:
+            adj_label=adj_label.to(self.graph.device).to(torch.float64)
+            e_adj,U_adj = self.get_spectrum(torch.maximum(adj_label,adj_label.T))
+            xs_labelvis,ys_labelvis = self.plot_spectrum(e_adj,U_adj,self.feats.to(U_adj.dtype),color='cyan')
             
+            self.label_analysis = LabelAnalysis(self.anoms,self.dataset)
+            sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(adj_label.to(self.graph.device).to(torch.float64),0)
+            sc1s = [np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean()]
+            sc2s = [np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean()]
+            sc3s = [np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean()]
+        
+
+        if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
+
+        # make labels
+        prods = self.prep_input(g)
+        #import ipdb ; ipdb.set_trace()
+        for label_id in label_idx:
+            label = self.make_label(g,label_id,prods)
+
+            labels.append(label)
+            # visualize labels TODO move 
+            if self.vis == True and 'test' not in self.vis_name:
+                basis_ = label.adjacency_matrix().to_dense()
+                if 'tfinance' in self.dataset:
+                    import ipdb ; ipdb.set_trace()
+                self.filter_anoms(basis_,self.anoms,self.vis_name,label_id)
+
+                e,U = self.get_spectrum(torch.maximum(basis_, basis_.T).to(torch.float64).to(self.graph.device))
+                e = e.to(self.graph.device) ; U = U.to(self.graph.device)
+                x_labelvis,y_labelvis=self.plot_spectrum(e,U,self.feats.to(U.dtype))
+                del e,U ; torch.cuda.empty_cache() ; gc.collect()
+
+                xs_labelvis = np.hstack((xs_labelvis,x_labelvis)) ; ys_labelvis = np.hstack((ys_labelvis,y_labelvis))
+                sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(basis_,label_id+1)
+                sc1s.append(np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean())
+                sc2s.append(np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean())
+                sc3s.append(np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean())
+
+        del g ; torch.cuda.empty_cache()
+
         if 'random-walk' in self.label_type:
             nx_graph,node_ids = dgl_to_nx(g)
             connected_graphs = [g for g in nx.connected_components(nx_graph)]
@@ -360,104 +421,6 @@ class LabelGenerator:
                 full_labels[i][torch.where(full_labels[i]<0)[0],torch.where(full_labels[i]<0)[1]]=0
                 labels.append(dgl.from_numpy_matrix(full_labels[i]).to(self.graph.device))
 
-        if 'filter' in self.label_type: 
-            
-            coeffs,label_idx,K = self.prep_filters()
-            labels = []
-            adj_label = None
-            g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
-            if 'cora' in self.dataset: g = g.to(self.graph.device)
-            g = dgl.to_homogeneous(g).subgraph(g.srcnodes())
-            num_a_edges = g.num_edges()
-            if 'cora' in self.dataset:
-                g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to(self.graph.device)).to(self.graph.device)
-            else:
-                g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to('cpu')).to('cpu')#(self.graph.device)).to(self.graph.device)
-            adj_label = g.adjacency_matrix().to_dense()
-
-            if self.vis == True and 'test' not in self.vis_name:
-                self.filter_anoms(adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
-            
-            if 'cora' not in self.dataset: print('num a edges',num_a_edges)
-  
-            # NOTE : remove if og wanted
-            if 'cora' in self.dataset:# or 'weibo' in self.dataset:
-                #labels = [adj_label.to(self.graph.device)]
-                labels = [g]
-
-            # get plots for label
-            if self.vis == True and 'test' not in self.vis_name:
-
-                adj_label=adj_label.to(self.graph.device).to(torch.float64)
-                e_adj,U_adj = self.get_spectrum(torch.maximum(adj_label,adj_label.T))
-                xs_labelvis,ys_labelvis = self.plot_spectrum(e_adj,U_adj,self.feats.to(U_adj.dtype),color='cyan')
-                if 'cora' in self.dataset:
-                    self.label_analysis = LabelAnalysis(self.anoms,self.dataset)
-                    sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(adj_label.to(self.graph.device).to(torch.float64),0)
-                    sc1s = [np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean()]
-                    sc2s = [np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean()]
-                    sc3s = [np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean()]
-
-
-            if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
-            
-            prods = [g]
-            g_prod = copy.deepcopy(g)
-            for i in range(1, K+1):
-                if 'cora' not in self.dataset: print('prod',i)
-                g_prod = dgl.adj_product_graph(g_prod,g,'w')
-                prods.append(g_prod)
-                #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-      
-            del g_prod ; torch.cuda.empty_cache()
-            
-            # making final labels
-            for label_ind,label_id in enumerate(label_idx):
-                if 'cora' not in self.dataset: print(f'label_id {label_id}')
-                coeff = coeffs[label_id]
-                basis = copy.deepcopy(g)
-                basis.edata['w'] *= coeff[0]
-                for i in range(1, K+1):
-                    basis_ = copy.deepcopy(prods[i])
-                    basis_.edata['w'] *= coeff[i]
-                    basis = dgl.adj_sum_graph([basis,basis_],'w')
-                    #basis += prods[i] * coeff[i]
-                    del basis_
-                    torch.cuda.empty_cache()
-                    
-                nz = basis.edata['w']#.unique()
-                
-                sorted_idx = torch.topk(nz,int(num_a_edges)).indices
-                #sorted_idx = torch.topk(nz,int(num_a_edges*(label_ind+1))).indices
-                basis = dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
-                basis_ = basis.adjacency_matrix().to_dense().to(self.graph.device)
-
-                
-                if self.vis == True and 'test' not in self.vis_name:
-                    if 'tfinance' in self.dataset:
-                        import ipdb ; ipdb.set_trace()
-                    self.filter_anoms(basis_,self.anoms,self.vis_name,label_id)
-
-                    e,U = self.get_spectrum(torch.maximum(basis_, basis_.T).to(torch.float64).to(self.graph.device))
-                    e = e.to(self.graph.device) ; U = U.to(self.graph.device)
-                    x_labelvis,y_labelvis=self.plot_spectrum(e,U,self.feats.to(U.dtype))
-                    del e,U ; torch.cuda.empty_cache() ; gc.collect()
-
-                    xs_labelvis = np.hstack((xs_labelvis,x_labelvis)) ; ys_labelvis = np.hstack((ys_labelvis,y_labelvis))
-                    if 'cora' in self.dataset:
-                        sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(basis_,label_id+1)
-                        sc1s.append(np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean())
-                        sc2s.append(np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean())
-                        sc3s.append(np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean())
-            
-                labels.append(basis)
-                del basis, basis_ ; torch.cuda.empty_cache()
-            
-            for i in range(len(prods)):
-                del prods[0]
-            del g ; torch.cuda.empty_cache()
-            #print("Seconds to get labels", (time.time()-seconds)/60)
-            
         if self.vis == True and 'test' not in self.vis_name and 'filter' in self.label_type:
             if 'cora' in self.dataset:
                 plt.figure()
@@ -466,7 +429,7 @@ class LabelGenerator:
                 plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc1s],color='r')
                 plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc2s],color='g')
                 plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc3s],color='b')
-                plt.savefig(f'label_vis_{self.label_type}_{self.exp_name}_{K}_{self.dataset}.png')
+                plt.savefig(f'label_vis_{self.label_type}_{self.exp_name}_{self.K}_{self.dataset}.png')
                 if self.graph.device == 'cpu': 
                     print('visualizing labels')
             

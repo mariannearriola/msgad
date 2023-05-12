@@ -16,6 +16,9 @@ from sklearn import preprocessing
 from scipy.spatial.distance import euclidean
 import scipy.sparse as sparse
 import matplotlib.pyplot as plt
+from itertools import chain
+from sknetwork.hierarchy import Paris, postprocess, LouvainHierarchy, LouvainIteration
+
 #import networkx.algorithms.community as nx_comm
 
 def dense_to_sparse(dense_matrix):
@@ -39,7 +42,7 @@ def parse_index_file(filename):
         index.append(int(line.strip()))
     return index
 
-def load_citation_datadet(dataset_str):
+def load_citation_dataset(dataset_str):
     names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
     objects = []
     for i in range(len(names)):
@@ -136,7 +139,7 @@ if dataset_str in AD_dataset_list:
     adj_dense = np.array(data['Network'].todense())
     cat_labels = data['Label']
 elif dataset_str in Citation_dataset_list:
-    attribute_dense, adj_dense, cat_labels = load_citation_datadet(dataset_str)
+    attribute_dense, adj_dense, cat_labels = load_citation_dataset(dataset_str)
 nx_graph = nx.from_numpy_matrix(adj_dense)
 print(nx.is_connected(nx_graph))
 ori_num_edge = np.sum(adj_dense)
@@ -362,7 +365,6 @@ for ind,n_ in enumerate(n):
     all_anom_sc.append(anom_sc)
 
 def getCuts(nx_graph,ms_anoms):
-    import ipdb ; ipdb.set_trace()
     comms = nx.community.louvain_communities(nx_graph)
     norm_comms = [list(i) for i in comms if np.intersect1d(list(i),anomaly_idx).shape[0] == 0]
     cuts = []
@@ -379,7 +381,104 @@ def getCuts(nx_graph,ms_anoms):
 getCuts(nx_graph,all_anom_sc)
 
 print('Done. {:d} attributed nodes are constructed. \n'.format(len(attribute_anomaly_idx)))
-import ipdb ; ipdb.set_trace()
+res=[1.5,0.8,0.1]
+
+def getAnomCount(clust,anom_sc_label):
+    clust_keys = np.unique(clust)
+    clust_dict = {}
+    anom_count = []
+    node_count = []
+    for key in clust_keys:
+        clust_dict[key] = np.where(clust==key)[0]
+        anom_count.append(np.intersect1d(anom_sc_label,clust_dict[key]).shape[0])
+        node_count.append(clust_dict[key].shape[0])
+    return clust_dict,np.array(anom_count),np.array(node_count)
+
+def run_dend(graph,res):
+    def flatten_label(anoms):
+        anom_flat = anoms[0]
+        if len(anoms) > 1:
+            for i in anoms[1:]:
+                anom_flat=np.concatenate((anom_flat,i))
+        return anom_flat
+    all_anom = None
+    for anom_ind,anom in enumerate(all_anom_sc):
+        if anom_ind == 3:
+            anom_f = anom
+        else:
+            anom_f = flatten_label(anom)
+        
+        if all_anom is None: all_anom = anom_f
+        else: all_anom = np.append(all_anom,anom_f)
+
+    anom = all_anom
+    paris = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
+    dend = paris.fit_predict(nx.adjacency_matrix(graph))
+    clust1 = postprocess.cut_straight(dend,threshold=1)
+    clust2 = postprocess.cut_straight(dend,threshold=2)
+    clust3 = postprocess.cut_straight(dend,threshold=3)
+    
+    #print(np.unique(clust1).shape,np.unique(clust2).shape,np.unique(clust3).shape)
+    clust1_dict,anoms1,nodes1 = getAnomCount(clust1,anom)
+    thresh = 0.8
+    anoms_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]]
+    nodes_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]]
+    #import ipdb ; ipdb.set_trace()
+    anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > thresh)[0] and clust1_dict[x].shape[0]>=3)]
+    clust2_dict,anoms2,nodes2 = getAnomCount(clust2,anom)
+    anom_nodes2=[np.intersect1d(clust2_dict[x],anom) for x in clust2_dict.keys() if (x in np.where(anoms2/nodes2 > thresh)[0] and clust2_dict[x].shape[0]>=3)]
+    clust3_dict,anoms3,nodes3 = getAnomCount(clust3,anom)
+    anom_nodes3=[np.intersect1d(clust3_dict[x],anom) for x in clust3_dict.keys() if (x in np.where(anoms3/nodes3 > thresh)[0] and clust3_dict[x].shape[0]>=3)]
+    anom_nodes_tot = [anom_nodes1,anom_nodes2,anom_nodes3]
+    sc1_label = remove_anom_overlap(anom_nodes_tot,0,[2,1])
+    sc2_label = remove_anom_overlap(anom_nodes_tot,1,[2])
+    sc3_label = remove_anom_overlap(anom_nodes_tot,2,[])
+
+    conns_1=np.array(check_conn(graph,sc1_label)).nonzero()[0]
+    conns_2=np.array(check_conn(graph,sc2_label)).nonzero()[0]
+    conns_3=np.array(check_conn(graph,sc3_label)).nonzero()[0]
+    
+    sc1_label = np.array(sc1_label)[conns_1] if len(conns_1) > 0 else []
+    sc2_label = np.array(sc2_label)[conns_2] if len(conns_2) > 0 else []
+    sc3_label = np.array(sc3_label)[conns_3] if len(conns_3) > 0 else []
+    print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
+   
+    return sc1_label,sc2_label,sc3_label
+
+def check_conn(graph,sc_label):
+    conn_check=[]
+    for i in sc_label:
+        try:
+            conn_check.append(nx.is_connected(graph.subgraph(i)))
+        except:
+            conn_check.append(False)
+    return conn_check
+
+def remove_anom_overlap(anom_nodes_tot,anom,anom_ex):
+    sc1 = anom_nodes_tot[anom]
+    sc1_ret,sc2_ret,sc3_ret=[],[],[]
+    overlapped=[]
+    sc_sum=0
+    for sc in sc1:
+        if len(anom_ex) == 0:
+            sc1_ret.append(sc)
+            sc_sum += len(sc)
+            continue
+        overlap=False
+
+        for ex in anom_ex:
+            if len(np.intersect1d(sc,list(chain(*np.array(anom_nodes_tot[ex])))))!=0:
+                overlap=True
+
+        if overlap is True:
+            overlapped.append(sc)
+        else:
+            sc1_ret.append(sc)
+            sc_sum += len(sc)
+    return sc1_ret
+
+res=[1.5,0.8,0.1]
+sc1_label,sc2_label,sc3_label = run_dend(nx.from_numpy_matrix(adj_dense),res)
 # Pack & save them into .matip
 print('Saving mat file...')
 attribute = dense_to_sparse(attribute_dense)
@@ -389,7 +488,7 @@ adj = dense_to_sparse(adj_dense)
 savedir = './msgad/data/'
 if not os.path.exists(savedir):
     os.makedirs(savedir)
-#import ipdb ; ipdb.set_trace()
+import ipdb ; ipdb.set_trace()
 sio.savemat('{}/{}_outsparse.mat'.format(savedir,dataset_str,str(scale)),\
             {'Network': adj, 'Label': label, 'Attributes': attribute,\
             'Class':cat_labels, 'str_anomaly_label':str_anomaly_label, 'attr_anomaly_label':attr_anomaly_label,

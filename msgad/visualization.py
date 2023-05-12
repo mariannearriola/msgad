@@ -159,8 +159,6 @@ class Visualizer:
             plt.legend(np.arange(len(sc_filter)))
             plt.savefig(f'{fpath}/{sc}.png')
 
-
-
     def plot_filters(self,res_a_all):
         plt.figure()
         adj_label = self.adj.adjacency_matrix()

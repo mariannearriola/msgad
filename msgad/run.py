@@ -130,6 +130,7 @@ def graph_anomaly_detection(args):
             #node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
             batch_sc_label = dataloading.get_batch_sc_label(in_nodes.detach().cpu(),sc_label,g_batch)
             #rev_node_dict = {v: k for k, v in node_dict.items()}
+ 
             if struct_model:
                 vis = True if (epoch == 0 and iter == 0 and args.vis_filters == True) else False
             

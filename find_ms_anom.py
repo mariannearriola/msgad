@@ -136,8 +136,6 @@ def remove_anom_overlap(sc1,sc2,sc3):
             sc1_ret.append(sc)
             sc_sum += len(sc)
     return sc1_ret,overlapped,sc_sum
-
-
 anomaly_sc_label = []
 
 def getScaleClusts(dend,thresh):
@@ -241,12 +239,21 @@ def run_dend(graph,res):
         shapes.append([i.shape[0] for i in dend_anoms[-1]])
     
     anom_nodes1,anom_nodes2,anom_nodes3 = dend_anoms
+    print('before overlap fix')
+    print([i.shape[0] for i in anom_nodes1])
+    print([i.shape[0] for i in anom_nodes2])
+    print([i.shape[0] for i in anom_nodes3])
+
     sc1_label,o1,s1=remove_anom_overlap(anom_nodes1,anom_nodes3,anom_nodes2)
     sc1_count = [x.shape[0] for x in sc1_label]
     sc2_label,o2,s2=remove_anom_overlap(anom_nodes2,anom_nodes3,None)
     sc2_count = [x.shape[0] for x in sc2_label]
     sc3_label,o3,s3=remove_anom_overlap(anom_nodes3,None,None)
     sc3_count = [x.shape[0] for x in sc3_label]
+    print('after overlap fix')
+    print([i.shape[0] for i in sc1_label])
+    print([i.shape[0] for i in sc2_label])
+    print([i.shape[0] for i in sc3_label])
     return sc1_label,sc2_label,sc3_label,sc1_count,sc2_count,sc3_count
 
 def check_conn(sc_label):
@@ -264,7 +271,7 @@ def hier_cluster(graph,adj):
     #dend
     res=[1.5,0.8,0.1]
     sc1_label,sc2_label,sc3_label,sc1_count,sc2_count,sc3_count = run_dend(graph,res)
-
+    import ipdb ; ipdb.set_trace()
     conns_1=np.array(check_conn(sc1_label)).nonzero()[0]
     conns_2=np.array(check_conn(sc2_label)).nonzero()[0]
     conns_3=np.array(check_conn(sc3_label)).nonzero()[0]
@@ -306,7 +313,7 @@ def hier_cluster(graph,adj):
     sc2_label = np.array(sc2_label)[conns_2] if len(conns_2) > 0 else []
     sc3_label = np.array(sc3_label)[conns_3] if len(conns_3) > 0 else []
     print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
-    import ipdb; ipdb.set_trace()
+
     return sc1_label,sc2_label,sc3_label
 
 
@@ -469,4 +476,4 @@ mat_file['anom_sc1'] = sc1_label
 mat_file['anom_sc2'] = sc2_label
 mat_file['anom_sc3'] = sc3_label
 mat_file['anom_single'] = single_label
-sio.savemat(f'msgad/data/{args.dataset}.mat', mat_file)
+sio.savemat(f'msgad/data/{args.dataset}_test.mat', mat_file)

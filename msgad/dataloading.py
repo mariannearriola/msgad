@@ -79,18 +79,25 @@ class DataLoading:
         return dataloader
 
     def get_batch_sc_label(self,in_nodes,sc_label,g_batch):
+        dict_={k.item():v for k,v in zip(np.arange(in_nodes.shape[0]),in_nodes)}
         batch_sc_label = {}
         batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
         in_nodes_ = in_nodes.detach().cpu().numpy()
         for sc_ind,sc_ in enumerate(sc_label):
-            sc_labels = []
+            batch_sc_label[batch_sc_label_keys[sc_ind]] = sc_
+            continue
+            #sc_labels = []
+            #sc_labels.append(np.vectorize(dict_.get)(sc_))
+            batch_sc_label[batch_sc_label_keys[sc_ind]]=np.vectorize(dict_.get)(sc_)
+            '''
             if len(sc_) == 0: sc_labels.append([])
             for sc__ in sc_:
                 #sc_labels.append(sc__)
                 if np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
                     sc_labels.append(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__))
                     #sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
-            batch_sc_label[batch_sc_label_keys[sc_ind]] = np.array(sc_labels)
+            '''
+            #batch_sc_label[batch_sc_label_keys[sc_ind]] = np.array(sc_labels)
 
         return batch_sc_label
 
