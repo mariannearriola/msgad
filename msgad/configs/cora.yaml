@@ -1,0 +1,22 @@
+
+EXP: 'cora-testyaml'
+VIS_FILTERS: False
+DEVICE: 'cuda'
+
+DATASET:
+    NAME: 'cora_anom'
+    DATADIR: 'batch_data/'
+    LABEL_TYPE: 'bwgnn-filter-full'
+    BATCH_SIZE: 0
+    BATCH_TYPE: 'edge'
+  
+MODEL:
+    NAME: 'anomalydae'
+    RECONS: 'struct'
+    D: 5
+    EPOCH: 1
+    HIDDEN_DIM: 128
+    LR: 1e-3
+    DEBUG: True
+    SAMPLE_TRAIN: True
+    SAMPLE_TEST: True

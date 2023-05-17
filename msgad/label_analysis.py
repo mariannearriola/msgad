@@ -1,4 +1,4 @@
-from sknetwork.hierarchy import Paris, postprocess, LouvainHierarchy, LouvainIteration
+from sknetwork.hierarchy import postprocess, LouvainIteration
 import numpy as np
 import torch
 from utils import *
@@ -80,28 +80,16 @@ class LabelAnalysis:
             node_count.append(clust_dict[key].shape[0])
         return clust_dict,np.array(anom_count),np.array(node_count)
 
-    def run_dend(self,graph,res):
-
-        anom = self.anoms_combo
-        paris = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
-        dend = paris.fit_predict(nx.adjacency_matrix(graph))
-        clust1 = postprocess.cut_straight(dend,threshold=1)
-        clust2 = postprocess.cut_straight(dend,threshold=2)
-        clust3 = postprocess.cut_straight(dend,threshold=3)
-        
-        #print(np.unique(clust1).shape,np.unique(clust2).shape,np.unique(clust3).shape)
-        clust1_dict,anoms1,nodes1 = self.getAnomCount(clust1,anom)
-        thresh = 0.8
-        anoms_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]]
-        nodes_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]]
+    def get_sc_label(self,clust,anom):
+        clust1_dict,anoms1,nodes1 = self.getAnomCount(clust,anom)
+        anoms_find1=anoms1[np.where(anoms1/nodes1 > self.thresh)[0]]
+        nodes_find1=anoms1[np.where(anoms1/nodes1 > self.thresh)[0]]
         #import ipdb ; ipdb.set_trace()
-        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > thresh)[0] and clust1_dict[x].shape[0]>=3)]
-        clust2_dict,anoms2,nodes2 = self.getAnomCount(clust2,anom)
-        anom_nodes2=[np.intersect1d(clust2_dict[x],anom) for x in clust2_dict.keys() if (x in np.where(anoms2/nodes2 > thresh)[0] and clust2_dict[x].shape[0]>=3)]
-        clust3_dict,anoms3,nodes3 = self.getAnomCount(clust3,anom)
-        anom_nodes3=[np.intersect1d(clust3_dict[x],anom) for x in clust3_dict.keys() if (x in np.where(anoms3/nodes3 > thresh)[0] and clust3_dict[x].shape[0]>=3)]
-        anom_nodes_tot = [anom_nodes1,anom_nodes2,anom_nodes3]
+        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=3)]
+        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=3)]
+        return anom_nodes1
 
+    def postprocess_anoms(self,graph,anom_nodes_tot):
         sc1_label = self.remove_anom_overlap(anom_nodes_tot,0,[2,1])
         sc2_label = self.remove_anom_overlap(anom_nodes_tot,1,[2])
         sc3_label = self.remove_anom_overlap(anom_nodes_tot,2,[])
@@ -113,18 +101,27 @@ class LabelAnalysis:
         sc1_label = np.array(sc1_label)[conns_1] if len(conns_1) > 0 else []
         sc2_label = np.array(sc2_label)[conns_2] if len(conns_2) > 0 else []
         sc3_label = np.array(sc3_label)[conns_3] if len(conns_3) > 0 else []
+        return sc1_label,sc2_label,sc3_label
+
+    def run_dend(self,graph):
+        anom = self.anoms_combo
+        hierarchy = LouvainIteration()
+        dend = hierarchy.fit_predict(nx.adjacency_matrix(graph))
+        clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
+        self.thresh = 0.8
+
+        anom_nodes1,anom_nodes2,anom_nodes3 = self.get_sc_label(clust1,anom),self.get_sc_label(clust2,anom),self.get_sc_label(clust3,anom)
+        anom_nodes_tot = [anom_nodes1,anom_nodes2,anom_nodes3]
+        sc1_label,sc2_label,sc3_label = self.postprocess_anoms(graph,anom_nodes_tot)
         print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
     
         return sc1_label,sc2_label,sc3_label
 
-    
     def check_conn(self,graph,sc_label):
         conn_check=[]
         for i in sc_label:
-            try:
-                conn_check.append(nx.is_connected(graph.subgraph(i)))
-            except:
-                conn_check.append(False)
+            try: conn_check.append(nx.is_connected(graph.subgraph(i)))
+            except: conn_check.append(False)
         return conn_check
 
     def getAnomCount(self,clust,anom_sc_label):
@@ -145,33 +142,18 @@ class LabelAnalysis:
         print([i.shape[0] for i in sc_label_])
         return sc_label_
 
-    def postprocess_ms_anoms(self,clusts):
-        anom_nodes_tot = []
-        for clust in clusts:
-            clust_dict,anoms1,nodes1 = self.getAnomCount(clust,self.anoms_combo)
-            thresh = self.thresh
-            anoms_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]] ; nodes_find1=anoms1[np.where(anoms1/nodes1 > thresh)[0]]
-            anom_nodes=[np.intersect1d(clust_dict[x],self.anoms_combo) for x in clust_dict.keys() if (x in np.where(anoms1/nodes1 > thresh)[0] and clust_dict[x].shape[0]>=3)]
-            anom_nodes_tot.append(anom_nodes)
-        # BUG: overlap already removed, why does it fail here?
-        sc1_label = self.remove_anom_overlap(anom_nodes_tot,0,[2,1])
-        sc2_label = self.remove_anom_overlap(anom_nodes_tot,1,[2])
-        sc3_label = self.remove_anom_overlap(anom_nodes_tot,2,[])
-        return sc1_label,sc2_label,sc3_label
-
     def cluster(self,adj,label_id):
         self.adj = adj.detach().cpu().numpy()
         self.graph = nx.from_numpy_matrix(self.adj)
         # TODO: need to make sure that anomalies map here
         self.label_id = label_id
-        print('clustering for',self.label_id)
-        paris = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
-        dend = paris.fit_predict(self.adj)
+        print('clustering for',self.label_id-1)
+        hierarchy = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
+        dend = hierarchy.fit_predict(self.adj)
         #dends
-        res=[1.5,0.8,0.1]
         
         # 3-scale representations -> for each one, how much are preserved in communities?
-        sc1_label,sc2_label,sc3_label = self.run_dend(self.graph,res)
+        sc1_label,sc2_label,sc3_label = self.run_dend(self.graph)
         #import ipdb ; ipdb.set_trace()
         if label_id == 0:
             self.sc1_og,self.sc1_og_f = sc1_label,self.flatten_label(sc1_label)
@@ -192,7 +174,9 @@ class LabelAnalysis:
                 print('scale3 recovered []')
             
 
-        ndict = self.node_ranks()
+        #ndict = self.node_ranks()
+        ndict = {}
+        self.graph_conn = nx.average_clustering(self.graph)
         ret_arr = [self.check_conn_anom(ndict,self.sc1_og),self.check_conn_anom(ndict,self.sc2_og),self.check_conn_anom(ndict,self.sc3_og)]
         print('sc1 og connectivity',ret_arr[0])
         print('sc2 og connectivity',ret_arr[1])
@@ -220,9 +204,9 @@ class LabelAnalysis:
 
     def check_conn_anom(self,ndict,scale):
         coeffs = []
-        if -1 in ndict.values():
-            raise('not all nodes ranked')
+        #if -1 in ndict.values():
+        #    raise('not all nodes ranked')
         for sc in scale:
-            #coeffs.append(nx.average_clustering(self.graph,sc))
-            coeffs.append(np.vectorize(ndict.get)(sc).mean())
+            coeffs.append(nx.average_clustering(self.graph,sc)/self.graph_conn)
+            #coeffs.append(np.vectorize(ndict.get)(sc).mean())
         return coeffs

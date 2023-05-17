@@ -6,14 +6,26 @@ import torch
 import os
 import matplotlib.pyplot as plt
 from utils import *
-from torcheval.metrics.aggregation.auc import AUC
+from torcheval.metrics.functional.aggregation.auc import auc
 
 class anom_classifier():
     """Given node-wise or cluster-wise scores, perform binary anomaly classification"""
-    def __init__(self, nu=0.5):
+    def __init__(self, exp_params, nu=0.5):
         super(anom_classifier, self).__init__()
         self.clf = SGDOneClassSVM(nu=nu)
-        self.auc = AUC()
+        self.dataset = exp_params['DATASET']['NAME']
+        self.batch_type = exp_params['DATASET']['BATCH_TYPE']
+        self.batch_size = exp_params['DATASET']['BATCH_SIZE']
+        self.epoch = exp_params['MODEL']['EPOCH']
+        self.device = exp_params['DEVICE']
+        self.datadir = exp_params['DATASET']['DATADIR']
+        self.dataload = exp_params['DATASET']['DATALOAD']
+        self.datasave = exp_params['DATASET']['DATASAVE']
+        self.exp_name = exp_params['EXP']
+        self.label_type = exp_params['DATASET']['LABEL_TYPE']
+        self.model = exp_params['MODEL']['NAME']
+        self.recons = exp_params['MODEL']['RECONS']
+        #self.auc = AUC()
 
     def classify(self, scores, labels, clust_nodes=None):
         # TODO: REDO as GNN
@@ -41,20 +53,23 @@ class anom_classifier():
                 accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
         return accs, anom_preds.shape[0]
 
-    def plot_anom_sc(self,sorted_errors,anom,ms_anoms_num,color,scale_name,args):
+    def plot_anom_sc(self,sorted_errors,anom,ms_anoms_num,color,scale_name):
         rankings_sc = np.zeros(sorted_errors.shape[0])
         rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
         rankings_sc = rankings_sc.nonzero()[0]
         rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
+        rankings_auc = auc(torch.tensor(np.arange(rankings_sc.shape[0])),torch.tensor(rankings_sc)).item()
         plt.plot(np.arange(rankings_sc.shape[0]),rankings_sc,color=color)
-        fpath = f'vis/hit_at_k_model_wise/{args.dataset}/rankings/{scale_name}'
+        fpath = f'vis/hit_at_k_model_wise/{self.dataset}/rankings/{scale_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
-        fname = f'{fpath}/{args.model}.pkl'
+        fname = f'{fpath}/{self.model}.pkl'
+        rankings_dict = {'rankings':rankings_sc,'rankings_auc':rankings_auc}
         with open(fname,'wb') as fout:
-            pkl.dump(rankings_sc,fout)
+            pkl.dump(rankings_dict,fout)
+        return rankings_auc
 
-    def plot_anom_perc(self,sorted_errors,anom,color,scale_name,args):
+    def plot_anom_perc(self,sorted_errors,anom,color,scale_name):
         rankings_sc = np.zeros(sorted_errors.shape[0])
         rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
         rankings_sc = rankings_sc.nonzero()[0]
@@ -63,45 +78,47 @@ class anom_classifier():
         for ind,ranking_ind in enumerate(range(rankings_sc.shape[0]-1)):
             percs_sc[rankings_sc[ranking_ind]:rankings_sc[ranking_ind+1]] = ind/rankings_sc.shape[0]
         percs_sc[rankings_sc[-1]:] = 1.
-        '''
-        self.auc.update(np.arange(percs_sc.shape[0]),percs_sc)
-        perc_auc = self.auc.metric.compute()
-        self.auc.reset()
-        '''
+        
+        percs_auc = auc(torch.tensor(np.arange(percs_sc.shape[0])),torch.tensor(percs_sc)).item()
+        
         plt.plot(np.arange(percs_sc.shape[0]),percs_sc,color=color)
-        fpath = f'vis/perc_at_k_model_wise/{args.dataset}/rankings/{scale_name}'
+        fpath = f'vis/perc_at_k_model_wise/{self.dataset}/rankings/{scale_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
-        fname = f'{fpath}/{args.model}.pkl'
+        percs_dict = {'percs':percs_sc,'percs_auc':percs_auc}
+        fname = f'{fpath}/{self.model}.pkl'
         with open(fname,'wb') as fout:
-            pkl.dump(percs_sc,fout)
+            pkl.dump(percs_dict,fout)
+        return percs_auc
 
-    def plot_percentages(self,hit_rankings,sorted_errors,args,anoms,ms_anoms_num,sc):
+    def plot_percentages(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
         anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
-        self.plot_anom_perc(sorted_errors,anom_single,'cyan','single',args) ; plt.legend(['single']) ; plt.twinx()
-        self.plot_anom_perc(sorted_errors,anom_sc1,'red','scale1',args) ; plt.legend(['sc1']) ; plt.twinx()
-        self.plot_anom_perc(sorted_errors,anom_sc2,'blue','scale2',args) ; plt.legend(['sc2']) ;  plt.twinx()
-        self.plot_anom_perc(sorted_errors,anom_sc3,'purple','scale3',args) ; plt.legend(['sc3']) 
-        fpath = f'vis/perc_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}/{args.exp_name}'
+        perc_single=self.plot_anom_perc(sorted_errors,anom_single,'cyan','single')# ; plt.legend(['single']) ; plt.twinx()
+        perc1_auc=self.plot_anom_perc(sorted_errors,anom_sc1,'red','scale1')# ; plt.legend(['sc1']) ; plt.twinx()
+        perc2_auc=self.plot_anom_perc(sorted_errors,anom_sc2,'blue','scale2')# ; plt.legend(['sc2']) ;  plt.twinx()
+        perc3_auc=self.plot_anom_perc(sorted_errors,anom_sc3,'purple','scale3')# ; plt.legend(['sc3']) 
+        fpath = f'vis/perc_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
+            
+        plt.legend([perc_single,perc1_auc,perc2_auc,perc3_auc])
         plt.xlabel('# predictions')
         plt.ylabel('% anomaly detected')
         plt.savefig(f'{fpath}/sc{sc}_perc_at_k.png')
 
-    def hit_at_k(self,hit_rankings,sorted_errors,args,anoms,ms_anoms_num,sc):
+    def hit_at_k(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
         anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
-        self.plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single',args)
-        self.plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args)
-        self.plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2',args)
-        self.plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3',args)
+        perc_single,perc1_auc,perc2_auc,perc3_auc=self.plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single'),self.plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args),self.plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2'),self.plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3')
         plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
+        rankings_auc = auc(torch.tensor(np.arange(hit_rankings.shape[0])),torch.tensor(hit_rankings)).item()
         plt.legend(['single','sc1','sc2','sc3','total'])
-        fpath = f'vis/hit_at_k/{args.dataset}/{args.model}/{args.label_type}/{args.epoch}/{args.exp_name}'
+        
+        fpath = f'vis/hit_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
+        plt.legend([perc_single,perc1_auc,perc2_auc,perc3_auc,rankings_auc])
         plt.ylabel('# predictions')
         plt.xlabel('# multi-scale anomalies detected')
         #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
@@ -141,7 +158,7 @@ class anom_classifier():
         
         return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
 
-    def calc_prec(self, graph, scores, label, sc_label, attns, args, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+    def calc_prec(self, graph, scores, label, sc_label, attns, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
             scores: anomaly scores for all scales []
@@ -154,13 +171,13 @@ class anom_classifier():
             anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
-        if 'cora' in args.dataset or 'weibo' in args.dataset:
+        if 'cora' in self.dataset or 'weibo' in self.dataset:
             clf = anom_classifier(nu=0.5)
         
         for sc,sc_score in enumerate(scores):
-            if args.recons == 'both':
+            if self.recons == 'both':
                 node_scores = sc_score#.detach().cpu().numpy()
-            elif args.recons == 'feat':
+            elif self.recons == 'feat':
                 node_scores = np.mean(sc_score,axis=1)
             elif input_scores:
                 node_scores = sc_score
@@ -177,7 +194,7 @@ class anom_classifier():
             # run graph transformer with node score attributes
             # anom_preds = anom_clf.forward(node_scores,graph.edges())
             node_scores[np.isnan(node_scores).nonzero()] = 0.
-
+            
             node_scores *= attns[sc]
             sorted_errors = np.argsort(-node_scores)
             rev_sorted_errors = np.argsort(node_scores)
@@ -187,8 +204,8 @@ class anom_classifier():
             ms_anoms_num = full_anoms.shape[0]
             
             hit_rankings = rankings.nonzero()[0]
-            self.hit_at_k(hit_rankings,sorted_errors,args,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
-            self.plot_percentages(hit_rankings,sorted_errors,args,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
+            self.hit_at_k(hit_rankings,sorted_errors,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
+            self.plot_percentages(hit_rankings,sorted_errors,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
 
             #import ipdb ; ipdb.set_trace()
             # add plots for scale-specific anomalies
@@ -252,6 +269,6 @@ class anom_classifier():
             print(anom_accs)
             '''
             
-        with open('output/{}-ranking_{}.txt'.format(args.dataset, sc), 'w+') as f:
+        with open('output/{}-ranking_{}.txt'.format(self.dataset, sc), 'w+') as f:
             for index in sorted_errors:
                 f.write("%s\n" % label[index])

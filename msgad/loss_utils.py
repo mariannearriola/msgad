@@ -38,7 +38,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
     scale_weights=[1,1,1]
     total_struct_error,total_feat_error=torch.tensor(-1.),torch.tensor(-1.)
     if not pos_edges == None:
-        #edge_ids = torch.vstack((pos_edges,neg_edges))
+        edge_ids = torch.vstack((pos_edges,neg_edges))
  
         if type(graph) != list:
             feat = graph.ndata['feature']
@@ -52,20 +52,19 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             if recons_ind == 0 and recons in ['struct','both']:
                 if sample:
                     # collect loss for selected positive/negative edges. adjacency not used
-                    if type(graph) == list:
-                        edge_labels = graph[ind]#.to_dense()
-                    
-                    #total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
+
+                    total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,graph[ind].adjacency_matrix().to_dense().to(sc_pred.device))
                     # sample some random edges, will be the same from dgl seed? check if sampling will be the same for each 
+                    '''
                     num_samp=neg_edges.shape[0]
-                    pos_edge_samp = torch.stack(list(edge_labels.edges())).T
+                    pos_edge_samp = torch.stack(list(graph[ind].edges())).T
                     pos_edge_samp = pos_edge_samp[np.random.randint(0,pos_edge_samp.shape[0],num_samp)]
                     neg_edge_samp = dgl.sampling.global_uniform_negative_sampling(graph[ind],num_samp)
                     edge_ids_samp = torch.vstack((pos_edge_samp,torch.stack(list(neg_edge_samp)).T))
                     edge_ids_tot.append(edge_ids_samp.detach().cpu().numpy().T)
-                    total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids_samp,edge_labels.adjacency_matrix().to_dense().to(sc_pred.device))
-                    del edge_labels,pos_edge_samp,neg_edge_samp,edge_ids_samp ; torch.cuda.empty_cache()
-  
+                    total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids_samp,graph[ind].adjacency_matrix().to_dense().to(sc_pred.device))
+                    del pos_edge_samp,neg_edge_samp,edge_ids_samp ; torch.cuda.empty_cache()
+                    '''
                 else:
                     # collect loss for all edges/non-edges in reconstruction
                     if type(graph) != list:
@@ -115,7 +114,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                 else:
                     all_costs = torch.add(total_struct_error*alpha,torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)
     del feat, total_feat_error, total_struct_error ; torch.cuda.empty_cache()
-    return all_costs, all_struct_error, all_feat_error, edge_ids_tot
+    return all_costs, all_struct_error, all_feat_error#, edge_ids_tot
 
 def get_sampled_losses(pred,edges,label):
     """description

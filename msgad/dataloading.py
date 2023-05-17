@@ -6,15 +6,16 @@ import numpy as np
 import torch
 
 class DataLoading:
-    def __init__(self,args):
-        self.dataset = args.dataset
-        self.batch_type = args.batch_type
-        self.batch_size = args.batch_size
-        self.epoch = args.epoch
-        self.device = args.device
-        self.datadir = args.datadir
-        self.dataload = args.dataload
-        self.datasave = args.datasave
+    def __init__(self,exp_params):
+        self.dataset = exp_params['DATASET']['NAME']
+        self.batch_type = exp_params['DATASET']['BATCH_TYPE']
+        self.batch_size = int(exp_params['DATASET']['BATCH_SIZE'])
+        self.epoch = exp_params['MODEL']['EPOCH']
+        self.device = exp_params['DEVICE']
+        self.datadir = exp_params['DATASET']['DATADIR']
+        self.dataload = exp_params['DATASET']['DATALOAD']
+        self.datasave = exp_params['DATASET']['DATASAVE']
+        self.exp_name = exp_params['EXP']
 
     def rearrange_anoms(self,anom):
         ret_anom = []
@@ -35,14 +36,15 @@ class DataLoading:
         elif 'Network' in data_mat.keys():
             adj = data_mat['Network']
         truth = data_mat['Label'].flatten()
-        anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
-
-        if 'yelpchi' in self.dataset:
-            anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
-        if 'weibo' in self.dataset or 'elliptic' in self.dataset:
-            anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
-        
-        sc_label=[anom1,anom2,anom3,anom_single]
+        if 1 in truth:
+            anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
+            if 'yelpchi' in self.dataset:
+                anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
+            if 'weibo' in self.dataset or 'elliptic' in self.dataset:
+                anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
+            sc_label=[anom1,anom2,anom3,anom_single]
+        else:
+            sc_label = []
         
         return adj, edge_idx, feats, truth, sc_label
 
@@ -124,7 +126,7 @@ class DataLoading:
         loaded_input[0] = loaded_input[0].to_sparse()
         if self.batch_type == 'edge':
             loaded_input[-1] = loaded_input[-1][0]
-        dirpath = f'{self.datadir}/{self.dataset}/{setting}'
+        dirpath = f'{self.datadir}/{self.exp_name}/{self.dataset}/{setting}'
         if not os.path.exists(dirpath):
             os.makedirs(dirpath)
         with open (f'{dirpath}/{iter}.pkl','wb') as fout:
@@ -134,7 +136,7 @@ class DataLoading:
         torch.cuda.empty_cache()
 
     def load_batch(self,iter,setting):
-        dirpath = f'{self.datadir}/{self.dataset}/{setting}'
+        dirpath = f'{self.datadir}/{self.exp_name}/{self.dataset}/{setting}'
         with open (f'{dirpath}/{iter}.pkl','rb') as fin:
             batch_dict = pkl.load(fin)
         loaded_input = batch_dict['loaded_input']

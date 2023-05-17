@@ -16,132 +16,30 @@ from scipy.interpolate import make_interp_spline
 from dgl.nn.pytorch.conv import EdgeWeightNorm
 import matplotlib.pyplot as plt
 from label_analysis import LabelAnalysis
+from visualization import Visualizer
 
 class LabelGenerator:
-    def __init__(self,graph,dataset,model_str,epoch,label_type,feats,vis,vis_name,anoms,batch_size,exp_name):
+    def __init__(self,graph,feats,vis,vis_name,anoms,exp_params,visualizer):
         self.graph = graph
         self.feats = feats
-        self.exp_name = exp_name
-        self.dataset=dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.model_str = model_str
+        self.exp_name = exp_params['EXP']
+        self.dataset=exp_params['DATASET']['NAME']
+        self.epoch = exp_params['MODEL']['EPOCH']
+        self.model_str = exp_params['MODEL']['NAME']
         #self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm(norm='both')
-        self.label_type = label_type
+        self.label_type = exp_params['DATASET']['LABEL_TYPE']
         self.vis_name = vis_name
         self.vis = vis
         self.anoms= anoms
         self.coeffs = None
+        self.visualizer = visualizer
 
     def flatten_label(self,anoms):
         anom_flat = anoms[0]
         for i in anoms[1:]:
             anom_flat=np.concatenate((anom_flat,i))
         return anom_flat
-
-    def anom_response(self,adj,labels,anoms,vis_name,img_num=None):
-        signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
-
-        anom_tot = 0
-        for anom in list(anoms.values())[:-1]:
-            anom_tot += self.flatten_label(anom).shape[0]
-        anom_tot += list(anoms.values())[-1].shape[0]
-        all_nodes = torch.arange(self.feats.shape[0])
-        e,U = self.get_spectrum(adj.to(torch.float64))
-        es,us=[e],[U]
-        del e, U ; torch.cuda.empty_cache() ; gc.collect()
-        for i,label in enumerate(labels):
-            lbl=torch.maximum(label, label.T)
-            e,U = self.get_spectrum(lbl.to(torch.float64))
-            es.append(e) ; us.append(U)
-            del lbl, e, U ; torch.cuda.empty_cache() ; gc.collect()
-
-        for anom_ind,anom in enumerate(anoms.values()):
-            plt.figure()
-            legend = []
-            for i,label in enumerate(range(len(es))):
-                e,U = es[i],us[i]
-                e = e.to(self.graph.device) ; U = U.to(self.graph.device)
-
-                #anom = anom.flatten()
-                if len(anom) == 0:
-                    continue
-                if anom_ind != len(anoms)-1:
-                    anom_f = self.flatten_label(anom)
-                else:
-                    anom_f = anom
-                #anom_mask=np.setdiff1d(all_nodes,anom_f)
-                signal_ = copy.deepcopy(signal)+1
-                signal_[anom_f]=(np.random.randn(U.shape[0])*400*anom_tot/anom.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
-                
-                x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal_)
-                if i == 0:
-                    legend.append('original adj')
-                else:
-                    legend.append(f'{i} label')
-            plt.legend(legend)
-
-            fpath = f'vis/filter_anom_ev/{self.dataset}/{self.model_str}/{self.label_type}/{self.epoch}/{self.exp_name}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-            plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{vis_name}_filter{list(anoms.keys())[anom_ind]}.png')
-            del e,U ; torch.cuda.empty_cache() ; gc.collect()
-                
-            torch.cuda.empty_cache()
-
-    def filter_anoms(self,label,anoms,vis_name,img_num=None):
-        np.random.seed(123)
-        #print('filter anoms',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-        signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
-
-        #signal = np.ones((labels[0].shape[0],self.feats.shape[-1]))
-
-        anom_tot = 0
-        for anom in list(anoms.values())[:-1]:
-            anom_tot += self.flatten_label(anom).shape[0]
-        anom_tot += list(anoms.values())[-1].shape[0]
-        all_nodes = torch.arange(self.feats.shape[0])
-
-        #for i,label in enumerate(labels):
-        lbl=torch.maximum(label, label.T)
-        e,U = self.get_spectrum(lbl.to(torch.float64))
-        e = e.to(self.graph.device) ; U = U.to(self.graph.device)
-        del lbl ; torch.cuda.empty_cache() ; gc.collect()
-        
-        plt.figure()
-        x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal+1)
-
-        legend_arr = ['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal','single anom signal']
-        legend =['no anom signal']
-        for anom_ind,anom in enumerate(anoms.values()):
-            #anom = anom.flatten()
-            if len(anom) == 0:
-                continue
-            if anom_ind != len(anoms)-1:
-                anom_f = self.flatten_label(anom)
-            else:
-                anom_f = anom
-            #anom_mask=np.setdiff1d(all_nodes,anom_f)
-            signal_ = copy.deepcopy(signal)+1
-            try:
-                signal_[anom_f]=(np.random.randn(U.shape[0])*400*anom_tot/anom.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
-            except Exception as e:
-                print(e)
-                import ipdb ; ipdb.set_trace()
-            
-            x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal_)
-            legend.append(legend_arr[anom_ind+1])
-            plt.legend(legend)
-    
-            fpath = f'vis/filter_anom_vis/{self.dataset}/{self.model_str}/{self.label_type}/{self.exp_name}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-            plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_{vis_name}_filter{img_num}.png')
-
-        del e,U ; torch.cuda.empty_cache() ; gc.collect()
-            
-        torch.cuda.empty_cache()
 
     def calculate_theta2(self,d):
         thetas = []
@@ -264,10 +162,14 @@ class LabelGenerator:
         elif 'bwgnn' in self.label_type:
             self.coeffs = self.calculate_theta2(K)
             label_idx=np.arange(0,K+1,1)
-            #label_idx=np.array([5,8])
+            if 'multi' in self.label_type:
+                label_idx = np.array([7,8,9])
+            elif 'full' not in self.label_type:
+                label_idx=np.array([5,5,5])
+            #label_idx=np.array([5,8,10])
         elif 'single' in self.label_type:
-            label_idx = np.full((3,),1)
-            label_idx = np.arange(3)
+            label_idx = np.full((3,),0)
+            #label_idx = np.arange(3)
         return label_idx.tolist()
 
     def make_label(self,g,ind,prods):
@@ -275,20 +177,23 @@ class LabelGenerator:
             coeff = self.coeffs[ind]
             basis = copy.deepcopy(g)
             basis.edata['w'] *= coeff[0]
-            for i in range(1, self.K+1):
+            for i in range(1, len(prods)):
+                print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
                 basis_ = copy.deepcopy(prods[i])
                 basis_.edata['w'] *= coeff[i]
-                sorted_idx = torch.topk(basis_.edata['w'],int(self.num_a_edges)).indices
+                basis_ = dgl.remove_self_loop(basis_)
+                sorted_idx = torch.topk(torch.abs(basis_.edata['w']),int(self.num_a_edges/(ind+1))).indices
                 basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
                 basis = dgl.adj_sum_graph([basis,basis_],'w')
-                #basis += prods[i] * coeff[i]
                 del basis_
-                torch.cuda.empty_cache()
+                #torch.cuda.empty_cache()
             return basis
-            #nz = basis.edata['w']#.unique()
-            #sorted_idx = torch.topk(nz,int(self.num_a_edges)).indices
+            #nz = torch.abs(basis.edata['w'])
+            #nz = basis.edata['w']
+            #sorted_idx = torch.topk(nz,int(self.num_a_edges*11)).indices
             #sorted_idx = torch.topk(nz,int(num_a_edges*(label_ind+1))).indices
-            #return dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
+            return dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
+
         elif 'random-walk' in self.label_type:
             raise(NotImplementedError)
         else:
@@ -299,12 +204,15 @@ class LabelGenerator:
         if 'filter' not in self.label_type and 'single' not in self.label_type:
             return prods
         g_prod = copy.deepcopy(g)
+        
         for i in range(1, self.K+1):
             if 'cora' not in self.dataset: print('prod',i)
             g_prod = dgl.adj_product_graph(g_prod,g,'w')
+            #sorted_idx = torch.topk(g_prod.edata['w'],int(self.num_a_edges)).indices
+            #g_prod = dgl.edge_subgraph(g_prod,sorted_idx,relabel_nodes=False)
             prods.append(g_prod)
             #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-        del g_prod ; torch.cuda.empty_cache()
+        del g_prod# ; torch.cuda.empty_cache()
         return prods
 
     def construct_labels(self):
@@ -313,13 +221,15 @@ class LabelGenerator:
         :param M: Transition matrix.
         :return: Stationary distribution.
         """
+        # initialize visualizer
         # prep
         self.num_a_edges = self.graph.num_edges()
         self.K = 10 if 'filter' in self.label_type else 3
         label_idx = self.prep_filters(self.K)
         labels = []
         g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
-
+        if 'weibo' in self.dataset:
+            print('before norm',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         # normalize graph if needed
         if 'norm' in self.label_type:
             if 'cora' in self.dataset: g = g.to(self.graph.device)
@@ -329,14 +239,19 @@ class LabelGenerator:
                 g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to(self.graph.device)).to(self.graph.device)
             else:
                 g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to('cpu')).to('cpu')#(self.graph.device)).to(self.graph.device)
+            g = dgl.remove_self_loop(g)
         else:
             g.edata['w'] = torch.ones(self.num_a_edges)
+        if 'weibo' in self.dataset: print('getting dense adj')
         adj_label = g.adjacency_matrix().to_dense()
-        if self.vis == True and 'test' not in self.vis_name: self.filter_anoms(adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
+        if 'weibo' in self.dataset: print('visualizing')
+        if self.visualizer is not None: self.visualizer.filter_anoms(self.graph,adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
         labels = [g]
-
+        if 'weibo' in self.dataset:
+            print('after norm',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
+        
         # visualize input
-        if self.vis == True and 'test' not in self.vis_name:
+        if self.visualizer is not None:
             adj_label=adj_label.to(self.graph.device).to(torch.float64)
             e_adj,U_adj = self.get_spectrum(torch.maximum(adj_label,adj_label.T))
             xs_labelvis,ys_labelvis = self.plot_spectrum(e_adj,U_adj,self.feats.to(U_adj.dtype),color='cyan')
@@ -347,22 +262,30 @@ class LabelGenerator:
             sc2s = [np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean()]
             sc3s = [np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean()]
         
-
-        if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
-
+        del adj_label
+        #torch.cuda.empty_cache()
+        #if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
+        if 'weibo' in self.dataset:
+            print('before prods',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         # make labels
         prods = self.prep_input(g)
-        #import ipdb ; ipdb.set_trace()
+        if 'weibo' in self.dataset:
+            print('after prods',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         for label_id in label_idx:
             label = self.make_label(g,label_id,prods)
+            print('label id',label_id,'label edges',label.number_of_edges())
+            if 'weibo' in self.dataset:
+                print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
+            #import ipdb ; ipdb.set_trace()
             labels.append(label)
+            #del label ; torch.cuda.empty_cache()
             # visualize labels TODO move 
             if self.vis == True and 'test' not in self.vis_name:
                 basis_ = label.adjacency_matrix().to_dense()
                 if 'tfinance' in self.dataset:
                     import ipdb ; ipdb.set_trace()
-                self.filter_anoms(basis_,self.anoms,self.vis_name,label_id)
+                self.visualizer.filter_anoms(self.graph,basis_,self.anoms,self.vis_name,label_id)
 
                 e,U = self.get_spectrum(torch.maximum(basis_, basis_.T).to(torch.float64).to(self.graph.device))
                 e = e.to(self.graph.device) ; U = U.to(self.graph.device)
@@ -370,11 +293,12 @@ class LabelGenerator:
                 del e,U ; torch.cuda.empty_cache() ; gc.collect()
 
                 xs_labelvis = np.hstack((xs_labelvis,x_labelvis)) ; ys_labelvis = np.hstack((ys_labelvis,y_labelvis))
+
                 sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(basis_,label_id+1)
                 sc1s.append(np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean())
                 sc2s.append(np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean())
                 sc3s.append(np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean())
-
+        #import ipdb ; ipdb.set_trace()
         del g ; torch.cuda.empty_cache()
 
         if 'random-walk' in self.label_type:
@@ -420,38 +344,16 @@ class LabelGenerator:
                 
                 full_labels[i][torch.where(full_labels[i]<0)[0],torch.where(full_labels[i]<0)[1]]=0
                 labels.append(dgl.from_numpy_matrix(full_labels[i]).to(self.graph.device))
+        if 'weibo' in self.dataset:
+            print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
-        if self.vis == True and 'test' not in self.vis_name and 'filter' in self.label_type:
-            if 'cora' in self.dataset:
-                plt.figure()
-                label_idx.insert(0,'og')
-                # some loop..
-                plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc1s],color='r')
-                plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc2s],color='g')
-                plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc3s],color='b')
-                plt.savefig(f'label_vis_{self.label_type}_{self.exp_name}_{self.K}_{self.dataset}.png')
-                if self.graph.device == 'cpu': 
-                    print('visualizing labels')
-            
-            fpath = f'vis/label_vis/{self.dataset}/{self.model_str}/{self.label_type}/{self.exp_name}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
-            
-            legend = ['og']
-            plt.figure()
-            for label_ind,(x_label,y_label) in enumerate(zip(x_labelvis,y_labelvis)):
-                plt.plot(x_label,y_label)
-                legend.append(f'label {str(label_ind+1)}')
-            plt.legend(legend)
-            plt.savefig(f'{fpath}/labels_{self.label_type}_{self.epoch}_{self.vis_name}_{label_ind+1}.png')
+        if self.visualizer is not None and 'test' not in self.vis_name:
+            print('visualizing labels')
+            scs_tot = [sc1s,sc2s,sc3s] ; self.visualizer.visualize_label_conns(label_idx,scs_tot)
+            self.visualizer.visualize_labels(x_labelvis,y_labelvis,self.vis_name)
+            self.visualizer.anom_response(self.graph,labels,self.anoms,self.vis_name)
 
-            #print("Seconds to visualize labels", (time.time()-seconds)/60)
-            # TODO
-            #self.anom_response(adj_label.to(self.graph.device),labels[1:],self.anoms,self.vis_name)
-            fpath = f'vis/filter_anom_ev/{self.dataset}/{self.model_str}/{self.label_type}/{self.epoch}/{self.exp_name}'
-            if not os.path.exists(fpath):
-                os.makedirs(fpath)
             torch.cuda.empty_cache() ; gc.collect()
             #self.filter_anoms(labels,self.anoms,self.vis_name)
-        return labels
-        #return labels[1:]
+        #return labels
+        return labels[1:]

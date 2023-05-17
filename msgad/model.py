@@ -20,7 +20,7 @@ from models.hogat import *
 from models.gradate import *
 
 class GraphReconstruction(nn.Module):
-    def __init__(self, in_size, args, act = nn.LeakyReLU(), label_type='single'):
+    def __init__(self, in_size, exp_params, act = nn.LeakyReLU(), label_type='single'):
         super(GraphReconstruction, self).__init__()
         seed_everything()
         self.in_size = in_size
@@ -29,43 +29,46 @@ class GraphReconstruction(nn.Module):
         self.b = 1
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
-        self.d = args.d
-        self.exp_name = args.exp_name
-        self.batch_size = args.batch_size
+        self.d = int(exp_params['MODEL']['D'])
+        self.dataset = exp_params['DATASET']['NAME']
+        self.batch_type = exp_params['DATASET']['BATCH_TYPE']
+        self.batch_size = exp_params['DATASET']['BATCH_SIZE']
+        self.epoch = exp_params['MODEL']['EPOCH']
+        self.exp_name = exp_params['EXP']
+        self.label_type = exp_params['DATASET']['LABEL_TYPE']
+        self.model_str = exp_params['MODEL']['NAME']
+        self.recons = exp_params['MODEL']['RECONS']
+        self.hidden_dim = int(exp_params['MODEL']['HIDDEN_DIM'])
+        self.vis_filters = exp_params['VIS_FILTERS']
+
+
         self.e_adj, self.U_adj = None,None
-        self.epoch = args.epoch
-        self.label_type = args.label_type
-        self.dataload = args.dataload
-        self.recons = args.recons
-        self.dataset = args.dataset
-        self.model_str = args.model
         dropout = 0
         self.embed_act = act
         self.decode_act = torch.sigmoid
-        self.batch_type = args.batch_type
         self.weight_decay = 0.01
         self.lengths = [5,10,20]
-        if 'multi-scale' in args.model:
+        if 'multi-scale' in self.model_str:
             self.module_list = nn.ModuleList()
             for i in range(3):
-                if 'multi-scale-amnet' == args.model:
-                    self.module_list.append(AMNet_ms(in_size, args.hidden_dim, 1, 10, 5))
-                elif 'multi-scale-bwgnn' == args.model:
-                    self.module_list.append(MSGAD(in_size,args.hidden_dim,d=10))
-        elif args.model == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
-            self.conv = GRADATE(in_size,args.hidden_dim,'prelu',1,1,'avg',5)
-        elif args.model == 'bwgnn':
-            self.conv = BWGNN(in_size, args.hidden_dim, d=10)
-        elif args.model in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
-            self.conv = AnomalyDAE_Base(in_size,args.batch_size,args.hidden_dim,args.hidden_dim,dropout=dropout,act=act)
-        elif args.model == 'dominant':
-            self.conv = DOMINANT_Base(in_size,args.hidden_dim,3,dropout,act)
-        elif args.model == 'mlpae': # x
-            self.conv = MLP(in_channels=in_size,hidden_channels=args.hidden_dim,out_channels=args.batch_size,num_layers=3)
-        elif args.model == 'amnet': # x, e
-            self.conv = AMNet(in_size, args.hidden_dim, 2, 2, 2, vis_filters=args.vis_filters)
-        elif args.model == 'ho-gat':
-            self.conv = HOGAT(in_size, args.hidden_dim, dropout, alpha=0.1)
+                if 'multi-scale-amnet' == self.model_str:
+                    self.module_list.append(AMNet_ms(in_size, self.hidden_dim, 1, 10, 5))
+                elif 'multi-scale-bwgnn' == self.model_str:
+                    self.module_list.append(MSGAD(in_size,self.hidden_dim,d=10))
+        elif self.model_str == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
+            self.conv = GRADATE(in_size,self.hidden_dim,'prelu',1,1,'avg',5)
+        elif self.model_str == 'bwgnn':
+            self.conv = BWGNN(in_size, self.hidden_dim, d=10)
+        elif self.model_str in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
+            self.conv = AnomalyDAE_Base(in_size,self.batch_size,self.hidden_dim,self.hidden_dim,dropout=dropout,act=act)
+        elif self.model_str == 'dominant':
+            self.conv = DOMINANT_Base(in_size,self.hidden_dim,3,dropout,act)
+        elif self.model_str == 'mlpae': # x
+            self.conv = MLP(in_channels=in_size,hidden_channels=self.hidden_dim,out_channels=self.batch_size,num_layers=3)
+        elif self.model_str == 'amnet': # x, e
+            self.conv = AMNet(in_size, self.hidden_dim, 2, 2, 2, vis_filters=self.vis_filters)
+        elif self.model_str == 'ho-gat':
+            self.conv = HOGAT(in_size, self.hidden_dim, dropout, alpha=0.1)
         else:
             raise('model not found')
 
@@ -107,7 +110,6 @@ class GraphReconstruction(nn.Module):
             recons: scale-wise adjacency reconstructions
         '''
         res_a = None
-        labels = None
         edges, feats, graph_ = self.process_graph(graph)
         if pos_edges is not None:
             all_edges = torch.vstack((pos_edges,neg_edges))
@@ -126,10 +128,8 @@ class GraphReconstruction(nn.Module):
         if 'multi-scale' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
             # collect multi-scale labels
-            if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size,self.exp_name)
-                labels=lg.construct_labels()
-            
+            if 'weibo' in self.dataset:
+                print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
             for ind,i in enumerate(self.module_list):
                 if self.model_str == 'multi-scale-amnet':
                     oom = False
@@ -161,20 +161,11 @@ class GraphReconstruction(nn.Module):
                     if oom:
                         print('out of memory')
                         import ipdb ; ipdb.set_trace()
-
+                if 'weibo' in self.dataset:
+                    print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
                 recons_a.append(recons[graph.dstnodes()][:,graph.dstnodes()])
                 res_a.append(res[graph.dstnodes()])
                 del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
-            
-        #elif not self.dataload:
-        else:
-            if not self.dataload:
-                lg = LabelGenerator(graph,self.dataset,self.model_str,self.epoch,self.label_type,feats,vis,vis_name,anoms,self.batch_size,self.exp_name)
-                labels=lg.construct_labels()
-            else:
-                adj_label=graph.adjacency_matrix().to_dense()[graph.dstnodes()][:,graph.dstnodes()]
-                adj_label=np.maximum(adj_label, adj_label.T).to(graph.device) 
-                labels = [adj_label]
         
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:
@@ -192,4 +183,4 @@ class GraphReconstruction(nn.Module):
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
         
-        return recons_a,recons_x,labels,res_a
+        return recons_a,recons_x,res_a

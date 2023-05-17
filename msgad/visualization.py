@@ -1,27 +1,30 @@
 
 import matplotlib.pyplot as plt
+import scipy
+import torch
+import numpy as np
 from scipy.interpolate import make_interp_spline
 from model import *
+import copy
+import math
 
 class Visualizer:
-    def __init__(self,adj,feats,args,sc_label,norms,anoms):
-        self.device = args.device
-        self.dataset = args.dataset
-        self.model = args.model
+    def __init__(self,adj,feats,exp_params,sc_label,norms,anoms):
+        self.dataset = exp_params['DATASET']['NAME']
+        self.epoch = exp_params['MODEL']['EPOCH']
+        self.device = exp_params['DEVICE']
+        self.exp_name = exp_params['EXP']
+        self.label_type = exp_params['DATASET']['LABEL_TYPE']
+        self.model = exp_params['MODEL']['NAME']
         self.adj = adj
         self.feats = feats
-        self.label_type = args.label_type
-        self.epoch = args.epoch
         self.norms=norms
         self.anom=anoms
         self.sc_label=sc_label
-        self.exp_name=args.exp_name
-        pass
 
     def plot_spectrum(self,e,U,signal,color=None):
-        #import ipdb ; ipdb.set_trace()
         c = U.T@signal
-        M = torch.zeros((10,c.shape[1])).to(e.device).to(U.dtype)
+        M = torch.zeros((14,c.shape[1])).to(e.device).to(U.dtype)
         for j in range(c.shape[0]):
             idx = min(int(e[j] / 0.1), 10-1)
             M[idx] += c[j]**2
@@ -42,6 +45,7 @@ class Visualizer:
             plt.plot(X_,Y_,color=color)
         else:
             plt.plot(X_,Y_)
+        return X_,Y_
 
     def plot_loss_curve(self,losses):
         plt.figure()
@@ -75,6 +79,7 @@ class Visualizer:
         #print('eig', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         '''
         e,U = torch.linalg.eigh(torch.tensor(L.toarray()).to(mat.device))
+
         #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
         #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
         assert -1e-5 < e[0] < 1e-5
@@ -95,9 +100,9 @@ class Visualizer:
         return e, U#.to(torch.float32)
 
     def flatten_label(self,anoms):
-        anom_flat = anoms[0][0]
+        anom_flat = anoms[0]#[0]
         for i in anoms[1:]:
-            anom_flat=np.concatenate((anom_flat,i[0]))
+            anom_flat=np.concatenate((anom_flat,i))#[0]))
         return anom_flat
 
     def plot_recons(self,recons_a,recons_labels):
@@ -111,7 +116,7 @@ class Visualizer:
         for r_ind,r_ in enumerate(recons_a):
             # plot label
             plt.figure()
-            e_adj,U_adj= self.get_spectrum(recons_labels[r_ind].to(self.device).to(torch.float64))
+            e_adj,U_adj= self.get_spectrum(recons_labels[r_ind].to(self.device).adjacency_matrix().to_dense().to(torch.float64))
 
             #e_adj,U_adj= self.get_spectrum(self.adj.adjacency_matrix().to_dense().to(self.device).to(torch.float64))
             e_adj,U_adj = e_adj.detach().cpu(),U_adj.detach().cpu()
@@ -189,7 +194,7 @@ class Visualizer:
             os.makedirs(fpath)
         plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_test.png')
 
-    def plot_attn_scores(self,attn_weights,lams):
+    def plot_attn_scores(self,attn_weights,lams,edge_anom_mats):
         def flatten_label_attn(sc_label):
             anom_flat = sc_label[0]#[0]
             for i in sc_label[1:]:
@@ -198,18 +203,21 @@ class Visualizer:
             
         # epoch x 3 x num filters x nodes
         attn_weights_arr = [attn_weights[:,:,:,self.norms]]
+        anom_groups = [self.norms]
         for anom_ind,anom in enumerate(self.sc_label):
-            if 'cora'in self.dataset:
+            if False:#'cora'in self.dataset:
                 attn_weights_arr.append(attn_weights[:,:,:,anom.flatten()])
             else:
                 try:
                     if anom_ind == 0:
                         anom_tot = flatten_label_attn(anom)
+                        anom_groups.append(flatten_label_attn(anom))
                         attn_weights_arr.append(attn_weights[:,:,:,flatten_label_attn(anom)])
                     else:
                         anom_f = flatten_label_attn(anom)
                         if anom_f.ndim == 2: anom_f = anom_f[0]
                         anom_tot = np.append(anom_tot,anom_f)
+                        anom_groups.append(anom_f)
                         attn_weights_arr.append(attn_weights[:,:,:,anom_f])
                         del anom_f
                 except Exception as e:
@@ -253,20 +261,46 @@ class Visualizer:
                 else:
                     plt.ylabel(f'mean attention value for anomaly scale {ind+1}')
 
-                fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+                fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}/model_sc{scale}'
                 if not os.path.exists(fpath):
                     os.makedirs(fpath)
                 plt.ylim((p_min,p_max))
-                #plt.xlim((args.epoch-3,args.epoch-1))
-                plt.savefig(f'{fpath}/model_sc{scale}_fil{filter}.png')
+                plt.savefig(f'{fpath}/fil{filter}.png')
+        # plot range across scales for each filter
         #import ipdb ; ipdb.set_trace()      
-        for sc,com_att in enumerate(scale_com_atts):
+        legend=['norm','anom sc1','anom sc2','anom sc3','single']
+        
+        for filter in range(attn_weights.shape[2]):
+            new_legend = []
             plt.figure()
-            # group : filters x seq
-            for ind,group in enumerate(com_att):
-                plt.plot(group.sum(axis=0),color=colors[ind])
-            plt.legend(legend)
-            plt.savefig(f'{fpath}/combined_filters_scale{sc}.png')
+            for ind,attn_weight in enumerate(attn_weights_arr):
+                group = attn_weight[:,:,filter,:].mean(2)
+                ranges = group.max(axis=1)-group.min(axis=1)
+                plt.plot(ranges,color=colors[ind])
+                attn_lbl = legend[ind] + f'_model{np.argmax(group[-1])}'
+                new_legend.append(attn_lbl)
+            plt.legend(new_legend)
+            fpath = f'vis/attn_vis/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}/scale_filters'
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+            plt.savefig(f'{fpath}/combined_filters_scale{filter}.png')
+        #import ipdb ; ipdb.set_trace()
+        plt.figure()
+        width,offset = 0.25,0
+        for sc,edge_anom_mat in enumerate(edge_anom_mats):
+            sc_losses = []
+            for ind,anom_group in enumerate(anom_groups):
+                group = edge_anom_mat[anom_group].mean()
+                sc_losses.append(group)
+            offset += width
+            plt.bar(np.arange(len(sc_losses))+offset,np.array(sc_losses),width=width)
+        plt.xticks(np.arange(len(sc_losses)), legend)
+        plt.legend(['scale1 model','scale2 model', 'scale3 model'])
+
+        fpath = f'vis/loss/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.savefig(f'{fpath}/combined_loss.png')
 
     def plot_filter_weights(self,filter_weights):
         plt.figure()
@@ -282,3 +316,131 @@ class Visualizer:
             os.makedirs(fpath)
         plt.savefig(f'{fpath}/{self.epoch}_{self.exp_name}_epoch.png')
             
+    def visualize_labels(self,x_labelvis,y_labelvis,vis_name):
+        fpath = f'vis/label_vis/{self.dataset}/{self.model}/{self.label_type}/{self.exp_name}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        
+        legend = ['og']
+        plt.figure()
+        for label_ind,(x_label,y_label) in enumerate(zip(x_labelvis,y_labelvis)):
+            plt.plot(x_label,y_label)
+            legend.append(f'label {str(label_ind+1)}')
+        plt.legend(legend)
+        plt.savefig(f'{fpath}/labels_{self.label_type}_{self.epoch}_{vis_name}_{label_ind+1}.png')
+
+    def visualize_label_conns(self,label_idx,scs_tot):
+        sc1s,sc2s,sc3s=scs_tot
+        plt.figure()
+        if label_idx[0] != 'og':
+            label_idx.insert(0,'og')
+        plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc1s],color='r')
+        plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc2s],color='g')
+        plt.plot(label_idx,[0 if math.isnan(i) else i for i in sc3s],color='b')
+        fpath = f'vis/label_vis_conn/{self.dataset}/{self.model}/{self.label_type}/{self.exp_name}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        plt.savefig(f'{fpath}/label_vis_{self.label_type}_{self.exp_name}_{self.dataset}.png')
+
+    def anom_response(self,graph,labels,anoms,vis_name,img_num=None):
+    
+        signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
+
+        anom_tot = 0
+        for anom in list(anoms.values())[:-1]:
+            anom_tot += self.flatten_label(anom).shape[0]
+        anom_tot += list(anoms.values())[-1].shape[0]
+        es,us=[],[]
+        
+        for i,label in enumerate(labels):
+            lbl = label.adjacency_matrix().to_dense()
+            lbl=torch.maximum(lbl, lbl.T)
+            e,U = self.get_spectrum(lbl.to(torch.float64))
+            es.append(e) ; us.append(U)
+            del lbl, e, U ; torch.cuda.empty_cache() ; gc.collect()
+
+        for anom_ind,anom in enumerate(anoms.values()):
+            plt.figure()
+            legend = []
+            for i,label in enumerate(range(len(es))):
+                e,U = es[i],us[i]
+                e = e.to(graph.device) ; U = U.to(graph.device)
+
+                #anom = anom.flatten()
+                if len(anom) == 0:
+                    continue
+                if anom_ind != len(anoms)-1:
+                    anom_f = self.flatten_label(anom)
+                else:
+                    anom_f = anom
+                #anom_mask=np.setdiff1d(all_nodes,anom_f)
+                signal_ = copy.deepcopy(signal)+1
+                signal_[anom_f]=(np.random.randn(U.shape[0])*400)+1#*anom_tot/anom.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
+                
+                x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal_)
+                if i == 0:
+                    legend.append('original adj')
+                else:
+                    legend.append(f'{i} label')
+            plt.legend(legend)
+
+            fpath = f'vis/filter_anom_ev/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+            plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{vis_name}_filter{list(anoms.keys())[anom_ind]}.png')
+            del e,U ; torch.cuda.empty_cache() ; gc.collect()
+                
+            torch.cuda.empty_cache()
+
+    def filter_anoms(self,graph,label,anoms,vis_name,img_num=None):
+        #print('filter anoms',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+        signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
+
+        #signal = np.ones((labels[0].shape[0],self.feats.shape[-1]))
+
+        anom_tot = 0
+        for anom in list(anoms.values())[:-1]:
+            anom_tot += self.flatten_label(anom).shape[0]
+        anom_tot += list(anoms.values())[-1].shape[0]
+        all_nodes = torch.arange(self.feats.shape[0])
+
+        #for i,label in enumerate(labels):
+        lbl=torch.maximum(label, label.T)
+        e,U = self.get_spectrum(lbl.to(torch.float64))
+        e = e.to(graph.device) ; U = U.to(graph.device)
+        del lbl ; torch.cuda.empty_cache() ; gc.collect()
+
+        
+        plt.figure()
+        x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal+1)
+
+        legend_arr = ['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal','single anom signal']
+        legend =['no anom signal']
+        for anom_ind,anom in enumerate(anoms.values()):
+            #anom = anom.flatten()
+            if len(anom) == 0:
+                continue
+            if anom_ind != len(anoms)-1:
+                anom_f = self.flatten_label(anom)
+            else:
+                anom_f = anom
+            #anom_mask=np.setdiff1d(all_nodes,anom_f)
+            signal_ = copy.deepcopy(signal)+1
+            try:
+                signal_[anom_f]=(np.random.randn(U.shape[0])*400*anom_tot/anom_f.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
+            except Exception as e:
+                print(e)
+                import ipdb ; ipdb.set_trace()
+            
+            x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal_)
+            legend.append(legend_arr[anom_ind+1])
+            plt.legend(legend)
+    
+            fpath = f'vis/filter_anom_vis/{self.dataset}/{self.model}/{self.label_type}/{self.exp_name}'
+            if not os.path.exists(fpath):
+                os.makedirs(fpath)
+            plt.savefig(f'{fpath}/filter_vis_{self.label_type}_{self.epoch}_{vis_name}_filter{img_num}.png')
+
+        del e,U ; torch.cuda.empty_cache() ; gc.collect()
+            
+        torch.cuda.empty_cache()

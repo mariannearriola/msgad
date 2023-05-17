@@ -16,35 +16,48 @@ from model import GraphReconstruction
 from models.gcad import *
 import matplotlib.pyplot as plt
 import os
+import yaml
 
-def init_recons_agg(n,nfeats,args):
+def prep_args(args):
+    with open(f'configs/{args.config}.yaml') as file:
+        yaml_list = yaml.load(file,Loader=yaml.FullLoader)
+    # args.epoch will be populated if datasaving
+    if args.epoch is not None: yaml_list['EPOCH'] = args.epoch
+    yaml_list['DATASET']['DATASAVE'] = args.datasave ; yaml_list['DATASET']['DATALOAD'] = args.dataload
+    return yaml_list
+
+def init_recons_agg(n,nfeats,exp_params):
     edge_anom_mats,node_anom_mats,recons_a,res_a_all = [],[],[],[]
-    scales = 3 if 'multi-scale' in args.model else 1
+    scales = 3 if 'multi-scale' in exp_params['MODEL']['NAME'] else 1
     for i in range(scales):
         am = np.zeros((n,n))
         edge_anom_mats.append(am)
         node_anom_mats.append(np.full((n,nfeats),-1.))
         recons_a.append(am)
-        res_a_all.append(np.full((n,args.hidden_dim),-1.))
+        res_a_all.append(np.full((n,exp_params['MODEL']['HIDDEN_DIM']),-1.))
     return edge_anom_mats,node_anom_mats,recons_a,res_a_all
 
-def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,args):
+def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params):
+
     for sc in range(struct_loss.shape[0]):
-        if args.sample_test:
-            if args.batch_type == 'node' or args.model in ['gcad']:
+        if exp_params['DATASET']['SAMPLE_TEST']:
+            if exp_params['DATASET']['BATCH_TYPE'] == 'node' or exp_params['MODEL']['NAME'] in ['gcad']:
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
             else:
-                edge_anom_mats[sc][tuple(edge_ids_[sc])] = struct_loss[sc].detach().cpu().numpy()
-                edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = edge_anom_mats[sc][tuple(edge_ids_[sc])]
-                #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
-                recons_a[sc][tuple(edge_ids_[sc])] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                recons_a[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = recons_a[sc][tuple(edge_ids_[sc])]
+                #edge_anom_mats[sc][tuple(edge_ids_[sc])] = struct_loss[sc].detach().cpu().numpy()
+                #edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = edge_anom_mats[sc][tuple(edge_ids_[sc])]
+                edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()
+                edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
+                recons_a[sc][tuple(edge_ids_)] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
+                #recons_a[sc][tuple(edge_ids_[sc])] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                #recons_a[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = recons_a[sc][tuple(edge_ids_[sc])]
                 if res_a:
                     #res_a_all[sc] = res_a[sc].detach().cpu().numpy()
                     res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         else:
-            if args.batch_type == 'node':
+            if exp_params['DATASET']['BATCH_TYPE'] == 'node':
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
                 if struct_loss is not None:
                     edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
@@ -72,24 +85,24 @@ def seed_everything(seed=1234):
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
         
-def init_model(feat_size,args):
+def init_model(feat_size,exp_params):
     struct_model,feat_model,params=None,None,None
-    if args.model == 'gcad':
+    if exp_params['MODEL']['NAME'] == 'gcad':
         gcad_model = GCAD(2,100,1)
-    elif args.model == 'madan':
+    elif exp_params['MODEL']['NAME'] == 'madan':
         pass
     else:
-        struct_model = GraphReconstruction(feat_size, args)
+        struct_model = GraphReconstruction(feat_size, exp_params)
   
-    device = torch.device(args.device)
+    device = torch.device(exp_params['DEVICE'])
     if struct_model:
-        struct_model = struct_model.to(args.device) ; struct_model.requires_grad_(True) ; struct_model.train() ; params = struct_model.parameters()
+        struct_model = struct_model.to(exp_params['DEVICE']) ; struct_model.requires_grad_(True) ; struct_model.train() ; params = struct_model.parameters()
     if feat_model:
-        feat_model = feat_model.to(args.device) ; feat_model.train() ; params = feat_model.parameters()
+        feat_model = feat_model.to(exp_params['DEVICE']) ; feat_model.train() ; params = feat_model.parameters()
     
-    if args.model == 'gcad':
+    if exp_params['MODEL']['NAME'] == 'gcad':
         gcad = GCAD(2,100,4)
-    elif args.model == 'madan':
+    elif exp_params['MODEL']['NAME'] == 'madan':
         pass
 
     return struct_model,params
