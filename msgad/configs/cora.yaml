@@ -1,12 +1,11 @@
-
-EXP: 'cora-testyaml'
+EXP: 'cora-sample-nosample'
 VIS_FILTERS: False
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'cora_anom'
-    DATADIR: 'batch_data/'
-    LABEL_TYPE: 'bwgnn-filter-full'
+    DATADIR: 'batch_data'
+    LABEL_TYPE: 'amnet-filter-full'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
   
@@ -20,3 +19,4 @@ MODEL:
     DEBUG: True
     SAMPLE_TRAIN: True
     SAMPLE_TEST: True
+    ALPHA: 0.

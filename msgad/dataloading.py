@@ -50,7 +50,7 @@ class DataLoading:
 
     def fetch_dataloader(self, adj, edges):
         if self.dataload:
-            return np.arange(len(os.listdir(f'{self.datadir}/{self.dataset}/train')))
+            return np.arange(len(os.listdir(f'{self.datadir}/{self.exp_name}/{self.dataset}/train')))
         if self.batch_type == 'edge':
             if 'tfinance' in self.dataset:
                 num_neighbors = 10

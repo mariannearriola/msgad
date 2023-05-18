@@ -178,19 +178,23 @@ class LabelGenerator:
             basis = copy.deepcopy(g)
             basis.edata['w'] *= coeff[0]
             for i in range(1, len(prods)):
-                print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+                #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
                 basis_ = copy.deepcopy(prods[i])
                 basis_.edata['w'] *= coeff[i]
-                basis_ = dgl.remove_self_loop(basis_)
-                sorted_idx = torch.topk(torch.abs(basis_.edata['w']),int(self.num_a_edges/(ind+1))).indices
-                basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
+                #basis_ = dgl.remove_self_loop(basis_)
+                #sorted_idx = torch.topk(torch.abs(basis_.edata['w']),int(self.num_a_edges)).indices#/(ind+1))).indices
+                #basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
                 basis = dgl.adj_sum_graph([basis,basis_],'w')
                 del basis_
                 #torch.cuda.empty_cache()
+            weight_threshold = 0.
+            mask = torch.sigmoid(basis.edata['w']) > weight_threshold
+            basis = dgl.edge_subgraph(basis,mask.nonzero().T[0],relabel_nodes=False)
+
             return basis
-            #nz = torch.abs(basis.edata['w'])
-            #nz = basis.edata['w']
-            #sorted_idx = torch.topk(nz,int(self.num_a_edges*11)).indices
+            z = torch.abs(basis.edata['w'])
+            nz = basis.edata['w']
+            sorted_idx = torch.topk(nz,int(self.num_a_edges)).indices
             #sorted_idx = torch.topk(nz,int(num_a_edges*(label_ind+1))).indices
             return dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
 
@@ -277,7 +281,6 @@ class LabelGenerator:
             if 'weibo' in self.dataset:
                 print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
-            #import ipdb ; ipdb.set_trace()
             labels.append(label)
             #del label ; torch.cuda.empty_cache()
             # visualize labels TODO move 

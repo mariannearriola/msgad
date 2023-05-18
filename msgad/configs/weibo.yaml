@@ -1,17 +1,17 @@
 
 EXP: 'weibo'
-VIS_FILTERS: True
+VIS_FILTERS: False
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'weibo'
-    DATADIR: 'batch_data/'
-    LABEL_TYPE: 'single'
+    DATADIR: 'batch_data'
+    LABEL_TYPE: 'bwgnn-filter-multi'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
   
 MODEL:
-    NAME: 'anomalydae'
+    NAME: 'multi-scale-amnet'
     RECONS: 'struct'
     D: 5
     EPOCH: 1
@@ -20,3 +20,4 @@ MODEL:
     DEBUG: True
     SAMPLE_TRAIN: True
     SAMPLE_TEST: True
+    ALPHA: 0.

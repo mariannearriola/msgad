@@ -22,7 +22,7 @@ def prep_args(args):
     with open(f'configs/{args.config}.yaml') as file:
         yaml_list = yaml.load(file,Loader=yaml.FullLoader)
     # args.epoch will be populated if datasaving
-    if args.epoch is not None: yaml_list['EPOCH'] = args.epoch
+    if args.epoch is not None: yaml_list['MODEL']['EPOCH'] = args.epoch
     yaml_list['DATASET']['DATASAVE'] = args.datasave ; yaml_list['DATASET']['DATALOAD'] = args.dataload
     return yaml_list
 
@@ -40,7 +40,7 @@ def init_recons_agg(n,nfeats,exp_params):
 def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params):
 
     for sc in range(struct_loss.shape[0]):
-        if exp_params['DATASET']['SAMPLE_TEST']:
+        if exp_params['MODEL']['SAMPLE_TEST']:
             if exp_params['DATASET']['BATCH_TYPE'] == 'node' or exp_params['MODEL']['NAME'] in ['gcad']:
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()

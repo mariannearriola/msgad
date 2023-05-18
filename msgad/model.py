@@ -163,9 +163,10 @@ class GraphReconstruction(nn.Module):
                         import ipdb ; ipdb.set_trace()
                 if 'weibo' in self.dataset:
                     print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-                recons_a.append(recons[graph.dstnodes()][:,graph.dstnodes()])
-                res_a.append(res[graph.dstnodes()])
-                del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
+                    #import ipdb ; ipdb.set_trace()
+                recons_a.append(recons)#[graph.dstnodes()][:,graph.dstnodes()])
+                res_a.append(res)#[graph.dstnodes()])
+                #del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
         
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:

@@ -110,7 +110,7 @@ class anom_classifier():
     def hit_at_k(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
         anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
-        perc_single,perc1_auc,perc2_auc,perc3_auc=self.plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single'),self.plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1',args),self.plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2'),self.plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3')
+        perc_single,perc1_auc,perc2_auc,perc3_auc=self.plot_anom_sc(sorted_errors,anom_single,ms_anoms_num,'cyan','single'),self.plot_anom_sc(sorted_errors,anom_sc1,ms_anoms_num,'red','scale1'),self.plot_anom_sc(sorted_errors,anom_sc2,ms_anoms_num,'blue','scale2'),self.plot_anom_sc(sorted_errors,anom_sc3,ms_anoms_num,'purple','scale3')
         plt.plot(np.arange(ms_anoms_num),hit_rankings,'gray')
         rankings_auc = auc(torch.tensor(np.arange(hit_rankings.shape[0])),torch.tensor(hit_rankings)).item()
         plt.legend(['single','sc1','sc2','sc3','total'])
@@ -171,8 +171,8 @@ class anom_classifier():
             anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
-        if 'cora' in self.dataset or 'weibo' in self.dataset:
-            clf = anom_classifier(nu=0.5)
+        #if 'cora' in self.dataset or 'weibo' in self.dataset:
+        #    clf = anom_classifier(nu=0.5)
         
         for sc,sc_score in enumerate(scores):
             if self.recons == 'both':
@@ -194,8 +194,8 @@ class anom_classifier():
             # run graph transformer with node score attributes
             # anom_preds = anom_clf.forward(node_scores,graph.edges())
             node_scores[np.isnan(node_scores).nonzero()] = 0.
-            
-            node_scores *= attns[sc]
+            if attns is not None:
+                node_scores *= attns[sc]
             sorted_errors = np.argsort(-node_scores)
             rev_sorted_errors = np.argsort(node_scores)
             rankings = label[sorted_errors]
