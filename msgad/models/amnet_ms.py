@@ -259,16 +259,16 @@ class AMNet_ms(nn.Module):
             #h = filter_(x, edge_index)
             h = self.filters[i](x, edge_index)#*lams[i]
             h_list.append(h)
-            #del filter_
-            #del h
+            del filter_
+            del h
         
         #torch.cuda.empty_cache()
         h_filters = torch.stack(h_list, dim=1)
         h_filters_proj = self.W_f(h_filters)
         x_proj = self.W_x(x).unsqueeze(-1)
         score_logit = torch.bmm(h_filters_proj, x_proj)
-        soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
-
+        score = score_logit
+        #soft_score = F.softmax(score_logit, dim=1) ; score = soft_score
         #score = F.softmax(x_proj.sum(1))
         #score = self.attn_fn(score_logit) # shape: [ num_nodes, K, num_filters ] ; node-wise attention
         # attention for various freq. profiles
@@ -279,18 +279,17 @@ class AMNet_ms(nn.Module):
         #new_scores = lams.tile(score.shape)[:,0]*score[:,:,0]
         #self.att = F.softmax(score[:,:,0],1)
 
-
-        res = h_filters[:, 0, :] * score[:,0]# * self.att[:,0].unsqueeze(0).tile(128,1).T* self.filter_weights[0]#*lams[0]#*self.filter_weights[0]).tile(128,1).T#* new_scores[:,0].tile(128,1).T * self.filter_weights[0]# score[:,0] * lams[0].tile(128,1).T#score.tile(128,1).T#[:, 0]
+        '''
+        res = h_filters[:, 0, :]# * score[:,0]# * self.att[:,0].unsqueeze(0).tile(128,1).T* self.filter_weights[0]#*lams[0]#*self.filter_weights[0]).tile(128,1).T#* new_scores[:,0].tile(128,1).T * self.filter_weights[0]# score[:,0] * lams[0].tile(128,1).T#score.tile(128,1).T#[:, 0]
         for i in range(1, len(h_list)):
-            res += h_filters[:, i, :] * score[:,i]# * self.filter_weights[i]
+            res += h_filters[:, i, :]# * score[:,i]# * self.filter_weights[i]
             #res += (h_filters[:, i, :] * self.att[:,i].tile(128,1).T* self.filter_weights[i])#lams[i]#*self.filter_weights[i]).tile(128,1).T) #* new_scores[:,i].tile(128,1).T * self.filter_weights[i])#* score[:,i] * lams[i].tile(128,1).T)#score.tile(128,1).T)#[:, i])
         if True in torch.isnan(res):
             import ipdb ; ipdb.set_trace()
             print('nan')
-            
-        res_ = (res@res.T).to(torch.float64)
         '''
-        del h_filters
+                    
+        #del h_filters
         del x
         del score_logit
         del x_proj
@@ -298,10 +297,10 @@ class AMNet_ms(nn.Module):
         for i in range(len(h_list)):
             del h_list[0]
         torch.cuda.empty_cache()
-        '''
+    
         #if res_.gt(0.5).nonzero().shape[0]>0:
         #    import ipdb ; ipdb.set_trace()
-        return res_,res,torch.squeeze(score.to(torch.float64),-1).T
+        return h_filters,torch.squeeze(score.to(torch.float64),-1).T
         return res_,res,torch.squeeze(self.att.to(torch.float64),-1).T
         #return res_,res,torch.squeeze(F.softmax(new_scores*self.filter_weights),-1).T
         #return res_,res,torch.squeeze(self.att.to(torch.float64),-1).T

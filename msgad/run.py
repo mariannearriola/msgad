@@ -37,7 +37,6 @@ def graph_anomaly_detection(exp_params):
         adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feats.shape[0])
         adj.ndata['feature'] = feats
     edges=adj.edges('eid')
-
     dataloader = dataloading.fetch_dataloader(adj, edges)
     print('sample train',exp_params['MODEL']['SAMPLE_TRAIN'],'sample test',exp_params['MODEL']['SAMPLE_TEST'], 'epochs',exp_params['MODEL']['EPOCH'],'saving?', exp_params['DATASET']['DATASAVE'], 'loading?', exp_params['DATASET']['DATALOAD'])
     
@@ -68,6 +67,51 @@ def graph_anomaly_detection(exp_params):
 
     print(dataloader.__len__(),'batches')
     
+    if 'tfinance' in exp_params['EXP']:
+        if exp_params['VIS_CONCENTRATION'] == True:
+            nx_graph,node_ids = dgl_to_nx(adj)
+            #import ipdb ; ipdb.set_trace()
+            nx_adj = nx.from_numpy_matrix(nx.adjacency_matrix(nx_graph))
+            # as a result, there may be few to no single node anomalies
+            nodes = list(max(nx.connected_components(nx_graph), key=len))
+            anom_nodes = np.intersect1d(nodes,anoms,return_indices=True)[0]
+            
+            nx_graph = nx.subgraph(nx_graph, nodes)
+            nx_adj = nx.from_numpy_matrix(nx.adjacency_matrix(nx_graph))
+            nx_dict = {k:v for k,v in zip(nodes,np.arange(len(nodes)))}
+            nx_graph=nx.relabel_nodes(nx_graph,nx_dict)
+
+            #madan_node_dict = {k:v for k,v in zip(nodes,np.arange(len(list(nx_graph.nodes))))}
+            #feats_ = feats[nodes]
+            #feats_ = feats
+            madan = md.Madan(nx_adj, exp_params, attributes=feats.numpy())
+            madan.anomalous_nodes = np.vectorize(nx_dict.get)(anom_nodes)
+            madan.sc_label = batch_sc_label ; madan.organize_ms_labels(nodes,nx_dict)
+            madan.find_sc_label = {}
+            for k,v in madan.sc_label.items():
+                madan.find_sc_label[v] = k
+
+            #import ipdb ; ipdb.set_trace()
+            #madan.anomalous_nodes = np.vectorize(madan_node_dict.get)(anoms)
+            #madan.anomalous_nodes = np.intersect1d(anom_nodes,nx_graph.nodes,return_indices=True)[2]
+            print('scanning..')
+            if 'madan' in exp_params['MODEL']['NAME']:
+                #if 'cora' in exp_params['DATASET']['NAME']:
+                #    time_scales = np.array([2,15,100])
+                #else:
+                time_scales   =   np.linspace(100.,200.,5)
+                #madan.scanning_relevant_context(time_scales, n_jobs=1)
+                print('scanning context times')
+                madan.scanning_relevant_context_time(time_scales)
+            else:
+                time_scales   =   np.linspace(0.,len(lbl)+1,num=len(lbl))
+                mats = [np.array(nx.adjacency_matrix(dgl_to_nx(i.subgraph(nodes))[0]).todense()).astype(np.float64) for i in lbl]
+                madan.scanning_relevant_context(time_scales, mats=mats, n_jobs=1)
+                print('scanning context times')
+                madan.scanning_relevant_context_time(time_scales, mats= mats)
+            import ipdb ; ipdb.set_trace()
+
+
     for epoch in range(int(exp_params['MODEL']['EPOCH'])):
         epoch_l = 0
         if exp_params['MODEL']['NAME'] == 'gcad': break
@@ -103,7 +147,7 @@ def graph_anomaly_detection(exp_params):
             # save batch info/labels
             if exp_params['DATASET']['DATASAVE']:
                 lbl = model_lbl
-            if exp_params['DATASET']['DATASAVE'] and 'cora' not in exp_params['DATASET']['NAME']:
+            if exp_params['DATASET']['DATASAVE'] and 'weibo' not in exp_params['DATASET']['NAME']:
                 dataloading.save_batch(loaded_input,lbl,iter,'train')
                 continue
             
@@ -111,37 +155,47 @@ def graph_anomaly_detection(exp_params):
                 optimizer.zero_grad()
             #if struct_model:
             if True:
-                if exp_params['VIS_FILTERS'] == True or 'cora' in exp_params['DATASET']['NAME']:
+                if exp_params['VIS_CONCENTRATION'] == True and 'madan' in exp_params['MODEL']['NAME']:
                     nx_graph,node_ids = dgl_to_nx(g_batch)
+                    #import ipdb ; ipdb.set_trace()
                     nx_adj = nx.from_numpy_matrix(nx.adjacency_matrix(nx_graph))
                     nodes = list(max(nx.connected_components(nx_graph), key=len))
-                    anom_nodes = np.intersect1d(in_nodes[nodes].detach().cpu().numpy(),anoms,return_indices=True)[-2]
+                    anom_nodes = np.intersect1d(nodes,in_nodes[anoms].detach().cpu().numpy(),return_indices=True)[0]
                     
                     nx_graph = nx.subgraph(nx_graph, nodes)
                     nx_adj = nx.from_numpy_matrix(nx.adjacency_matrix(nx_graph))
-                    nx_graph=nx.relabel_nodes(nx_graph,{k:v for k,v in zip(nodes,np.arange(len(nodes)))})
+                    nx_dict = {k:v for k,v in zip(nodes,np.arange(len(nodes)))}
+                    nx_graph=nx.relabel_nodes(nx_graph,nx_dict)
 
                     #madan_node_dict = {k:v for k,v in zip(nodes,np.arange(len(list(nx_graph.nodes))))}
                     #feats_ = feats[nodes]
                     #feats_ = feats
+                    #import ipdb ; ipdb.set_trace()
+
                     madan = md.Madan(nx_adj, exp_params, attributes=g_batch.ndata['feature'].detach().cpu().numpy())
-                    madan.anomalous_nodes = anom_nodes
-                    madan.sc_label = batch_sc_label ; madan.organize_ms_labels(in_nodes[nodes].detach().cpu().numpy())
+                    madan.anomalous_nodes = np.vectorize(nx_dict.get)(anom_nodes)
+                    madan.sc_label = batch_sc_label ; madan.organize_ms_labels(nodes,nx_dict)
+                    
+                    # sc label and anoms nodes? interesect
+                    #import ipdb ; ipdb.set_trace()
                     #madan.anomalous_nodes = np.vectorize(madan_node_dict.get)(anoms)
                     #madan.anomalous_nodes = np.intersect1d(anom_nodes,nx_graph.nodes,return_indices=True)[2]
                     print('scanning..')
-                    if 'madan' in exp_params['MODEL']['NAME']:
-                        time_scales   =   np.linspace(0.,200.,200)
-                        madan.scanning_relevant_context(time_scales, n_jobs=1)
+                    if 'single' in exp_params['DATASET']['LABEL_TYPE']:
+                        #if 'cora' in exp_params['DATASET']['NAME']:
+                        #    time_scales = np.array([2,15,100])
+                        #else:
+                        time_scales   =   np.linspace(1.,200.,20)
+                        #madan.scanning_relevant_context(time_scales, n_jobs=1)
                         print('scanning context times')
                         madan.scanning_relevant_context_time(time_scales)
                     else:
-                        time_scales   =   np.linspace(0.,10.,num=11)
-                        mats = [np.array(nx.adjacency_matrix(dgl_to_nx(i)[0]).todense()).astype(np.float64) for i in lbl]
+                        time_scales   =   np.linspace(0.,len(lbl)+1,num=len(lbl))
+                        mats = [np.array(nx.adjacency_matrix(dgl_to_nx(i.subgraph(nodes))[0]).todense()).astype(np.float64) for i in lbl]
                         madan.scanning_relevant_context(time_scales, mats=mats, n_jobs=1)
                         print('scanning context times')
                         madan.scanning_relevant_context_time(time_scales, mats= mats)
-                    import ipdb ; ipdb.set_trace()
+                    #import ipdb ; ipdb.set_trace()
 
                 A_hat,X_hat,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='epoch1')
                 diffs = []
@@ -156,7 +210,7 @@ def graph_anomaly_detection(exp_params):
                 print("ranges",ranges)
                     
             recons_label = g_batch if lbl is None else collect_recons_label(lbl,exp_params['DEVICE'])
-
+            #import ipdb ; ipdb.set_trace()
             loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, pos_edges, neg_edges, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'])
             
             #(new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
@@ -360,8 +414,8 @@ def graph_anomaly_detection(exp_params):
                 a_clf.calc_prec(adj.adjacency_matrix().to_dense(), struct_loss.detach().cpu().numpy(), truth, sc_label, attns, cluster=False, input_scores=True)
             else:
                 a_clf.calc_prec(adj.adjacency_matrix().to_dense(), edge_anom_mats, truth, sc_label, attns, cluster=False)
-
-    if exp_params['VIS_FILTERS'] == True:
+    if visualizer is not None:
+        #if exp_params['VIS_FILTERS'] == True:
         #visualizer.plot_final_filters([np.array([i.weight.detach().cpu().numpy() for i in j.filters]) for j in struct_model.module_list],[F.softmax(i.lam).detach().cpu().numpy() for i in struct_model.module_list])
         #visualizer.plot_final_filters([np.array([i.weight.detach().cpu().numpy() for i in j.filters]) for j in struct_model.module_list])#,[(i.lam).detach().cpu().numpy() for i in struct_model.module_list])
         if 'multi-scale-amnet' == exp_params['MODEL']['NAME'] and struct_model.attn_weights != None:
@@ -371,8 +425,8 @@ def graph_anomaly_detection(exp_params):
         # plot losses
         #visualizer.plot_filter_weights([(i.filter_weights).detach().cpu().numpy() for i in struct_model.module_list])
         visualizer.plot_loss_curve((tot_loss.T).detach().cpu().numpy())
-        visualizer.plot_recons(recons_a,recons_label)
-        visualizer.plot_filters(res_a_all)
+        #visualizer.plot_recons(recons_a,recons_label)
+        #visualizer.plot_filters(res_a_all)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--datasave', default=False, type=bool, help='whether to save data')

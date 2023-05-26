@@ -1,23 +1,28 @@
 
-EXP: 'weibo'
+EXP: 'weibo-nosample-after'
 VIS_FILTERS: False
+VIS_CONCENTRATION: True
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'weibo'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'bwgnn-filter-multi'
+    LABEL_TYPE: 'bwgnn-filter-full'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
+    K: 5
   
 MODEL:
     NAME: 'multi-scale-amnet'
     RECONS: 'struct'
     D: 5
-    EPOCH: 1
+    EPOCH: 100
     HIDDEN_DIM: 128
     LR: 1e-3
     DEBUG: True
     SAMPLE_TRAIN: True
     SAMPLE_TEST: True
     ALPHA: 0.
+
+DETECTION:
+    TYPE: 'mean'

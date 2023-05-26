@@ -40,8 +40,9 @@ class DataLoading:
             anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
             if 'yelpchi' in self.dataset:
                 anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
-            if 'weibo' in self.dataset or 'elliptic' in self.dataset:
+            if 'weibo' in self.dataset:
                 anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
+            
             sc_label=[anom1,anom2,anom3,anom_single]
         else:
             sc_label = []
@@ -54,11 +55,8 @@ class DataLoading:
         if self.batch_type == 'edge':
             if 'tfinance' in self.dataset:
                 num_neighbors = 10
-                sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors])
-            elif self.dataset in ['yelpchi_rtr','yelpchi_aug','tfinance_aug']:
-                num_neighbors = 10
                 sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
-            elif self.dataset in ['elliptic_aug','yelpchi_rtr','yelpchi_aug','cora_ori','weibo','weibo_aug','cora_triple_sc_all','tfinance','tfinance_aug','elliptic','cora_no_anom','cora_anom']:
+            else:
                 sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
             neg_sampler = dgl.dataloading.negative_sampler.GlobalUniform(1)
@@ -78,6 +76,7 @@ class DataLoading:
             else:
                 num_workers = 4
             dataloader = dgl.dataloading.DataLoader(adj, adj.nodes(), sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=num_workers, device=self.device)
+
         return dataloader
 
     def get_batch_sc_label(self,in_nodes,sc_label,g_batch):
@@ -86,24 +85,18 @@ class DataLoading:
         batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
         in_nodes_ = in_nodes.detach().cpu().numpy()
         for sc_ind,sc_ in enumerate(sc_label):
-            batch_sc_label[batch_sc_label_keys[sc_ind]] = sc_
-            continue
-            #sc_labels = []
-            #sc_labels.append(np.vectorize(dict_.get)(sc_))
-            batch_sc_label[batch_sc_label_keys[sc_ind]]=np.vectorize(dict_.get)(sc_)
-            '''
-            if len(sc_) == 0: sc_labels.append([])
-            for sc__ in sc_:
-                #sc_labels.append(sc__)
-                if np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__).shape[0]>0:
-                    sc_labels.append(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__))
-                    #sc_labels.append(np.vectorize(node_dict.get)(np.intersect1d(in_nodes[g_batch.dstnodes().detach().cpu().numpy()],sc__)))
-            '''
-            #batch_sc_label[batch_sc_label_keys[sc_ind]] = np.array(sc_labels)
+            if batch_sc_label_keys[sc_ind] != 'single':
+                scs_comb = []
+                for sc__ in sc_:
+                    scs_comb.append(np.vectorize(dict_.get)(sc__))
+                batch_sc_label[batch_sc_label_keys[sc_ind]] = scs_comb
+            else:
+                batch_sc_label[batch_sc_label_keys[sc_ind]]=np.vectorize(dict_.get)(sc_)
 
         return batch_sc_label
 
     def get_edge_batch(self,loaded_input):
+        
         in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
         pos_edges = sub_graph_pos.edges()
         neg_edges = sub_graph_neg.edges()
@@ -118,7 +111,8 @@ class DataLoading:
 
         src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
         g_batch = dgl.graph((src,dst)).to(g_batch.device)
-        g_batch.ndata['feature']=feat['_N'].to(g_batch.device)[in_nodes[g_batch.dstnodes()]]
+        #import ipdb ; ipdb.set_trace()
+        g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
 
         return in_nodes, in_nodes[pos_edges], in_nodes[neg_edges], g_batch, last_batch_node
 

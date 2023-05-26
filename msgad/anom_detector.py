@@ -25,6 +25,7 @@ class anom_classifier():
         self.label_type = exp_params['DATASET']['LABEL_TYPE']
         self.model = exp_params['MODEL']['NAME']
         self.recons = exp_params['MODEL']['RECONS']
+        self.detection_type = exp_params['DETECTION']['TYPE']
         #self.auc = AUC()
 
     def classify(self, scores, labels, clust_nodes=None):
@@ -158,6 +159,12 @@ class anom_classifier():
         
         return true_anoms/int(all_anom.shape[0]*top_nodes_perc), cor_1, cor_2, cor_3, true_anoms
 
+    def get_node_score(self,score):
+        if 'mean' in self.detection_type:
+            return np.mean(score[score.nonzero()])
+        elif 'std' in self.detection_type:
+            return np.std(score[score.nonzero()])
+
     def calc_prec(self, graph, scores, label, sc_label, attns, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
@@ -186,9 +193,9 @@ class anom_classifier():
             else:
                 for ind,score in enumerate(sc_score):
                     if ind == 0:
-                        node_scores = np.array([np.mean(score[score.nonzero()])])
+                        node_scores = np.array([self.get_node_score(score)])
                     else:
-                        node_scores = np.append(node_scores,np.array([np.mean(score[score.nonzero()])]))
+                        node_scores = np.append(node_scores,np.array([self.get_node_score(score)]))
                     
                 #node_scores = np.mean(sc_score,axis=1)
             # run graph transformer with node score attributes

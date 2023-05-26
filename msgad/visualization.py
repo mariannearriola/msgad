@@ -58,16 +58,23 @@ class Visualizer:
         plt.savefig(f'{fpath}/loss.png')
 
     def get_spectrum(self,mat):
-        d_ = np.zeros(mat.shape[0])
-        degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
-        degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
+        
+        d_ = torch.zeros(mat.shape[0]).to(torch.float64)
+        degree_in = torch.sparse.sum(mat,0)
+        degree_out = torch.sparse.sum(mat,1)
+        #degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
+        #degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
         dw = (degree_in + degree_out) / 2
-        disconnected = (dw == 0)
-        np.power(dw, -0.5, where=~disconnected, out=d_)
-        D = scipy.sparse.diags(d_)
+        disconnected = (dw.values() == 0)
+        #torch.pow(dw, -0.5, where=~disconnected, out=d_)
+        d_[torch.where(~disconnected)[0]]=dw.values()[torch.where(~disconnected)[0]]**(-0.5)
+        #D = scipy.sparse.diags(d_)
+        D = scipy.sparse.diags(d_.numpy())
         #L = torch.eye(mat.shape[0])
-        mat_sparse = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
+        #mat_sparse = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
+        mat_sparse=scipy.sparse.coo_matrix((mat.values().numpy(), (mat.indices()[0].numpy(), mat.indices()[1].numpy())), shape=mat.size())
         L = scipy.sparse.identity(mat.shape[0]) - D * mat_sparse * D
+        
         #L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
         L[disconnected, disconnected] = 0
         L.eliminate_zeros()
@@ -78,7 +85,19 @@ class Visualizer:
         L = torch_geometric.utils.to_dense_adj(L[0],edge_attr=L[1]).to(mat.device)[0]
         #print('eig', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         '''
-        e,U = torch.linalg.eigh(torch.tensor(L.toarray()).to(mat.device))
+        k = 128
+        no_except = False
+        while not no_except:
+            try:
+                e,U = scipy.sparse.linalg.eigsh(L,k=1024,which='SM')
+            except Exception as e_:
+                print('incrementing k',e_) ; k += 1
+                continue
+            no_except = True
+            
+        #e,U = scipy.linalg.eigh(L.toarray(order='F'), overwrite_a=True)
+        #e,U = scipy.linalg.eigh(L.toarray(order='F'), overwrite_a=True)
+        #e,U = torch.linalg.eigh(torch.tensor(L.toarray()))#.to(mat.device))
 
         #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
         #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
@@ -116,7 +135,7 @@ class Visualizer:
         for r_ind,r_ in enumerate(recons_a):
             # plot label
             plt.figure()
-            e_adj,U_adj= self.get_spectrum(recons_labels[r_ind].to(self.device).adjacency_matrix().to_dense().to(torch.float64))
+            e_adj,U_adj= self.get_spectrum(recons_labels[r_ind].to(self.device).adjacency_matrix().to(torch.float64).coalesce())
 
             #e_adj,U_adj= self.get_spectrum(self.adj.adjacency_matrix().to_dense().to(self.device).to(torch.float64))
             e_adj,U_adj = e_adj.detach().cpu(),U_adj.detach().cpu()
@@ -135,7 +154,7 @@ class Visualizer:
             if len(torch.nonzero(r_symm))==0:
                 print(r_ind,'failed')
                 import ipdb ; ipdb.set_trace()
-            e,U= self.get_spectrum(r_symm.to(torch.float64))
+            e,U= self.get_spectrum(r_symm.to_sparse().to(torch.float64))
             
             e,U = e.detach().cpu(),U.detach().cpu()
             self.plot_spectrum(e,U,self.feats[self.adj.dstnodes()].to(U.dtype))
@@ -172,7 +191,7 @@ class Visualizer:
         adj_label=torch.maximum(adj_label, adj_label.T).to(self.adj.device) 
         adj_label += torch.eye(adj_label.shape[0]).to(self.adj.device)
         try:
-            e_adj,U_adj = self.get_spectrum(adj_label.to(torch.float64))
+            e_adj,U_adj = self.get_spectrum(adj_label.to_sparse().to(torch.float64))
             self.plot_spectrum(e_adj.detach().cpu(),U_adj.detach().cpu(),self.feats[self.adj.dstnodes()].to(U_adj.dtype))
         except Exception as e:
             print(e)
@@ -270,12 +289,13 @@ class Visualizer:
         #import ipdb ; ipdb.set_trace()      
         legend=['norm','anom sc1','anom sc2','anom sc3','single']
         
-        for filter in range(attn_weights.shape[2]):
+        for filter in range(attn_weights.shape[1]):
             new_legend = []
             plt.figure()
             for ind,attn_weight in enumerate(attn_weights_arr):
-                group = attn_weight[:,:,filter,:].mean(2)
-                ranges = group.max(axis=1)-group.min(axis=1)
+                group = attn_weight[:,filter,:,:].mean(2)
+                #ranges = group.max(axis=1)-group.min(axis=1)
+                ranges = group.sum(1)
                 plt.plot(ranges,color=colors[ind])
                 attn_lbl = legend[ind] + f'_model{np.argmax(group[-1])}'
                 new_legend.append(attn_lbl)
@@ -354,7 +374,7 @@ class Visualizer:
         
         for i,label in enumerate(labels):
             lbl = label.adjacency_matrix().to_dense()
-            lbl=torch.maximum(lbl, lbl.T)
+            lbl=torch.maximum(lbl, lbl.T).to_sparse()
             e,U = self.get_spectrum(lbl.to(torch.float64))
             es.append(e) ; us.append(U)
             del lbl, e, U ; torch.cuda.empty_cache() ; gc.collect()
@@ -393,9 +413,9 @@ class Visualizer:
             torch.cuda.empty_cache()
 
     def filter_anoms(self,graph,label,anoms,vis_name,img_num=None):
-        #print('filter anoms',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+        print('filter anoms',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
-
+        print('filterafter',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         #signal = np.ones((labels[0].shape[0],self.feats.shape[-1]))
 
         anom_tot = 0
@@ -403,17 +423,25 @@ class Visualizer:
             anom_tot += self.flatten_label(anom).shape[0]
         anom_tot += list(anoms.values())[-1].shape[0]
         all_nodes = torch.arange(self.feats.shape[0])
+        if 'elliptic' in self.dataset:
+            print('filter0',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
         #for i,label in enumerate(labels):
-        lbl=torch.maximum(label, label.T)
-        e,U = self.get_spectrum(lbl.to(torch.float64))
-        e = e.to(graph.device) ; U = U.to(graph.device)
-        del lbl ; torch.cuda.empty_cache() ; gc.collect()
+        lbl=torch.maximum(label, torch.transpose(label,0,1))
+        lbl = lbl.to_sparse().to(torch.float64)
 
+        e,U = self.get_spectrum(lbl)
+        #e = e.to(graph.device) ; U = U.to(graph.device)
+        del lbl ; torch.cuda.empty_cache() ; gc.collect()
+        
+        if 'elliptic' in self.dataset:
+            print('filter1',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         
         plt.figure()
-        x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal+1)
-
+        #x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal+1)
+        x,y=self.plot_spectrum(e,U,signal+1)
+        if 'elliptic' in self.dataset:
+            print('filter2',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         legend_arr = ['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal','single anom signal']
         legend =['no anom signal']
         for anom_ind,anom in enumerate(anoms.values()):

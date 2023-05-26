@@ -1,22 +1,28 @@
-EXP: 'cora-sample-nosample'
-VIS_FILTERS: False
+EXP: 'cora-before-constantabs-cutnorm'
+VIS_FILTERS: True
+VIS_CONCENTRATION: False
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'cora_anom'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'amnet-filter-full'
+    LABEL_TYPE: 'bwgnn-filter-full'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
+    K: 10
+    LABEL_IDX: [2,4,6]
   
 MODEL:
-    NAME: 'anomalydae'
+    NAME: 'multi-scale-amnet'
     RECONS: 'struct'
-    D: 5
-    EPOCH: 1
+    D: 10
+    EPOCH: 200
     HIDDEN_DIM: 128
     LR: 1e-3
     DEBUG: True
     SAMPLE_TRAIN: True
     SAMPLE_TEST: True
     ALPHA: 0.
+
+DETECTION:
+    TYPE: 'mean'

@@ -130,14 +130,16 @@ class GraphReconstruction(nn.Module):
             # collect multi-scale labels
             if 'weibo' in self.dataset:
                 print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
+            res_sc,score_sc = [],[]
             for ind,i in enumerate(self.module_list):
                 if self.model_str == 'multi-scale-amnet':
                     oom = False
                     #mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
                     #print(mem)
                     #try:
-                    attn_scores = None
-                    recons,res,attn_scores = i(feats,edges,dst_nodes)
+                    #attn_scores = None
+                    #recons,res,attn_scores = i(feats,edges,dst_nodes)
+                    res,attn_scores = i(feats,edges,dst_nodes)
                     #recons,res = i(feats,edges,dst_nodes)
                     #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
                     #except Exception as e:
@@ -146,12 +148,12 @@ class GraphReconstruction(nn.Module):
                     if oom:
                         print('oom')
                         import ipdb ; ipdb.set_trace()
-                    
+                    '''
                     if ind == 0:
                         self.attn_weights = torch.unsqueeze(attn_scores,0)
                     else:
                         self.attn_weights = torch.cat((self.attn_weights,torch.unsqueeze(attn_scores,0)))
-
+                    '''
                 elif self.model_str == 'multi-scale-bwgnn':
                     oom = False
                     try:
@@ -164,9 +166,25 @@ class GraphReconstruction(nn.Module):
                 if 'weibo' in self.dataset:
                     print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
                     #import ipdb ; ipdb.set_trace()
-                recons_a.append(recons)#[graph.dstnodes()][:,graph.dstnodes()])
-                res_a.append(res)#[graph.dstnodes()])
+
+                # SUM attention weights here
+                #recons = (res@res.T).to(torch.float64)
+                res_sc.append(res)
+                score_sc.append(attn_scores)
+                #recons_a.append(recons)#[graph.dstnodes()][:,graph.dstnodes()])
+                #res_a.append(res)#[graph.dstnodes()])
                 #del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
+
+            self.attn_weights = F.softmax(torch.stack(score_sc,dim=0),0)
+    
+            for j in range(3):
+                res = res_sc[j][:, 0, :] * self.attn_weights[j][0].tile(128,1).T
+                for j_ in range(1, res_sc[j].shape[1]):
+                    res += res_sc[j][:, j_, :] * self.attn_weights[j][j_].tile(128,1).T
+                res_a.append(res)
+                recons_a.append(torch.sigmoid(res_a[-1]@res_a[-1].T))
+
+      
         
         # feature and structure reconstruction models
         if self.model_str in ['anomalydae','dominant','ho-gat']:

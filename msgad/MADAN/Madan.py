@@ -9,7 +9,10 @@ from MADAN.LouvainClustering_fast import Clustering, norm_var_information
 from joblib import Parallel, delayed
 from matplotlib.colors import LogNorm
 import matplotlib.patches as mpatches
+import numpy.linalg as npla
+import copy
 import os
+from scipy.interpolate import make_interp_spline
 
 import pdb	
 
@@ -51,7 +54,7 @@ class Madan(object):
 		#self.G = graphs.Graph(self.W)
 		self.G = graphs.Graph(self.A)
 		
-		self.computing_fourier_basis()
+		#self.computing_fourier_basis()
 		#------------------------------------------------------------------------
 		# Random walk components
 		#------------------------------------------------------------------------
@@ -67,18 +70,32 @@ class Madan(object):
 		#------------------------------------------------------------------------
 
 	def flatten_label(self,anoms,nodes):
-		anom_flat = np.intersect1d(nodes,anoms[0],return_indices=True)[-2]#[0]
+		anom_flat = np.intersect1d(nodes,anoms[0],return_indices=True)[0]#[0]
 		for i in anoms[1:]:
-			anom_flat=np.concatenate((anom_flat,np.intersect1d(nodes,i,return_indices=True)[-2]))#[0]))
+			anom_flat=np.concatenate((anom_flat,np.intersect1d(nodes,i,return_indices=True)[0]))#[0]))
 		return anom_flat
 
-	def organize_ms_labels(self,nodes):
-		color_scheme = {'normal':'green','anom_sc1':'red','anom_sc2':'blue','anom_sc3':'purple','anom_single':'cyan'}
-		self.color_arr = np.full(self.N,color_scheme['normal'], dtype=object)
-		self.color_arr[np.intersect1d(np.array(list(self.network.nodes)),self.flatten_label(self.sc_label['anom_sc1'],nodes),return_indices=True)[0]] = color_scheme['anom_sc1']
-		self.color_arr[np.intersect1d(np.array(list(self.network.nodes)),self.flatten_label(self.sc_label['anom_sc2'],nodes),return_indices=True)[0]] = color_scheme['anom_sc2']
-		self.color_arr[np.intersect1d(np.array(list(self.network.nodes)),self.flatten_label(self.sc_label['anom_sc3'],nodes),return_indices=True)[0]] = color_scheme['anom_sc3']
-		self.color_arr[np.intersect1d(np.array(list(self.network.nodes)),self.sc_label['single'].T[0],return_indices=True)[0]] = color_scheme['anom_single']
+	def organize_ms_labels(self,nodes,nx_dict):
+		self.color_scheme = {'normal':'green','anom_sc1':'red','anom_sc2':'blue','anom_sc3':'purple','anom_single':'cyan'}
+		self.color_arr = np.full(self.N,self.color_scheme['normal'], dtype=object)
+		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc1'],nodes))] = self.color_scheme['anom_sc1']
+		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc2'],nodes))] = self.color_scheme['anom_sc2']
+		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc3'],nodes))] = self.color_scheme['anom_sc3']
+		self.color_arr[np.vectorize(nx_dict.get)(np.intersect1d(self.sc_label['single'],nodes))] = self.color_scheme['anom_single']
+		self.sc1_anom=np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc1'],nodes))
+		self.sc2_anom=np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc2'],nodes))
+		self.sc3_anom=np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc3'],nodes))
+		self.single_anom=np.vectorize(nx_dict.get)(np.intersect1d(self.sc_label['single'],nodes))
+		self.find_anoms = {}
+		
+		for i in self.sc1_anom:
+			self.find_anoms[i] = 'sc1'
+		for i in self.sc2_anom:
+			self.find_anoms[i] = 'sc2'
+		for i in self.sc3_anom:
+			self.find_anoms[i] = 'sc3'
+		for i in self.single_anom:
+			self.find_anoms[i] = 'single'
 
 
 	def computing_fourier_basis(self, chebychev=False):
@@ -99,18 +116,33 @@ class Madan(object):
 		
 
 	def compute_concentration(self, tau=0, mat=None):		
-		
+		#import ipdb ; ipdb.set_trace()
 		if mat is None:
 			self.evaluating_heat_kernel(tau)
 			self.concentration =  np.linalg.norm(self.Ht, axis=0, ord=2)
 		else:
-			self.concentration =  np.linalg.norm(mat, axis=0, ord=2)
+			self.concentration =  np.linalg.norm(mat, ord=2)
+			'''
+			self.concentration = np.zeros(self.N)
+			for node in self.network.nodes:
+				# Get the cluster assignment for the current node
+				node_cluster = self.partitions[node]
+				
+				# Get the neighbors of the current node
+				neighbors = self.network.neighbors(node)
+				
+				# Count the number of neighbors that belong to different clusters
+				cut_value = sum(1 for neighbor in neighbors if self.partitions[neighbor] != node_cluster)
+				
+				# Store the cut value for the current node
+				self.concentration[node] = cut_value
+			'''
 
 		self.concentration + 2*self.concentration.std()
 	   
 		thre = self.concentration.mean() + 2*self.concentration.std()
-		self.anomalies_labels = (self.concentration>=thre)*1
-		self.anomalous_nodes  = [i for i in range(0,len(self.anomalies_labels)) if self.anomalies_labels[i]==1]
+		#self.anomalies_labels = (self.concentration>=thre)*1
+		#self.anomalous_nodes  = [i for i in range(0,len(self.anomalies_labels)) if self.anomalies_labels[i]==1]
 
 	
 	def compute_context_for_anomalies(self, mat=None, random_seed=2):
@@ -153,37 +185,75 @@ class Madan(object):
 		#self.pl.visualize_graph_signal(self.G, self.interp_com, node_labels=node_labels)    
 		self.pl.visualize_graph_signal(self.G, np.array(list(self.interp_com.values())))    
 
+	def plot_curve(self,ys,sort_idx,color):
+		y = ys[sort_idx]#[np.where(self.color_arr[sort_idx]==color)]
+		y[np.where(self.color_arr[sort_idx]!=color)] = 0.
+		x = np.arange(y.shape[0])
+		try:
+			spline = make_interp_spline(x, y)
+			X_ = np.linspace(x.min(), x.max(), 500)
+			Y_ = spline(X_)
+			plt.plot(X_,Y_)
+		except Exception as e:
+			plt.scatter(x,y)
 
-	def plot_concentration(self,tau):
+	def plot_concentration(self,tau,plot_grad=False):
 		#------------------------------------------------------------------------
 		# Plotting concentration
 		#------------------------------------------------------------------------
+		print('PLOTTING',tau)
 		comm_concent = np.zeros((self.N,2))
 		comm_concent[:,0] = list(self.interp_com.values())
-		comm_concent[:,1] = self.concentration
+		if plot_grad:
+			comm_concent[:,1] = self.concentration_grad
+		else:
+			comm_concent[:,1] = self.concentration
 		
 		df_comm_concent   = pd.DataFrame(comm_concent, columns=['groups','concentration'])
-		
 		#ax = plt.subplot(1, 1, 1)
 		std_val = df_comm_concent['concentration'].std()
+		concentrations = df_comm_concent['concentration'].to_numpy()
+		sorted_idx = np.argsort(concentrations)
+		#sorted_idx = np.argsort(self.color_arr)
+		
 		plt.figure()
-		plt.bar(np.arange(self.N),df_comm_concent['concentration'].to_numpy()[np.argsort(self.color_arr)],color=self.color_arr[np.argsort(self.color_arr)],width=1.)
+		plt.bar(np.arange(self.N),concentrations[sorted_idx],color=self.color_arr[sorted_idx],width=1.)#,edgecolor=self.color_arr[sorted_idx])
+		
+		'''
+		#self.plot_curve(concentrations,sorted_idx,self.color_scheme['normal'])
+		if not np.isnan(concentrations).any():
+			self.plot_curve(concentrations,sorted_idx,self.color_scheme['anom_sc1'])
+			self.plot_curve(concentrations,sorted_idx,self.color_scheme['anom_sc2'])
+			self.plot_curve(concentrations,sorted_idx,self.color_scheme['anom_sc3'])
+			self.plot_curve(concentrations,sorted_idx,self.color_scheme['anom_single'])
+		'''
 		#df_comm_concent.plot(kind='bar', title='Node concentration', grid=False, y='concentration',rot=0, ax=ax, color=self.color_arr, cmap='viridis', fontsize=8, legend=False)
-		#import ipdb ; ipdb.set_trace()
-		#plt.hlines(df_comm_concent['concentration'].mean() + 2.0*std_val, xmin=-1, xmax=170, linestyles='dashed', alpha=1.0, color='blue')
 		plt.hlines(df_comm_concent['concentration'].mean() + 2.0*std_val, xmin=-1, xmax=self.N, linestyles='dashed', alpha=1.0, color='blue')
 		#ax.set_facecolor((1.0, 1.0, 1.0))
+
+		# TODO: check sc label
+		anoms_detected = self.anomalous_nodes[np.where(concentrations[self.anomalous_nodes] > concentrations.mean()+std_val)[0]]
+
+		#anom_types = [self.find_anoms[i] for i in anoms_detected]
+		#if len(anom_types) > 0:
+		#	print(np.unique(anom_types,return_counts=True)[-1])
+		#	print(np.unique(anom_types,return_counts=True)[-1]/np.array([self.sc1_anom.shape[0],self.sc2_anom.shape[0],self.sc3_anom.shape[0],self.single_anom.shape[0]]))
+		#sc_anoms_detected = 
+		plt.ylim(0,concentrations[sorted_idx].max())
 		norm_patch = mpatches.Patch(color='green', label='normal')
 		sc1_patch = mpatches.Patch(color='red', label='anom_sc1')
 		sc2_patch = mpatches.Patch(color='blue', label='anom_sc2')
 		sc3_patch = mpatches.Patch(color='purple', label='anom_sc3')
-		single_patch = mpatches.Patch(color='yellow', label='anom_single')
+		single_patch = mpatches.Patch(color='cyan', label='anom_single')
+
 		plt.legend(handles=[norm_patch,sc1_patch,sc2_patch,sc3_patch,single_patch])
 		fpath = f'vis/concentration/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
 		if not os.path.exists(fpath):
 			os.makedirs(fpath)
-		plt.savefig(f'{fpath}/concentration_{tau}.png')
-		#plt.show()
+		if plot_grad: fname = f'{fpath}/concentration_grad_{tau}.png'
+		else: fname = f'{fpath}/concentration_{tau}.png'
+		plt.title(f'{tau}')
+		plt.savefig(fname)
 	
 	# Only interpolate anomalies
 	def _interpolate_comm(self, G,part, true_nodes):
@@ -238,12 +308,9 @@ class Madan(object):
 		return clustering.partition.node_to_cluster_dict
 
 	def scanning_relevant_context(self, time, mats=None, n_jobs=1):
+		'''
 		#self.G.compute_laplacian('normalized')
 		#self.computing_fourier_basis()
-		import numpy.linalg as npla
-		#import ipdb ; ipdb.set_trace()
-		#e,U = npla.eigh(self.G.L.todense())
-		'''
 		eigenvalues = np.sort(self.G.e)[::-1]
 		# Compute the decay rate of the eigenvalues
 		decay_rate = np.abs(eigenvalues) / np.abs(eigenvalues[0])
@@ -263,6 +330,8 @@ class Madan(object):
 		self.num_com   = []
 		self.voi_list  = []
 		self.time      = time
+		if mats is None:
+			self.computing_fourier_basis()
 		
 		for inx, t in enumerate(time):
 			print(inx)
@@ -278,7 +347,34 @@ class Madan(object):
 				#import ipdb ; ipdb.set_trace()
 			else:
 				list_partitoins = Parallel(n_jobs=n_jobs)(delayed(processInput)(i,mats[inx]) for i in range(1))
-			#list_partitoins =  
+			#import ipdb ; ipdb.set_trace()
+			
+				self.concentration = np.zeros(self.N)
+				net = nx.from_numpy_matrix(mats[inx])
+				for node in net.nodes:
+					# Get the cluster assignment for the current node
+					node_cluster = list_partitoins[0][node]
+					
+					# Get the neighbors of the current node
+					neighbors = [n for n in net.neighbors(node)]
+					
+					# Count the number of neighbors that belong to different clusters
+					cut_value = sum(1 for neighbor in neighbors if list_partitoins[0][neighbor] != node_cluster)
+					#cut_value = nx.cut_size(net,[node],neighbors)
+					# Store the cut value for the current node
+					self.concentration[node] = cut_value
+				clust_labels   = np.array([list_partitoins[0][i] for i in range(len(list_partitoins[0]))]) # Re-order
+				val_clusters       = self._interpolate_comm(self.network, clust_labels, self.anomalous_nodes)
+				self.interp_com   = dict(zip(range(0, len(val_clusters)), val_clusters))
+				self.num_clusters = len(set(self.interp_com.values()))
+				self.plot_concentration(inx)
+		
+			#import ipdb ; ipdb.set_trace()
+			'''
+			self.X = np.zeros((self.N,  len(set(list_partitoins[0].values()))))
+			for node, cluster in list_partitoins[0].items():
+				self.X[node][cluster] = 1
+			'''
 			self.voi_list.append(self.compute_voi(list_partitoins))
 			if mats is None:
 				self.compute_context_for_anomalies()
@@ -326,15 +422,19 @@ class Madan(object):
 		#--------------------------------------------
 		# Compute temporal partitions
 		#--------------------------------------------
-		mat_parts  = []    
-		for inx, t in enumerate(range(len(time))):
-			
+		mat_parts  = []
+		for inx, t in enumerate(time):
 			if inx%50==0:
 				print("Processed %d/%d"%(inx,len(time)))
 			if mats is None:    
 				self.evaluating_heat_kernel(t)
+				self.compute_context_for_anomalies()
 				clustering =  Clustering(p1=self.pi, p2=self.pi, T=self.Ht)
+				if inx > 0: self.prev_concentration = copy.deepcopy(self.concentration)
 				self.compute_concentration(tau=t)
+				if inx > 0:
+					self.concentration_grad = self.concentration - self.prev_concentration
+					self.plot_concentration(t, plot_grad=True)
 				self.plot_concentration(t)
 			else:
 				clustering =  Clustering(p1=self.pi, p2=self.pi, T=mats[inx])
