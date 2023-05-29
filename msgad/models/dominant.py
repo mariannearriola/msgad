@@ -14,7 +14,7 @@ from sklearn.utils.validation import check_is_fitted
 
 from .base import BaseDetector
 from .basic_nn import GCN
-from .utils import validate_device
+from .model_utils import validate_device
 from .metrics import eval_roc_auc
 
 

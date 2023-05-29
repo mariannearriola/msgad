@@ -146,7 +146,6 @@ class LabelGenerator:
             basis = copy.deepcopy(g)
             basis.edata['w'] *= coeff[0]
             for i in range(1, len(prods)):
-                #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
                 basis_ = copy.deepcopy(prods[i])
                 basis_.edata['w'] *= coeff[i]
                 basis_ = dgl.remove_self_loop(basis_)
@@ -209,7 +208,6 @@ class LabelGenerator:
             #sorted_idx = torch.topk(g_prod.edata['w'],int(self.num_a_edges)).indices
             #g_prod = dgl.edge_subgraph(g_prod,sorted_idx,relabel_nodes=False)
             prods.append(g_prod)
-            #print('mem',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         del g_prod# ; torch.cuda.empty_cache()
         return prods
 
@@ -227,8 +225,6 @@ class LabelGenerator:
             label_idx = self.prep_filters(self.K)
         labels = []
         g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
-        if 'elliptic' in self.dataset:
-            print('before norm',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         # normalize graph if needed
         if 'norm' in self.label_type:
             if 'cora' in self.dataset: g = g.to(self.graph.device)
@@ -243,15 +239,11 @@ class LabelGenerator:
             g.edata['w'] = torch.ones(self.num_a_edges)
         if 'elliptic' in self.dataset: print('getting dense adj')
         adj_label = g.adjacency_matrix().to_dense()
-        if 'elliptic' in self.dataset:
-            print('about to visualize',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         if self.visualizer is not None:
             self.visualizer.filter_anoms(self.graph,adj_label,self.anoms,self.vis_name,'og')
             #self.visualizer.filter_anoms(self.graph,adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
         labels = [g]
-        if 'elliptic' in self.dataset:
-            print('after norm',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-        import ipdb ; ipdb.set_trace()
+
         # visualize input
         if self.visualizer is not None:
             adj_label=adj_label.to(self.graph.device).to(torch.float64)
@@ -267,22 +259,18 @@ class LabelGenerator:
         del adj_label
         #torch.cuda.empty_cache()
         #if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
-        if 'elliptic' in self.dataset:
-            print('before prods',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         # make labels
         prods = self.prep_input(g)
+        
+        if 'single' in self.label_type:
+            return [g,g,g]
         if 'prods' in self.label_type:
             #import ipdb ; ipdb.set_trace()
             return prods
-        if 'elliptic' in self.dataset:
-            print('after prods',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         if 'filter' in self.label_type:
-
             for label_id in label_idx:
                 label = self.make_label(g,label_id,prods)
                 print('label id',label_id,'label edges',label.number_of_edges())
-                if 'elliptic' in self.dataset:
-                    print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
                 labels.append(label)
                 #del label ; torch.cuda.empty_cache()
@@ -351,8 +339,6 @@ class LabelGenerator:
                 full_labels[i][torch.where(full_labels[i]<0)[0],torch.where(full_labels[i]<0)[1]]=0
                 labels.append(dgl.from_networkx(nx.from_numpy_matrix(full_labels[i].detach().cpu().numpy())).to(self.graph.device))
 
-        if 'elliptic' in self.dataset:
-            print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
         if self.visualizer is not None and 'test' not in self.vis_name:
             print('visualizing labels')

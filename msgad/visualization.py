@@ -288,7 +288,6 @@ class Visualizer:
         # plot range across scales for each filter
         #import ipdb ; ipdb.set_trace()      
         legend=['norm','anom sc1','anom sc2','anom sc3','single']
-        
         for filter in range(attn_weights.shape[1]):
             new_legend = []
             plt.figure()
@@ -304,7 +303,6 @@ class Visualizer:
             if not os.path.exists(fpath):
                 os.makedirs(fpath)
             plt.savefig(f'{fpath}/combined_filters_scale{filter}.png')
-        #import ipdb ; ipdb.set_trace()
         plt.figure()
         width,offset = 0.25,0
         for sc,edge_anom_mat in enumerate(edge_anom_mats):
@@ -314,7 +312,7 @@ class Visualizer:
                 sc_losses.append(group)
             offset += width
             plt.bar(np.arange(len(sc_losses))+offset,np.array(sc_losses),width=width)
-        plt.xticks(np.arange(len(sc_losses)), legend)
+        plt.xticks(np.arange(len(anom_groups)), legend)
         plt.legend(['scale1 model','scale2 model', 'scale3 model'])
 
         fpath = f'vis/loss/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
@@ -413,9 +411,7 @@ class Visualizer:
             torch.cuda.empty_cache()
 
     def filter_anoms(self,graph,label,anoms,vis_name,img_num=None):
-        print('filter anoms',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
         signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])
-        print('filterafter',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         #signal = np.ones((labels[0].shape[0],self.feats.shape[-1]))
 
         anom_tot = 0
@@ -423,9 +419,7 @@ class Visualizer:
             anom_tot += self.flatten_label(anom).shape[0]
         anom_tot += list(anoms.values())[-1].shape[0]
         all_nodes = torch.arange(self.feats.shape[0])
-        if 'elliptic' in self.dataset:
-            print('filter0',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-
+        
         #for i,label in enumerate(labels):
         lbl=torch.maximum(label, torch.transpose(label,0,1))
         lbl = lbl.to_sparse().to(torch.float64)
@@ -434,14 +428,9 @@ class Visualizer:
         #e = e.to(graph.device) ; U = U.to(graph.device)
         del lbl ; torch.cuda.empty_cache() ; gc.collect()
         
-        if 'elliptic' in self.dataset:
-            print('filter1',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-        
         plt.figure()
         #x,y=self.plot_spectrum(e.detach().cpu(),U.detach().cpu(),signal+1)
         x,y=self.plot_spectrum(e,U,signal+1)
-        if 'elliptic' in self.dataset:
-            print('filter2',torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
         legend_arr = ['no anom signal','sc1 anom signal','sc2 anom signal','sc3 anom signal','single anom signal']
         legend =['no anom signal']
         for anom_ind,anom in enumerate(anoms.values()):

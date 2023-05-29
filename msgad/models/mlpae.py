@@ -12,9 +12,9 @@ from sklearn.utils.validation import check_is_fitted
 
 from .base import BaseDetector
 from .basic_nn import MLP
-from .utils import validate_device
+from .model_utils import validate_device
 from .metrics import eval_roc_auc
-from .utils.dataset import PlainDataset
+from .model_utils.dataset import PlainDataset
 
 
 class MLPAE(BaseDetector):

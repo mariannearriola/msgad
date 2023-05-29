@@ -14,7 +14,7 @@ from torch_geometric.loader import NeighborLoader
 from sklearn.utils.validation import check_is_fitted
 
 from .base import BaseDetector
-from .utils import validate_device
+from .model_utils import validate_device
 from .metrics import eval_roc_auc
 
 

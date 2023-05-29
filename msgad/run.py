@@ -14,6 +14,7 @@ from model import *
 import torch.nn.functional as F
 import MADAN.Madan as md
 from visualization import *
+from torch.utils.tensorboard import SummaryWriter
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -44,8 +45,8 @@ def graph_anomaly_detection(exp_params):
     adj = adj.to(exp_params['DEVICE']) ; feats = feats#.to(exp_params['DEVICE'])
     struct_model,feat_model=None,None
     struct_model,params = init_model(feats.size(1),exp_params)
-
-    #print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
+    torch.cuda.synchronize()
+    tb = SummaryWriter()
 
     if not exp_params['MODEL']['NAME'] in ['gcad','madan']:
         optimizer = torch.optim.Adam(struct_model.parameters(), lr = float(exp_params['MODEL']['LR']))
@@ -58,9 +59,9 @@ def graph_anomaly_detection(exp_params):
     seconds = time.time()
     # epoch x 3 x num filters x nodes
     if 'multi-scale-amnet' in exp_params['MODEL']['NAME']:
-        train_attn_w = torch.zeros((int(exp_params['MODEL']['EPOCH']),3,struct_model.module_list[0].filter_num,adj.number_of_nodes())).to(torch.float64)#.to(exp_params['DEVICE'])
+        train_attn_w = torch.zeros((int(exp_params['MODEL']['EPOCH']),3,adj.number_of_nodes(),5)).to(torch.float64)#.to(exp_params['DEVICE'])
 
-    if exp_params['VIS_FILTERS'] == True:
+    if exp_params['VIS_FILTERS'] or exp_params['VIS_LOSS']:
         visualizer = Visualizer(adj,feats,exp_params,sc_label,norms,anoms)
     else:
         visualizer = None
@@ -137,7 +138,10 @@ def graph_anomaly_detection(exp_params):
                 vis = True if (epoch == 0 and iter == 0 and exp_params['VIS_FILTERS'] == True) else False
 
                 if not exp_params['DATASET']['DATALOAD']:
-                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',batch_sc_label,exp_params,visualizer)
+                    if exp_params['VIS_FILTERS']:
+                        lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',batch_sc_label,exp_params,visualizer)
+                    else:
+                        lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',batch_sc_label,exp_params,None)
                     model_lbl=lg.construct_labels()
                     pos_edges = torch.stack(list(model_lbl[0].edges())).T
                     pos_edges = pos_edges[np.random.randint(0,pos_edges.shape[0],pos_edges.shape[0])]
@@ -150,7 +154,8 @@ def graph_anomaly_detection(exp_params):
             if exp_params['DATASET']['DATASAVE'] and 'weibo' not in exp_params['DATASET']['NAME']:
                 dataloading.save_batch(loaded_input,lbl,iter,'train')
                 continue
-            
+            for k in range(len(loaded_input)): del loaded_input[0]
+            torch.cuda.empty_cache() ; gc.collect()
             if struct_model:
                 optimizer.zero_grad()
             #if struct_model:
@@ -196,8 +201,17 @@ def graph_anomaly_detection(exp_params):
                         print('scanning context times')
                         madan.scanning_relevant_context_time(time_scales, mats= mats)
                     #import ipdb ; ipdb.set_trace()
-
-                A_hat,X_hat,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='epoch1')
+                recons_label = g_batch if lbl is None else collect_recons_label(lbl,exp_params['DEVICE'])
+                edges, feats, graph_ = process_graph(g_batch)
+                A_hat,X_hat,res_a = struct_model(edges,feats,vis=vis,vis_name='epoch1')
+                edge_ids = torch.vstack((pos_edges,neg_edges)).to(pos_edges.device)
+                A_hat = A_hat[:,edge_ids[:,0],edge_ids[:,1]]
+                #A_hat,X_hat,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,recons_label,vis=vis,vis_name='epoch1')
+                tb.add_graph(struct_model,(edges,feats))
+                del res_a
+                torch.cuda.empty_cache()
+                gc.collect()
+                '''
                 diffs = []
                 ranges =[]
                 for ind_,A_ in enumerate(A_hat):
@@ -208,11 +222,11 @@ def graph_anomaly_detection(exp_params):
 
                 print("diffs",diffs)
                 print("ranges",ranges)
-                    
-            recons_label = g_batch if lbl is None else collect_recons_label(lbl,exp_params['DEVICE'])
-            #import ipdb ; ipdb.set_trace()
+                '''
+            check_gpu_usage('collecting recons label')
+            check_gpu_usage('recons label collected, starting loss')
             loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, pos_edges, neg_edges, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'])
-            
+            check_gpu_usage('loss collected')
             #(new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
             if exp_params['MODEL']['NAME'] == 'gradate':
                 loss = A_hat[0]
@@ -247,17 +261,14 @@ def graph_anomaly_detection(exp_params):
             if 'cora' not in exp_params['DATASET']['NAME']: print('iter',iter)
             
             del g_batch, batch_sc_label, struct_loss, pos_edges, neg_edges
-            for k in range(len(loaded_input)): del loaded_input[0]
-            for k in range(len(A_hat)): del A_hat[0]
-            if res_a:
-                for k in range(len(res_a)): del res_a[0]
+            del A_hat
             #for k in range(len(model_lbl)): del model_lbl[0]
-            if X_hat is not None:
-                for k in range(len(X_hat)): del X_hat[0]
+            del X_hat
             if feat_loss is not None: del feat_loss
             
             torch.cuda.empty_cache()
             gc.collect()
+            check_gpu_usage('about to backward')
             l.backward()
             optimizer.step()
         '''
@@ -272,8 +283,6 @@ def graph_anomaly_detection(exp_params):
         if exp_params['DATASET']['DATASAVE']: continue 
         
         print('epoch done',epoch,loss)
-        if 'weibo' in exp_params['DATASET']['NAME']:
-            print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
 
         del loss
         if epoch == 0:
@@ -286,11 +295,10 @@ def graph_anomaly_detection(exp_params):
         
         if struct_model:
             if struct_model.attn_weights != None:
-                # epoch x 3 x num filters x nodes
-                train_attn_w[epoch,:,:,in_nodes]=torch.unsqueeze(struct_model.attn_weights,0).detach().cpu()
+                # epoch x 3 x nodes x num filters
+                train_attn_w[epoch,:,in_nodes,:]=struct_model.attn_weights.detach().cpu()#torch.unsqueeze(struct_model.attn_weights,0).detach().cpu()
 
     #model = torch.load('best_model.pt')
-
     # accumulate node-wise anomaly scores via model evaluation
     if exp_params['MODEL']['NAME'] not in ['madan','gcad']:
         if struct_model: struct_model.eval()
@@ -300,7 +308,7 @@ def graph_anomaly_detection(exp_params):
     edges=adj.edges('eid')
     #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0,device=exp_params['DEVICE'])
     if exp_params['MODEL']['NAME'] != 'gcad' and exp_params['DATASET']['DATASAVE'] == False:
-        struct_scores, feat_scores = torch.zeros(len(A_hat),adj.number_of_nodes()).to(exp_params['DEVICE']),torch.zeros(exp_params['MODEL']['D'],adj.number_of_nodes()).to(exp_params['DEVICE'])
+        struct_scores, feat_scores = torch.zeros(3,adj.number_of_nodes()).to(exp_params['DEVICE']),torch.zeros(exp_params['MODEL']['D'],adj.number_of_nodes()).to(exp_params['DEVICE'])
     iter = 0
 
 
@@ -330,7 +338,10 @@ def graph_anomaly_detection(exp_params):
         if struct_model and exp_params['MODEL']['NAME'] != 'gcad':
             batch_sc_label = dataloading.get_batch_sc_label(in_nodes.detach().cpu(),sc_label,g_batch)
             if not exp_params['DATASET']['DATALOAD']:
-                lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'test',batch_sc_label,exp_params,visualizer)
+                if exp_params['VIS_FILTERS']:
+                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',batch_sc_label,exp_params,visualizer)
+                else:
+                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',batch_sc_label,exp_params,None)
                 model_lbl=lg.construct_labels()
                 pos_edges = (torch.stack(list(model_lbl[0].edges())).T)
                 pos_edges = pos_edges[np.random.randint(0,pos_edges.shape[0],pos_edges.shape[0])].to(exp_params['DEVICE'])
@@ -345,11 +356,13 @@ def graph_anomaly_detection(exp_params):
             dataloading.save_batch(loaded_input,lbl,iter,'test')
             continue
     
+        recons_label = g_batch if lbl is None else collect_recons_label(lbl,exp_params['DEVICE'])
+
         # run evaluation
         if struct_model and exp_params['MODEL']['NAME'] != 'gcad':
             #node_dict = {k.item():v.item() for k,v in zip(in_nodes[g_batch.dstnodes()],np.arange(len(list(g_batch.dstnodes()))))}
             #rev_node_dict = {v: k for k, v in node_dict.items()}
-            A_hat,X_hat,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,vis=vis,vis_name='test')
+            A_hat,X_hat,res_a = struct_model(g_batch,last_batch_node,pos_edges,neg_edges,batch_sc_label,recons_label,vis=vis,vis_name='test')
 
         if exp_params['MODEL']['NAME'] == 'gcad':
             adj_ = g_batch.adjacency_matrix() 
@@ -363,7 +376,6 @@ def graph_anomaly_detection(exp_params):
         # collect anomaly scores
         edge_ids_,node_ids_ = torch.cat((pos_edges,neg_edges)).T.detach().cpu().numpy(),in_nodes[:g_batch.num_dst_nodes()]
 
-        recons_label = g_batch if lbl is None else collect_recons_label(lbl,exp_params['DEVICE'])
 
         loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, pos_edges, neg_edges, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'])
         if exp_params['MODEL']['NAME'] == 'gradate':
@@ -427,6 +439,7 @@ def graph_anomaly_detection(exp_params):
         visualizer.plot_loss_curve((tot_loss.T).detach().cpu().numpy())
         #visualizer.plot_recons(recons_a,recons_label)
         #visualizer.plot_filters(res_a_all)
+    tb.close()
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--datasave', default=False, type=bool, help='whether to save data')

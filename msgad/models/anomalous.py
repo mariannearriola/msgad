@@ -14,7 +14,7 @@ from torch_geometric.utils import to_dense_adj
 from sklearn.utils.validation import check_is_fitted
 
 from .base import BaseDetector
-from .utils import validate_device
+from .model_utils import validate_device
 
 
 class ANOMALOUS(BaseDetector):

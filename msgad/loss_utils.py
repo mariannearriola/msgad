@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import dgl
+from utils import *
 
 def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
     """
@@ -51,25 +52,27 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
             # structure loss
             if recons_ind == 0 and recons in ['struct','both']:
                 if sample:
+                    '''
                     if type(graph) == list:
+                        import ipdb ; ipdb.set_trace()
                         edge_labels = graph[ind].adjacency_matrix().to_dense().to(graph[ind].device)
 
                     print('loss',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
                     '''
-                    sampled_pred=sc_pred[edge_ids[:,0],edge_ids[:,1]]
+                    #sampled_pred=sc_pred[edge_ids[:,0],edge_ids[:,1]]
+                    sampled_pred = sc_pred
                     lbl_edges = torch.zeros(sampled_pred.shape).to(sampled_pred.device)
-                    print('before edge idx',torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+                    check_gpu_usage('before edge idx')
                     edge_idx=graph[ind].has_edges_between(edge_ids[:,0],edge_ids[:,1])
                     edge_idx = edge_idx.nonzero()
                     edge_idx = edge_idx.T[0]
-                    # should use edge weight, or 1?
-                    #[edge_ids[edge_idx]]
                     lbl_edges[edge_idx] = graph[ind].edata['w'][graph[ind].edge_ids(edge_ids[edge_idx][:,0],edge_ids[edge_idx][:,1])]
+                    #import ipdb ; ipdb.set_trace()
                     total_struct_error, edge_struct_errors = get_sampled_losses(sampled_pred,edge_ids,lbl_edges)
-                    '''
-                    #del sampled_pred, lbl_edges, edge_idx
-                    total_struct_error, edge_struct_errors = get_sampled_losses(sc_pred,edge_ids,edge_labels)
+                    
+                    del sampled_pred, lbl_edges, edge_idx
                     torch.cuda.empty_cache()
+                    check_gpu_usage('after edge idx')
                     # sample some random edges, will be the same from dgl seed? check if sampling will be the same for each 
                     '''
                     num_samp=neg_edges.shape[0]
@@ -97,7 +100,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                         adj_label = graph[ind].to(pos_edges.device)
                     edge_struct_errors = torch.sqrt(torch.sum(torch.pow(sc_pred - adj_label, 2),1))
                     total_struct_error = torch.mean(edge_struct_errors)
-     
+            
 
             # feature loss
             if recons_ind == 1 and recons in ['feat','both']:
@@ -150,11 +153,11 @@ def get_sampled_losses(pred,edges,label):
         edge_errors : array-like, shape=[]
             edge-wise errors
     """
-    sampled_pred=pred[edges[:,0],edges[:,1]]
+    #pred=pred[edges[:,0],edges[:,1]]
     #edge_errors = pred[edges[:,0],edges[:,1]]
     # BUG: edges not right
-    label = label[edges[:,0],edges[:,1]]
-    edge_errors = torch.pow(torch.abs(sampled_pred-label),2)
+    #label = label[edges[:,0],edges[:,1]]
+    edge_errors = torch.pow(torch.abs(pred-label),2)
     #edge_errors = torch.abs(edge_errors-label)
     #total_error = torch.mean(torch.sqrt(edge_errors))
     total_error = torch.mean(edge_errors)

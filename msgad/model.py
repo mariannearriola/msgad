@@ -17,6 +17,7 @@ from models.amnet import *
 from models.amnet_ms import *
 from models.gcad import *
 from models.hogat import *
+import gc
 from models.gradate import *
 
 class GraphReconstruction(nn.Module):
@@ -41,7 +42,6 @@ class GraphReconstruction(nn.Module):
         self.hidden_dim = int(exp_params['MODEL']['HIDDEN_DIM'])
         self.vis_filters = exp_params['VIS_FILTERS']
 
-
         self.e_adj, self.U_adj = None,None
         dropout = 0
         self.embed_act = act
@@ -49,12 +49,16 @@ class GraphReconstruction(nn.Module):
         self.weight_decay = 0.01
         self.lengths = [5,10,20]
         if 'multi-scale' in self.model_str:
+            self.conv = AMNet_ms(in_size, self.hidden_dim, 1, 10, 5)
+            self.conv_weight = nn.Parameter(data=torch.normal(mean=torch.full((3,5,10+1),0.),std=4).to(torch.float64)).requires_grad_(True)
+            '''
             self.module_list = nn.ModuleList()
             for i in range(3):
                 if 'multi-scale-amnet' == self.model_str:
                     self.module_list.append(AMNet_ms(in_size, self.hidden_dim, 1, 10, 5))
                 elif 'multi-scale-bwgnn' == self.model_str:
                     self.module_list.append(MSGAD(in_size,self.hidden_dim,d=10))
+            '''
         elif self.model_str == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
             self.conv = GRADATE(in_size,self.hidden_dim,'prelu',1,1,'avg',5)
         elif self.model_str == 'bwgnn':
@@ -72,13 +76,26 @@ class GraphReconstruction(nn.Module):
         else:
             raise('model not found')
 
-    def process_graph(self, graph):
-        """Obtain graph information from input TODO: MOVE?"""
-        edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
-        feats = graph.ndata['feature']
-        #if 'edge' == self.batch_type:
-        #    feats = feats['_N']
-        return edges, feats, graph
+        self.act_fn = nn.ReLU()
+        self.linear_transform_in = nn.Sequential(nn.Linear(in_size, self.hidden_dim),
+                                            self.act_fn,
+                                            nn.Linear( self.hidden_dim, self.hidden_dim),
+                                            )
+
+        self.attn_fn = nn.Tanh()
+
+        self.module_list = nn.ModuleList()
+        for i in range(3):
+            self.module_list.append(AttentionProjection(in_size,self.hidden_dim))
+        
+    def batch_mm(self, matrix, vector_batch):
+        batch_size = vector_batch.shape[0]
+        # Stack the vector batch into columns. (b, n, 1) -> (n, b)
+        vectors = vector_batch.transpose(0, 1).reshape(-1, batch_size)
+
+        # A matrix-matrix product is a batched matrix-vector product of the columns.
+        # And then reverse the reshaping. (m, b) -> (b, m, 1)
+        return matrix.mm(vectors).transpose(1, 0).reshape(batch_size, -1, 1)
 
     def stationary_distribution(self, M, device):
         """
@@ -102,20 +119,21 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
 
-    def forward(self,graph,last_batch_node,pos_edges,neg_edges,anoms,vis=False,vis_name=""):
+    def forward(self,edges,feats,vis=False,vis_name=""):
         '''
         Input:
             graph: input dgl graph
         Output:
             recons: scale-wise adjacency reconstructions
         '''
+        from utils import check_gpu_usage
         res_a = None
-        edges, feats, graph_ = self.process_graph(graph)
+        #edges, feats, graph_ = self.process_graph(graph)
+        ''''
         if pos_edges is not None:
             all_edges = torch.vstack((pos_edges,neg_edges))
-            dst_nodes = torch.arange(last_batch_node+1)
-        else:
-            dst_nodes = graph.nodes()
+            #dst_nodes = torch.arange(last_batch_node+1)
+        '''
         recons_x,recons_a=None,None
         if self.model_str in ['dominant','amnet']: #x, e
             recons = [self.conv(feats, edges, dst_nodes)]
@@ -127,66 +145,41 @@ class GraphReconstruction(nn.Module):
             recons_a = [self.conv(graph_,feats,dst_nodes)]
         if 'multi-scale' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
-            # collect multi-scale labels
-            if 'weibo' in self.dataset:
-                print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-            res_sc,score_sc = [],[]
-            for ind,i in enumerate(self.module_list):
-                if self.model_str == 'multi-scale-amnet':
-                    oom = False
-                    #mem = torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved()
-                    #print(mem)
-                    #try:
-                    #attn_scores = None
-                    #recons,res,attn_scores = i(feats,edges,dst_nodes)
-                    res,attn_scores = i(feats,edges,dst_nodes)
-                    #recons,res = i(feats,edges,dst_nodes)
-                    #recons,res,attn_scores = i(feats,graph.adjacency_matrix().to_dense().to(graph.device),dst_nodes)
-                    #except Exception as e:
-                    #    print(e)
-                    #    oom = True
-                    if oom:
-                        print('oom')
-                        import ipdb ; ipdb.set_trace()
-                    '''
-                    if ind == 0:
-                        self.attn_weights = torch.unsqueeze(attn_scores,0)
-                    else:
-                        self.attn_weights = torch.cat((self.attn_weights,torch.unsqueeze(attn_scores,0)))
-                    '''
-                elif self.model_str == 'multi-scale-bwgnn':
-                    oom = False
-                    try:
-                        recons,res = i(graph,feats,dst_nodes)
-                    except RuntimeError:
-                        oom = True
-                    if oom:
-                        print('out of memory')
-                        import ipdb ; ipdb.set_trace()
+            feats = self.linear_transform_in(feats)
+            check_gpu_usage('about to run model')
+            #edge_ids = torch.vstack((pos_edges,neg_edges)).to(pos_edges.device)
+
+            for ind in range(len(self.module_list)):
+                # pass input through filters
+                h = self.conv(feats,edges,self.conv_weight[ind])#,dst_nodes)
+
+                # collect attention scores
+                attn_scores = self.module_list[ind](h,feats)
+
                 if 'weibo' in self.dataset:
-                    print(torch.cuda.memory_allocated()/torch.cuda.memory_reserved())
-                    #import ipdb ; ipdb.set_trace()
+                    check_gpu_usage('model finished')
 
-                # SUM attention weights here
-                #recons = (res@res.T).to(torch.float64)
-                res_sc.append(res)
-                score_sc.append(attn_scores)
-                #recons_a.append(recons)#[graph.dstnodes()][:,graph.dstnodes()])
-                #res_a.append(res)#[graph.dstnodes()])
-                #del recons, res, i ; torch.cuda.empty_cache() ; gc.collect()
+                # collect results
+                if ind == 0:
+                    score_sc = attn_scores.unsqueeze(0)
+                    hs = h.unsqueeze(0)
+                else:
+                    score_sc = torch.cat((score_sc,attn_scores.unsqueeze(0)),dim=0)
+                    hs = torch.cat((hs,h.unsqueeze(0)),dim=0)
+                del attn_scores,h ; torch.cuda.empty_cache() ; gc.collect()
 
-            self.attn_weights = F.softmax(torch.stack(score_sc,dim=0),0)
-    
-            for j in range(3):
-                res = res_sc[j][:, 0, :] * self.attn_weights[j][0].tile(128,1).T
-                for j_ in range(1, res_sc[j].shape[1]):
-                    res += res_sc[j][:, j_, :] * self.attn_weights[j][j_].tile(128,1).T
-                res_a.append(res)
-                recons_a.append(torch.sigmoid(res_a[-1]@res_a[-1].T))
+            self.attn_weights = F.softmax(score_sc,0).to(torch.float64) # scales x num filters x nodes
+            check_gpu_usage('about to collect results')
 
-      
+            h = (self.attn_weights.unsqueeze(-1)*hs).sum(2)
+            check_gpu_usage(f'attns collected')
+            
+            res_a_t = torch.bmm(h, torch.transpose(h,1,2))
+            recons_a = torch.sigmoid(res_a_t)
+            check_gpu_usage('results collected')
         
         # feature and structure reconstruction models
+        torch.cuda.empty_cache()
         if self.model_str in ['anomalydae','dominant','ho-gat']:
             recons_x,recons_a = recons[0]
             if self.model_str == 'ho-gat':
@@ -194,12 +187,14 @@ class GraphReconstruction(nn.Module):
                 return recons[0][recons_ind], recons[0][recons_ind+1], recons[0][recons_ind+2]
             recons_a = [recons_a]
             recons_x = [recons_x]
-        
+            
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         elif self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate']:
             recons_a = [recons[0]]
-
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
-        
+        if 'weibo' in self.dataset:
+            check_gpu_usage('returning results')
+
+        return recons_a,recons_a,h
         return recons_a,recons_x,res_a

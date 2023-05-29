@@ -19,7 +19,7 @@ from torch_cluster import random_walk
 
 from .base import BaseDetector
 from .basic_nn import Vanilla_GCN as GCN
-from .utils import validate_device
+from .model_utils import validate_device
 from .metrics import eval_roc_auc
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"

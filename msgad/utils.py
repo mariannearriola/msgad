@@ -17,6 +17,23 @@ from models.gcad import *
 import matplotlib.pyplot as plt
 import os
 import yaml
+import torch
+
+def process_graph(graph):
+    """Obtain graph information from input TODO: MOVE?"""
+    edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
+    feats = graph.ndata['feature']
+    #if 'edge' == self.batch_type:
+    #    feats = feats['_N']
+    return edges, feats, graph
+
+def check_gpu_usage(tag):
+    allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
+    cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
+
+    allocated_gb = allocated_bytes / 1e9
+    cached_gb = cached_bytes / 1e9
+    print(f"{tag} -> GPU Memory - Allocated: {allocated_gb:.2f} GB, Cached: {cached_gb:.2f} GB")
 
 def prep_args(args):
     with open(f'configs/{args.config}.yaml') as file:
@@ -49,11 +66,11 @@ def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,no
                 #edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = edge_anom_mats[sc][tuple(edge_ids_[sc])]
                 edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
-                recons_a[sc][tuple(edge_ids_)] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                recons_a[sc][tuple(edge_ids_)] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
                 recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
                 #recons_a[sc][tuple(edge_ids_[sc])] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
                 #recons_a[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = recons_a[sc][tuple(edge_ids_[sc])]
-                if res_a:
+                if res_a is not None:
                     #res_a_all[sc] = res_a[sc].detach().cpu().numpy()
                     res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         else:
