@@ -9,7 +9,6 @@ from utils import *
 import scipy.sparse as sp
 import os
 from numpy import polynomial
-
 import copy
 import networkx as nx
 import torch_geometric
@@ -163,6 +162,7 @@ class LabelGenerator:
                     elif 'nosample' in self.exp_name:
                         pass
                     basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
+            
                 #sorted_idx = torch.topk(torch.abs(basis_.edata['w']),int(self.num_a_edges)).indices#/(ind+1))).indices
                 #basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
                 basis = dgl.adj_sum_graph([basis,basis_],'w')
@@ -188,9 +188,10 @@ class LabelGenerator:
                     weight_threshold = 0.
                     mask = torch.sigmoid(basis.edata['w']) > weight_threshold
                     return dgl.edge_subgraph(basis,mask.nonzero().T[0],relabel_nodes=False)
+                if 'ones' in self.exp_name:
+                    basis.edata['w'] /= basis.edata['w']
                 basis = dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
             return basis
-
         elif 'random-walk' in self.label_type:
             raise(NotImplementedError)
         else:
@@ -217,8 +218,10 @@ class LabelGenerator:
         :param M: Transition matrix.
         :return: Stationary distribution.
         """
+        from utils import get_spectrum, dgl_to_mat
         # initialize visualizer
         # prep
+        print('constructing label')
         self.num_a_edges = self.graph.num_edges()
         #self.K = 5 if 'filter' in self.label_type else 3
         if 'filter' in self.label_type:
@@ -226,6 +229,9 @@ class LabelGenerator:
         labels = []
         g = self.graph.to('cpu')#self.graph.device)#.to('cpu')
         # normalize graph if needed
+        labels = [g]
+        adj_label = dgl_to_mat(g).to_dense()
+
         if 'norm' in self.label_type:
             if 'cora' in self.dataset: g = g.to(self.graph.device)
             g = dgl.to_homogeneous(g).subgraph(g.srcnodes())
@@ -235,19 +241,24 @@ class LabelGenerator:
             else:
                 g.edata['w'] = self.norm(g,torch.ones(num_a_edges).to('cpu')).to('cpu')#(self.graph.device)).to(self.graph.device)
             g = dgl.remove_self_loop(g)
+        elif 'lapl' in self.label_type:
+            print('getting lapl')
+            mat_sparse=dgl_to_mat(g).to(g.device).to(torch.float64)
+            L = get_spectrum(mat_sparse,f'og_model',get_lapl=True)
+            #L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
+
+            g = dgl.from_scipy(L,eweight_name='w')
+            print('got lapl')
         else:
             g.edata['w'] = torch.ones(self.num_a_edges)
         if 'elliptic' in self.dataset: print('getting dense adj')
-        adj_label = g.adjacency_matrix().to_dense()
         if self.visualizer is not None:
             self.visualizer.filter_anoms(self.graph,adj_label,self.anoms,self.vis_name,'og')
             #self.visualizer.filter_anoms(self.graph,adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
-        labels = [g]
-
         # visualize input
         if self.visualizer is not None:
             adj_label=adj_label.to(self.graph.device).to(torch.float64)
-            e_adj,U_adj = self.visualizer.get_spectrum(torch.maximum(adj_label,adj_label.T))
+            e_adj,U_adj = self.visualizer.get_spectrum(torch.maximum(adj_label,adj_label.T).to_sparse())
             xs_labelvis,ys_labelvis = self.visualizer.plot_spectrum(e_adj,U_adj,self.feats.to(U_adj.dtype),color='cyan')
             
             self.label_analysis = LabelAnalysis(self.anoms,self.dataset)
@@ -260,8 +271,9 @@ class LabelGenerator:
         #torch.cuda.empty_cache()
         #if adj_label is not None: del adj_label ; torch.cuda.empty_cache()
         # make labels
+        print('prepping input')
         prods = self.prep_input(g)
-        
+        print('prepped')
         if 'single' in self.label_type:
             return [g,g,g]
         if 'prods' in self.label_type:
@@ -269,30 +281,36 @@ class LabelGenerator:
             return prods
         if 'filter' in self.label_type:
             for label_id in label_idx:
+                print('making label')
                 label = self.make_label(g,label_id,prods)
                 print('label id',label_id,'label edges',label.number_of_edges())
-
+            
                 labels.append(label)
                 #del label ; torch.cuda.empty_cache()
                 # visualize labels TODO move 
                 if self.vis == True and 'test' not in self.vis_name:
-                    basis_ = label.adjacency_matrix().to_dense()
-                    if 'tfinance' in self.dataset:
-                        import ipdb ; ipdb.set_trace()
-                    self.visualizer.filter_anoms(self.graph,basis_,self.anoms,self.vis_name,label_id)
+                    import ipdb ; ipdb.set_trace()
+                    nx_graph = label.to_networkx(node_attrs=None, edge_attrs=['w'])
+                    adj_matrix = nx.adjacency_matrix(nx_graph, weight='w')
+                    basis_ = torch.tensor(adj_matrix.toarray())
 
-                    e,U = self.visualizer.get_spectrum(torch.maximum(basis_, basis_.T).to(torch.float64).to(self.graph.device))
-                    e = e.to(self.graph.device) ; U = U.to(self.graph.device)
-                    x_labelvis,y_labelvis=self.visualizer.plot_spectrum(e,U,self.feats.to(U.dtype))
+                    #basis_ = label.adjacency_matrix().to_dense()
+                    self.visualizer.filter_anoms(self.graph,basis_,self.anoms,self.vis_name,label_id)
+                    basis_ = torch.maximum(basis_, basis_.T)
+                    try:
+                        e,U = self.visualizer.get_spectrum(basis_.to(torch.float64).to(self.graph.device).to_sparse())
+                        e = e.to(self.graph.device) ; U = U.to(self.graph.device)
+                        x_labelvis,y_labelvis=self.visualizer.plot_spectrum(e,U,self.feats.to(U.dtype))
+                    except Exception as e_:
+                        print(e_)
+                        import ipdb ; ipdb.set_trace()
                     del e,U ; torch.cuda.empty_cache() ; gc.collect()
 
                     xs_labelvis = np.hstack((xs_labelvis,x_labelvis)) ; ys_labelvis = np.hstack((ys_labelvis,y_labelvis))
-
                     sc1_cons,sc2_cons,sc3_cons=self.label_analysis.cluster(basis_,label_id+1)
                     sc1s.append(np.array(sc1_cons)[...,np.newaxis][np.array(sc1_cons)[...,np.newaxis].nonzero()].mean())
                     sc2s.append(np.array(sc2_cons)[...,np.newaxis][np.array(sc2_cons)[...,np.newaxis].nonzero()].mean())
                     sc3s.append(np.array(sc3_cons)[...,np.newaxis][np.array(sc3_cons)[...,np.newaxis].nonzero()].mean())
-            #import ipdb ; ipdb.set_trace()
             del g ; torch.cuda.empty_cache()
 
         if 'random-walk' in self.label_type:

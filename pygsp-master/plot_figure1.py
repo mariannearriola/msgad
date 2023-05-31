@@ -24,19 +24,17 @@ def gen_anomaly(s, anoms, anom_type, prob=0.01, d=1):
     s2 = s
     weight_ind = 0
     idx_track = 0
-    if anom_type in ['single','random']:
-        import ipdb ; ipdb.set_trace()
     for idx,i in enumerate(selected):
         if type(i) == np.int64 and G.anom_w is None:
-            s2[i] *= 500
+            s2[i] *= 400
         elif type(i) == np.int64 and G.anom_w is not None:
-            s2[i] *= 500*((d/G.anom_w[weight_ind]))
+            s2[i] *= 400*((d/G.anom_w[weight_ind]))
         elif G.anom_w is None:
-            s2[i] *= 500
+            s2[i] *= 400
             anomaly_id.append(i)
             continue
         else:
-            s2[i] *= 500*((d/G.anom_w[weight_ind]))
+            s2[i] *= 400*((d/G.anom_w[weight_ind]))
             weight_ind += 1
             idx_track = 1
             anomaly_id.append(i)
@@ -89,12 +87,13 @@ def plot_diag(G, sa, anoms, e, U, bar_scale=4):
         #y = np.mean(M)#,axis=1)
         y = M
         print(y)
-        x = np.arange(y.shape[0])
+        x = np.arange(y.shape[0])[15:25]
+        y = y[15:25]
         spline = make_interp_spline(x, y)
-        X_ = np.linspace(x.min(), x.max(), 500)
+        X_ = np.linspace(x.min(), x.max(), 400)
         Y_ = spline(X_)
         plt.xlabel('lambda')
-        plt.xticks(np.arange(y.shape[0])/bar_scale)
+        #plt.xticks(np.arange(y.shape[0])/bar_scale)
         plt.plot(X_,Y_)
     return f
 
@@ -195,7 +194,8 @@ if __name__ == '__main__':
             G = graphs.MultiScale(args.dataset,anom,args.drop_anom)
             if args.load_lapl:
                 #U,e,L_inv = sio.loadmat(f'{args.dataset}_lapl.mat')['U'],sio.loadmat(f'{args.dataset}_lapl.mat')['e'][0],sio.loadmat(f'{args.dataset}_lapl.mat')['L_inv']
-                U,e = sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}_exp{args.exp}.mat')['U'].todense(),np.array(sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}.mat')['e'].todense())[0]
+                U,e = sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}.mat')['U'].todense(),np.array(sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}.mat')['e'].todense())[0]
+                #U,e = sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}_exp{args.exp}.mat')['U'].todense(),np.array(sio.loadmat(f'{args.dataset}_lapl_drop{args.drop_anom}_ind{anom_ind}_exp{args.exp}.mat')['e'].todense())[0]
             else:
                 G.compute_laplacian('normalized')
                 G.compute_fourier_basis()

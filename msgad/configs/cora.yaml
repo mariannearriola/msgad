@@ -1,22 +1,23 @@
-EXP: 'cora-before-constantabs-cutnorm'
+EXP: 'cora-debug-testsampling-after-constant-ones'
 VIS_FILTERS: True
 VIS_CONCENTRATION: False
+VIS_LOSS: True
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'cora_anom'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'bwgnn-filter-full'
+    LABEL_TYPE: 'amnet-filter-full-lapl'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
-    K: 10
-    LABEL_IDX: [2,4,6]
+    K: 5
+    LABEL_IDX: None
   
 MODEL:
     NAME: 'multi-scale-amnet'
     RECONS: 'struct'
-    D: 10
-    EPOCH: 200
+    D: 5
+    EPOCH: 2
     HIDDEN_DIM: 128
     LR: 1e-3
     DEBUG: True

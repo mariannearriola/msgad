@@ -1,22 +1,23 @@
-
-EXP: 'weibo-nosample-after'
-VIS_FILTERS: False
-VIS_CONCENTRATION: True
+EXP: 'weibo-debug-testsampling-after-constant-ones-newplot'
+VIS_FILTERS: True
+VIS_CONCENTRATION: False
+VIS_LOSS: True
 DEVICE: 'cuda'
 
 DATASET:
-    NAME: 'weibo'
+    NAME: 'weibo_'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'bwgnn-filter-full'
+    LABEL_TYPE: 'amnet-filter-full-lapl'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
     K: 5
+    LABEL_IDX: None
   
 MODEL:
     NAME: 'multi-scale-amnet'
     RECONS: 'struct'
     D: 5
-    EPOCH: 100
+    EPOCH: 2
     HIDDEN_DIM: 128
     LR: 1e-3
     DEBUG: True

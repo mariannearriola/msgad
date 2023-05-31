@@ -18,16 +18,147 @@ import matplotlib.pyplot as plt
 import os
 import yaml
 import torch
+import torch_geometric
+import gc
+
+def dgl_to_mat(g,device='cpu'):
+    src, dst = g.edges()
+    block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1))
+    #block_adj = torch.zeros(g.num_src_nodes(), g.num_dst_nodes(), device=device).to(torch.float64)
+    #block_adj[src, dst] = g.edata['w'].squeeze(-1)
+    return block_adj
+
+def get_spectrum(mat,tag='',load=False,get_lapl=False):
+    device = mat.device
+    if tag != '':
+        #fpath = self.generate_fpath('spectrum')
+        try:
+            e,U = np.array(sio.loadmat(f'{tag}.mat')['e'].todense())[0],sio.loadmat(f'{tag}.mat')['U'].todense()
+            e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
+            return e,U
+        except Exception as e:
+            print(e)
+            pass
+    '''
+    mat = mat.detach().cpu().to(torch.float64)
+    d_ = np.zeros(mat.shape[0]).astype(np.float64)
+    degree_in = torch.sparse.sum(mat,0)
+    degree_out = torch.sparse.sum(mat,1)
+    #degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
+    #degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
+    dw = ((degree_in + degree_out) / 2).coalesce()
+    disconnected = (dw.values() == 0)
+    #torch.pow(dw, -0.5, where=~disconnected, out=d_)
+    #d_[torch.where(~disconnected)[0]]=torch.pow(dw.values()[torch.where(~disconnected)[0]],torch.full(dw.shape,-0.5))
+    #import ipdb ; ipdb.set_trace()
+    #d_old = np.power(dw.to_dense().numpy(), -0.5, where=~disconnected)
+    d_[torch.where(~disconnected)[0]] = np.power(dw.to_dense().numpy()[torch.where(~disconnected)[0]], -0.5)
+    D = scipy.sparse.diags(d_)
+    #L = torch.eye(mat.shape[0])
+    #mat_sparse = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
+    mat_sparse=scipy.sparse.coo_matrix((mat.values(), (mat.indices()[0], mat.indices()[1])), shape=mat.size())
+    L = scipy.sparse.identity(mat.shape[0]) - D * mat_sparse * D
+    
+    #L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
+    L[disconnected, disconnected] = 0
+    L.eliminate_zeros()
+    #L = L.to(mat.device)
+    '''
+    '''
+    edges = torch.vstack((mat.edges()[0],mat.edges()[1])).T
+    L = torch_geometric.utils.get_laplacian(edges.T,torch.sigmoid(mat.edata['w']),normalization='sym',num_nodes=self.feats.shape[0])
+    L = torch_geometric.utils.to_dense_adj(L[0],edge_attr=L[1]).to(mat.device)[0]
+    #print('eig', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+    '''
+    '''
+    k = 128
+    no_except = False
+    while not no_except:
+        try:
+            e,U = scipy.sparse.linalg.eigsh(L,k=1024,which='SM')
+        except Exception as e_:
+            print('incrementing k',e_) ; k += 1
+            continue
+        no_except = True
+    '''
+    
+    try:
+        mat = mat.to_dense()
+    except Exception as e:
+        import ipdb ; ipdb.set_trace()
+    d_n = np.zeros(mat.shape[0])
+    degree_in_n = np.ravel(mat.sum(0).detach().cpu().numpy())
+    degree_out_n = np.ravel(mat.sum(1).detach().cpu().numpy())
+    dw_n = (degree_in_n + degree_out_n) / 2
+    disconnected_n = (dw_n == 0)
+    np.power(dw_n, -0.5, where=~disconnected_n, out=d_n)
+    D_n = scipy.sparse.diags(d_n)
+    #L = torch.eye(mat.shape[0])
+    mat_sparse_n = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
+    L_n = scipy.sparse.identity(mat.shape[0]) - D_n * mat_sparse_n * D_n
+    #L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
+    L_n[disconnected_n, disconnected_n] = 0
+    L_n.eliminate_zeros()
+    if get_lapl is True:
+        return L_n
+
+    try:
+        #e,U = scipy.linalg.eigh(L.toarray(order='F').astype(np.float64), overwrite_a=True)
+        e,U = scipy.linalg.eigh(L_n.toarray(order='F').astype(np.float64), overwrite_a=True)
+    except Exception as e:
+        print(e)
+        import ipdb ; ipdb.set_trace()
+    '''
+    degrees = torch.sum(mat, axis=1) ; diagonal = torch.diag(degrees, 0) ; L = diagonal - mat
+    e,U = scipy.linalg.eigh(np.array(L.detach().cpu(),order='F').astype(np.float64), overwrite_a=True)
+    '''
+    #e,U = scipy.linalg.eigh(L.toarray(order='F'), overwrite_a=True)
+    #e,U = torch.linalg.eigh(torch.tensor(L.toarray()))#.to(mat.device))
+
+    #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
+    #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
+    assert -1e-5 < e[0] < 1e-5 ; e[0] = 0.
+
+    if tag != '':
+        sio.savemat(f'{tag}.mat',{'U':scipy.sparse.csr_matrix(U),'e':scipy.sparse.csr_matrix(e)})
+
+
+    e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
+    #del L, edges ; torch.cuda.empty_cache() ; gc.collect()
+    #import ipdb ; ipdb.set_trace()
+    del L_n ; torch.cuda.empty_cache() ; gc.collect()
+    #del L, D ; torch.cuda.empty_cache() ; gc.collect()
+    #print('eig done', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
+    '''
+    try:
+        assert -1e-5 < e[0] < 1e-5
+    except:
+        print('Eigenvalues out of bounds')
+        import ipdb ; ipdb.set_trace()
+        e[0] = 0
+    '''
+    return e, U#.to(torch.float32)
 
 def process_graph(graph):
     """Obtain graph information from input TODO: MOVE?"""
-    edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
     feats = graph.ndata['feature']
+    mat_sparse=graph.adjacency_matrix()
+    L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
+
+    row,col = L[0]
+    values = L[1]
+    shape = mat_sparse.size()
+    adj_matrix = sp.coo_matrix((values, (row, col)), shape=shape)
+    graph = dgl.from_scipy(adj_matrix,eweight_name='w').to(graph.device)
+
+    edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
+    graph.ndata['feature'] = feats
     #if 'edge' == self.batch_type:
     #    feats = feats['_N']
     return edges, feats, graph
 
 def check_gpu_usage(tag):
+    return
     allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
     cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
 
@@ -168,9 +299,10 @@ def getHierClusterScores(graph,scores):
                 
 def sparse_matrix_to_tensor(coo,feat):
     coo = scipy.sparse.coo_matrix(coo)
-    v = torch.FloatTensor(coo.data)
+    v = torch.DoubleTensor(coo.data)
     i = torch.LongTensor(np.vstack((coo.row, coo.col)))
     dgl_graph = dgl.graph((i[0],i[1]),num_nodes=feat.shape[0])
+
     dgl_graph.edata['w'] = v
     dgl_graph.ndata['feature'] = feat
     return dgl_graph

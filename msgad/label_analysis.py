@@ -13,6 +13,7 @@ class LabelAnalysis:
         self.dataset = dataset
 
     def flatten_label(self,anoms):
+        if len(anoms) == 0: return anoms
         anom_flat = anoms[0]
         if len(anoms) > 1:
             for i in anoms[1:]:
@@ -149,12 +150,12 @@ class LabelAnalysis:
         self.label_id = label_id
         print('clustering for',self.label_id-1)
         hierarchy = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
-        dend = hierarchy.fit_predict(self.adj)
+        #dend = hierarchy.fit_predict(self.adj)
         #dends
-        
+
         # 3-scale representations -> for each one, how much are preserved in communities?
         sc1_label,sc2_label,sc3_label = self.run_dend(self.graph)
-        #import ipdb ; ipdb.set_trace()
+
         if label_id == 0:
             self.sc1_og,self.sc1_og_f = sc1_label,self.flatten_label(sc1_label)
             self.sc2_og,self.sc2_og_f = sc2_label,self.flatten_label(sc2_label)

@@ -428,6 +428,7 @@ class Madan(object):
 				print("Processed %d/%d"%(inx,len(time)))
 			if mats is None:    
 				self.evaluating_heat_kernel(t)
+				import ipdb ; ipdb.set_trace()
 				self.compute_context_for_anomalies()
 				clustering =  Clustering(p1=self.pi, p2=self.pi, T=self.Ht)
 				if inx > 0: self.prev_concentration = copy.deepcopy(self.concentration)

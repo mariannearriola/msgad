@@ -386,7 +386,7 @@ def hier_cluster(graph,adj):
         max_score,max_ind = 0,0
         tot_entropies_sum = []
         tot_entropies = []
-        
+        import ipdb ; ipdb.set_trace()
         for res,i in enumerate(plt_anoms_all):
             tot_clust=sum([len(i_) for i_ in i])
             tot_clust_sum = sum([sum(i_) for i_ in i])

@@ -4,6 +4,7 @@ import os
 import dgl
 import numpy as np
 import torch
+import networkx as nx
 
 class DataLoading:
     def __init__(self,exp_params):
@@ -46,7 +47,6 @@ class DataLoading:
             sc_label=[anom1,anom2,anom3,anom_single]
         else:
             sc_label = []
-        
         return adj, edge_idx, feats, truth, sc_label
 
     def fetch_dataloader(self, adj, edges):
@@ -106,11 +106,12 @@ class DataLoading:
         #last_batch_node = torch.max(pos_edges)
         g_batch = block
         if self.datasave: g_batch = block[0]
+        w = g_batch.edata['w']
         feat = g_batch.ndata['feature']
         g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes[g_batch.dstnodes()])][:,torch.argsort(in_nodes[g_batch.dstnodes()])]
-
         src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
         g_batch = dgl.graph((src,dst)).to(g_batch.device)
+        g_batch.edata['w'] = w
         #import ipdb ; ipdb.set_trace()
         g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
 

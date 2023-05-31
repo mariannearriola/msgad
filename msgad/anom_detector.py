@@ -264,11 +264,13 @@ class anom_classifier():
             all_anom_cat = [np.concatenate((anom_sc1,(np.concatenate((anom_sc2,anom_sc3)))))]
 
             # get clusters
+            '''
             if cluster:
                 clust_dicts, score_dicts = getHierClusterScores(graph,node_scores)
                 cluster_accs = [clf.classify(np.array(list(x.values())),all_anom,np.array(list(y.values()))) for x,y in zip(score_dicts,clust_dicts)]
                 print('cluster scores')
                 print(cluster_accs)
+            '''
             '''
             # classify anoms with linear classifier
             anom_accs = clf.classify(node_scores, all_anom)

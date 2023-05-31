@@ -10,7 +10,7 @@ from pygsp import utils
 from . import Graph  # prevent circular import in Python < 3.5
 
 
-class Minnesota(Graph):
+class MultiScale(Graph):
     r"""Minnesota road network (from MatlabBGL).
 
     Parameters
@@ -146,7 +146,7 @@ class Minnesota(Graph):
         plotting = {"limits": np.array([-98, -89, 43, 50]),
                     "vertex_size": 40}
         
-        super(Minnesota, self).__init__(A, X, None, None, None,#coords=data['xy'],
+        super(MultiScale, self).__init__(A, X, None, None, None,#coords=data['xy'],
                                         plotting=plotting, **kwargs)
         return
         

@@ -170,13 +170,18 @@ class GraphReconstruction(nn.Module):
 
             self.attn_weights = F.softmax(score_sc,0).to(torch.float64) # scales x num filters x nodes
             check_gpu_usage('about to collect results')
-
-            h = (self.attn_weights.unsqueeze(-1)*hs).sum(2)
+            h_ =  (self.attn_weights.unsqueeze(-1)*hs).sum(2)
             check_gpu_usage(f'attns collected')
-            
-            res_a_t = torch.bmm(h, torch.transpose(h,1,2))
-            recons_a = torch.sigmoid(res_a_t)
+            #import ipdb ; ipdb.set_trace()
+            #h_t = torch.transpose(h_,1,2)
+            check_gpu_usage('after transpose')
+            #res_a_t = torch.bmm(h_, h_t)
+            recons_a=torch.sigmoid(torch.bmm(h_, torch.transpose(h_,1,2)))
+            check_gpu_usage('after bmm')
+            #recons_a = torch.sigmoid(h_t)
+            del hs ; torch.cuda.empty_cache() ; gc.collect() 
             check_gpu_usage('results collected')
+            
         
         # feature and structure reconstruction models
         torch.cuda.empty_cache()
@@ -196,5 +201,5 @@ class GraphReconstruction(nn.Module):
         if 'weibo' in self.dataset:
             check_gpu_usage('returning results')
 
-        return recons_a,recons_a,h
+        return recons_a,recons_a,h_
         return recons_a,recons_x,res_a
