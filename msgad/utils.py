@@ -20,15 +20,20 @@ import yaml
 import torch
 import torch_geometric
 import gc
+from pygsp_ import *
 
 def dgl_to_mat(g,device='cpu'):
+    #dgl.to_networkx(g)
+
     src, dst = g.edges()
-    block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1))
+    block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1),size=(g.number_of_nodes(),g.number_of_nodes()))
+    
     #block_adj = torch.zeros(g.num_src_nodes(), g.num_dst_nodes(), device=device).to(torch.float64)
     #block_adj[src, dst] = g.edata['w'].squeeze(-1)
     return block_adj
 
 def get_spectrum(mat,tag='',load=False,get_lapl=False):
+    """Eigendecompose matrix for visualization"""
     device = mat.device
     if tag != '':
         #fpath = self.generate_fpath('spectrum')
@@ -39,105 +44,19 @@ def get_spectrum(mat,tag='',load=False,get_lapl=False):
         except Exception as e:
             print(e)
             pass
-    '''
-    mat = mat.detach().cpu().to(torch.float64)
-    d_ = np.zeros(mat.shape[0]).astype(np.float64)
-    degree_in = torch.sparse.sum(mat,0)
-    degree_out = torch.sparse.sum(mat,1)
-    #degree_in = np.ravel(mat.sum(axis=0).detach().cpu().numpy())
-    #degree_out = np.ravel(mat.sum(axis=1).detach().cpu().numpy())
-    dw = ((degree_in + degree_out) / 2).coalesce()
-    disconnected = (dw.values() == 0)
-    #torch.pow(dw, -0.5, where=~disconnected, out=d_)
-    #d_[torch.where(~disconnected)[0]]=torch.pow(dw.values()[torch.where(~disconnected)[0]],torch.full(dw.shape,-0.5))
-    #import ipdb ; ipdb.set_trace()
-    #d_old = np.power(dw.to_dense().numpy(), -0.5, where=~disconnected)
-    d_[torch.where(~disconnected)[0]] = np.power(dw.to_dense().numpy()[torch.where(~disconnected)[0]], -0.5)
-    D = scipy.sparse.diags(d_)
-    #L = torch.eye(mat.shape[0])
-    #mat_sparse = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
-    mat_sparse=scipy.sparse.coo_matrix((mat.values(), (mat.indices()[0], mat.indices()[1])), shape=mat.size())
-    L = scipy.sparse.identity(mat.shape[0]) - D * mat_sparse * D
-    
-    #L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
-    L[disconnected, disconnected] = 0
-    L.eliminate_zeros()
-    #L = L.to(mat.device)
-    '''
-    '''
-    edges = torch.vstack((mat.edges()[0],mat.edges()[1])).T
-    L = torch_geometric.utils.get_laplacian(edges.T,torch.sigmoid(mat.edata['w']),normalization='sym',num_nodes=self.feats.shape[0])
-    L = torch_geometric.utils.to_dense_adj(L[0],edge_attr=L[1]).to(mat.device)[0]
-    #print('eig', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-    '''
-    '''
-    k = 128
-    no_except = False
-    while not no_except:
-        try:
-            e,U = scipy.sparse.linalg.eigsh(L,k=1024,which='SM')
-        except Exception as e_:
-            print('incrementing k',e_) ; k += 1
-            continue
-        no_except = True
-    '''
-    
     try:
-        mat = mat.to_dense()
-    except Exception as e:
-        import ipdb ; ipdb.set_trace()
-    d_n = np.zeros(mat.shape[0])
-    degree_in_n = np.ravel(mat.sum(0).detach().cpu().numpy())
-    degree_out_n = np.ravel(mat.sum(1).detach().cpu().numpy())
-    dw_n = (degree_in_n + degree_out_n) / 2
-    disconnected_n = (dw_n == 0)
-    np.power(dw_n, -0.5, where=~disconnected_n, out=d_n)
-    D_n = scipy.sparse.diags(d_n)
-    #L = torch.eye(mat.shape[0])
-    mat_sparse_n = scipy.sparse.csr_matrix(mat.detach().cpu().numpy())
-    L_n = scipy.sparse.identity(mat.shape[0]) - D_n * mat_sparse_n * D_n
-    #L -= torch.tensor(D * mat.detach().cpu().numpy() * D)
-    L_n[disconnected_n, disconnected_n] = 0
-    L_n.eliminate_zeros()
-    if get_lapl is True:
-        return L_n
-
-    try:
-        #e,U = scipy.linalg.eigh(L.toarray(order='F').astype(np.float64), overwrite_a=True)
-        e,U = scipy.linalg.eigh(L_n.toarray(order='F').astype(np.float64), overwrite_a=True)
+        mat = mat.to_dense().detach().cpu().numpy()
     except Exception as e:
         print(e)
-        import ipdb ; ipdb.set_trace()
-    '''
-    degrees = torch.sum(mat, axis=1) ; diagonal = torch.diag(degrees, 0) ; L = diagonal - mat
-    e,U = scipy.linalg.eigh(np.array(L.detach().cpu(),order='F').astype(np.float64), overwrite_a=True)
-    '''
-    #e,U = scipy.linalg.eigh(L.toarray(order='F'), overwrite_a=True)
-    #e,U = torch.linalg.eigh(torch.tensor(L.toarray()))#.to(mat.device))
-
-    #e,U=scipy.linalg.eigh(np.asfortranarray(L.toarray()), overwrite_a=True)
-    #e,U=scipy.linalg.eigh(np.asfortranarray(L.detach().cpu().numpy()), overwrite_a=True)
-    assert -1e-5 < e[0] < 1e-5 ; e[0] = 0.
-
-    if tag != '':
-        sio.savemat(f'{tag}.mat',{'U':scipy.sparse.csr_matrix(U),'e':scipy.sparse.csr_matrix(e)})
-
-
-    e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
-    #del L, edges ; torch.cuda.empty_cache() ; gc.collect()
-    #import ipdb ; ipdb.set_trace()
-    del L_n ; torch.cuda.empty_cache() ; gc.collect()
-    #del L, D ; torch.cuda.empty_cache() ; gc.collect()
-    #print('eig done', torch.cuda.memory_allocated()/torch.cuda.max_memory_reserved())
-    '''
-    try:
-        assert -1e-5 < e[0] < 1e-5
-    except:
-        print('Eigenvalues out of bounds')
-        import ipdb ; ipdb.set_trace()
-        e[0] = 0
-    '''
-    return e, U#.to(torch.float32)
+        pass
+    py_g = graphs.MultiScale(mat)
+    py_g.compute_laplacian('normalized')
+    if get_lapl is True:
+        return py_g.L
+    py_g.compute_fourier_basis()
+    sio.savemat(f'{tag}.mat',{'e':scipy.sparse.csr_matrix(py_g.e),'U':scipy.sparse.csr_matrix(py_g.U)})
+    U,e = torch.tensor(py_g.U).to(device),torch.tensor(py_g.e).to(device)
+    return e, U
 
 def process_graph(graph):
     """Obtain graph information from input TODO: MOVE?"""
@@ -186,6 +105,7 @@ def init_recons_agg(n,nfeats,exp_params):
     return edge_anom_mats,node_anom_mats,recons_a,res_a_all
 
 def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params):
+    """Collect batched reconstruction into graph-level reconstrution for anomaly detection"""
 
     for sc in range(struct_loss.shape[0]):
         if exp_params['MODEL']['SAMPLE_TEST']:
@@ -193,16 +113,12 @@ def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,no
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
             else:
-                #edge_anom_mats[sc][tuple(edge_ids_[sc])] = struct_loss[sc].detach().cpu().numpy()
-                #edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = edge_anom_mats[sc][tuple(edge_ids_[sc])]
-                edge_anom_mats[sc][tuple(edge_ids_)] = struct_loss[sc].detach().cpu().numpy()
-                edge_anom_mats[sc][tuple(np.flip(edge_ids_,axis=0))] = edge_anom_mats[sc][tuple(edge_ids_)]
-                recons_a[sc][tuple(edge_ids_)] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                recons_a[sc][tuple(np.flip(edge_ids_,axis=0))] = recons_a[sc][tuple(edge_ids_)]
-                #recons_a[sc][tuple(edge_ids_[sc])] = A_hat[sc][edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                #recons_a[sc][tuple(np.flip(edge_ids_[sc],axis=0))] = recons_a[sc][tuple(edge_ids_[sc])]
+                edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])] = struct_loss[sc].detach().cpu().numpy()
+                edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])]
+
+                recons_a[sc][tuple(edge_ids_[sc,:,:])] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
+                recons_a[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = recons_a[sc][tuple(edge_ids_[sc,:,:])]
                 if res_a is not None:
-                    #res_a_all[sc] = res_a[sc].detach().cpu().numpy()
                     res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         else:
             if exp_params['DATASET']['BATCH_TYPE'] == 'node':
@@ -212,7 +128,8 @@ def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,no
     return node_anom_mats,edge_anom_mats,recons_a,res_a_all
 
 def dgl_to_nx(g):
-    nx_graph = nx.to_undirected(dgl.to_networkx(g.cpu()))
+    """Convert DGL graph to NetworkX graph"""
+    nx_graph = nx.to_undirected(dgl.to_networkx(g.cpu(),edge_attrs='w'))
     node_ids = np.arange(g.num_nodes())
     return nx_graph,node_ids
 

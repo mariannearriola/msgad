@@ -1,4 +1,4 @@
-EXP: 'cora-debug-testsampling-after-constant-ones'
+EXP: 'cora-debug-testsampling-after-constant-ones-nocluster'
 VIS_FILTERS: True
 VIS_CONCENTRATION: False
 VIS_LOSS: True
@@ -7,7 +7,7 @@ DEVICE: 'cuda'
 DATASET:
     NAME: 'cora_anom'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'amnet-filter-full-lapl'
+    LABEL_TYPE: 'prods'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
     K: 5

@@ -1,4 +1,4 @@
-EXP: 'weibo-debug-testsampling-after-constant-ones-newplot'
+EXP: 'weibo-debug-testsampling-after-constant-ones-newplot-nocluster'
 VIS_FILTERS: True
 VIS_CONCENTRATION: False
 VIS_LOSS: True
@@ -7,7 +7,7 @@ DEVICE: 'cuda'
 DATASET:
     NAME: 'weibo_'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'amnet-filter-full-lapl'
+    LABEL_TYPE: 'amnet-filter-full'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
     K: 5

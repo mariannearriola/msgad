@@ -425,8 +425,9 @@ def hier_cluster(graph,adj):
         if not os.path.exists(f'vis/{args.dataset}'):
             os.makedirs(f'vis/{args.dataset}')
         plt.savefig(f'vis/{args.dataset}/test_res_{args.dataset}_rev{args.reversed}_idx3.png')
-        max_ind=5
+        #max_ind=5
         import ipdb ; ipdb.set_trace()
+        print(max_ind)
         print([[i.shape[0] for i in j] for j in anoms_tot[max_ind]])
         return anoms_tot[max_ind]
 

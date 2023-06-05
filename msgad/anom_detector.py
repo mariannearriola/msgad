@@ -161,9 +161,12 @@ class anom_classifier():
 
     def get_node_score(self,score):
         if 'mean' in self.detection_type:
-            return np.mean(score[score.nonzero()])
+            node_score = np.mean(score[score.nonzero()])
         elif 'std' in self.detection_type:
-            return np.std(score[score.nonzero()])
+            node_score = np.std(score[score.nonzero()])
+        if np.isnan(node_score):
+            return 0.
+        return node_score
 
     def calc_prec(self, graph, scores, label, sc_label, attns, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''

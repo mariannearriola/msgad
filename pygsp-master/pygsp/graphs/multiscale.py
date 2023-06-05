@@ -92,7 +92,7 @@ class MultiScale(Graph):
             anom_tot = sum([i.shape[0] for i in anoms])#anom_combo.shape[0]#anoms.shape[0]
         else:
             anom_tot = [0]
-        
+        anom_w = None
         return anoms,anom_tot,anom_w
     
     def fix_label(self,anoms):
@@ -145,7 +145,7 @@ class MultiScale(Graph):
                     
         plotting = {"limits": np.array([-98, -89, 43, 50]),
                     "vertex_size": 40}
-        
+        import ipdb ; ipdb.set_trace()
         super(MultiScale, self).__init__(A, X, None, None, None,#coords=data['xy'],
                                         plotting=plotting, **kwargs)
         return

@@ -3,7 +3,7 @@ import numpy as np
 import dgl
 from utils import *
 
-def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, recons='struct', alpha=None):
+def loss_func(graph, feat, A_hat, X_hat, edge_ids, sample=False, recons='struct', alpha=None):
     """
     Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction
     label.
@@ -38,14 +38,7 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
     all_costs, all_struct_error, all_feat_error = None, None, None
     scale_weights=[1,1,1]
     total_struct_error,total_feat_error=torch.tensor(-1.),torch.tensor(-1.)
-    if not pos_edges == None:
-        import ipdb ; ipdb.set_trace()
-        edge_ids = torch.vstack((pos_edges,neg_edges)).to(graph[0].device)
- 
-        if type(graph) != list:
-            feat = graph.ndata['feature']
-            edge_labels = torch.cat((torch.full((pos_edges.shape[0],),1.),(torch.full((neg_edges.shape[0],),0.))))
-            edge_labels = edge_labels.to(graph.device)
+    
     edge_ids_tot = []
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
@@ -62,15 +55,15 @@ def loss_func(graph, feat, A_hat, X_hat, pos_edges, neg_edges, sample=False, rec
                     '''
                     #sampled_pred=sc_pred[edge_ids[:,0],edge_ids[:,1]]
                     sampled_pred = sc_pred
-                    lbl_edges = torch.zeros(sampled_pred.shape).to(sampled_pred.device)
+                    lbl_edges = torch.zeros(sampled_pred.shape).to(sampled_pred.device).to(torch.float64)
                     check_gpu_usage('before edge idx')
-                    edge_idx=graph[ind].has_edges_between(edge_ids[ind,:,0],edge_ids[ind,:,1])
+                    edge_idx=graph[ind].has_edges_between(edge_ids[ind,0,:],edge_ids[ind,1,:])
                     edge_idx = edge_idx.nonzero()
                     edge_idx = edge_idx.T[0]
                     
                     # bug?
                     #import ipdb ; ipdb.set_trace()
-                    lbl_edges[edge_idx] = graph[ind].edata['w'][graph[ind].edge_ids(edge_ids[edge_idx][:,0],edge_ids[edge_idx][:,1])]
+                    lbl_edges[edge_idx] = graph[ind].edata['w'][graph[ind].edge_ids(edge_ids[ind,0,:][edge_idx],edge_ids[ind,1,:][edge_idx])].to(torch.float64)
                     #import ipdb ; ipdb.set_trace()
                     total_struct_error, edge_struct_errors = get_sampled_losses(sampled_pred,edge_ids,lbl_edges)
                     

@@ -45,7 +45,7 @@ class LabelAnalysis:
             except:
                 conn_check.append(False)
         return conn_check
-
+    '''
     def remove_anom_overlap(self,anom_nodes_tot,anom,anom_ex):
         sc1 = anom_nodes_tot[anom]
         
@@ -69,14 +69,50 @@ class LabelAnalysis:
                 sc1_ret.append(sc)
                 sc_sum += len(sc)
         return sc1_ret
-
+    '''
+    def remove_anom_overlap(self,sc1,sc2,sc3):
+        #sc1,sc2,sc3=np.array(sc1),np.array(sc2),np.array(sc3)
+        sc1_f = list(chain(*np.array(sc1)))
+        if sc2 is not None:
+            sc2_f = list(chain(*np.array(sc2)))
+        if sc3 is not None:
+            sc3_f = list(chain(*np.array(sc3)))
+        
+        sc1_ret,sc2_ret,sc3_ret=[],[],[]
+        overlapped=[]
+        sc_sum=0
+        for sc in sc1:
+            if sc2 is None and sc3 is not None:
+                if len(np.intersect1d(sc,sc3_f))==0:
+                    sc1_ret.append(sc)
+                    sc_sum += len(sc)
+                else:
+                    overlapped.append(sc)
+            elif sc3 is None and sc2 is not None:
+                if len(np.intersect1d(sc,sc2_f))==0:
+                    sc1_ret.append(sc)
+                    sc_sum += len(sc)
+                else:
+                    overlapped.append(sc)
+            elif sc2 is not None and sc3 is not None:
+                if len(np.intersect1d(sc,sc2_f))==0 and len(np.intersect1d(sc,sc3_f))==0:
+                    sc1_ret.append(sc)
+                    sc_sum += len(sc)
+                else:
+                    overlapped.append(sc)
+            elif sc2 is None and sc3 is None:
+                sc1_ret.append(sc)
+                sc_sum += len(sc)
+        return sc1_ret,overlapped,sc_sum
     def getAnomCount(self,clust,anom_sc_label):
         clust_keys = np.unique(clust)
         clust_dict = {}
         anom_count = []
         node_count = []
+        graph_nodes = list(self.graph.nodes())
         for key in clust_keys:
-            clust_dict[key] = np.where(clust==key)[0]
+            #clust_dict[key] = np.where(clust==key)[0]
+            clust_dict[key] = np.array([graph_nodes[i] for i in np.where(clust==key)[0]])
             anom_count.append(np.intersect1d(anom_sc_label,clust_dict[key]).shape[0])
             node_count.append(clust_dict[key].shape[0])
         return clust_dict,np.array(anom_count),np.array(node_count)
@@ -90,41 +126,50 @@ class LabelAnalysis:
         anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=3)]
         return anom_nodes1
 
-    def postprocess_anoms(self,graph,anom_nodes_tot):
-        sc1_label = self.remove_anom_overlap(anom_nodes_tot,0,[2,1])
-        sc2_label = self.remove_anom_overlap(anom_nodes_tot,1,[2])
-        sc3_label = self.remove_anom_overlap(anom_nodes_tot,2,[])
+    def postprocess_anoms(self,anom_nodes_tot,sc):
+        anom_nodes1,anom_nodes2,anom_nodes3=anom_nodes_tot
+        plt_anoms_found = [i.shape[0] for i in anom_nodes_tot[sc-1]]
+        if sc == 1:
+            sc_label,_,_=self.remove_anom_overlap(anom_nodes1,anom_nodes3,anom_nodes2)
+        elif sc == 2:
+            sc_label,_,_=self.remove_anom_overlap(anom_nodes2,anom_nodes3,None)
+        elif sc == 3:
+            sc_label,_,_=self.remove_anom_overlap(anom_nodes3,None,None)
 
-        conns_1=np.array(self.check_conn(graph,sc1_label)).nonzero()[0]
-        conns_2=np.array(self.check_conn(graph,sc2_label)).nonzero()[0]
-        conns_3=np.array(self.check_conn(graph,sc3_label)).nonzero()[0]
+        plt_anoms_found = [i.shape[0] for i in sc_label]
+
+        conns=np.array(self.check_conn(sc_label)).nonzero()[0]
+        sc_label = np.array(sc_label)[conns] if len(conns) > 0 else []
+        plt_anoms_found = np.array(plt_anoms_found)[conns] if len(conns) > 0 else []
         
-        sc1_label = np.array(sc1_label)[conns_1] if len(conns_1) > 0 else []
-        sc2_label = np.array(sc2_label)[conns_2] if len(conns_2) > 0 else []
-        sc3_label = np.array(sc3_label)[conns_3] if len(conns_3) > 0 else []
-        return sc1_label,sc2_label,sc3_label
+        return sc_label,plt_anoms_found
+
 
     def run_dend(self,graph):
         anom = self.anoms_combo
-        hierarchy = LouvainIteration()
-        dend = hierarchy.fit_predict(nx.adjacency_matrix(graph))
+        hierarchy = LouvainIteration(resolution=1.1)
+        dend = hierarchy.fit_predict(np.array(nx.adjacency_matrix(graph,weight='weight').todense()))
         clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
         self.thresh = 0.8
 
         anom_nodes1,anom_nodes2,anom_nodes3 = self.get_sc_label(clust1,anom),self.get_sc_label(clust2,anom),self.get_sc_label(clust3,anom)
         anom_nodes_tot = [anom_nodes1,anom_nodes2,anom_nodes3]
-        sc1_label,sc2_label,sc3_label = self.postprocess_anoms(graph,anom_nodes_tot)
+        #sc1_label,sc2_label,sc3_label = self.postprocess_anoms(graph,anom_nodes_tot)
+        sc1_label,_=self.postprocess_anoms(anom_nodes_tot,1)
+        sc2_label,_=self.postprocess_anoms(anom_nodes_tot,2)
+        sc3_label,_=self.postprocess_anoms(anom_nodes_tot,3)
+
         print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
     
         return sc1_label,sc2_label,sc3_label
-
+    '''
     def check_conn(self,graph,sc_label):
         conn_check=[]
         for i in sc_label:
             try: conn_check.append(nx.is_connected(graph.subgraph(i)))
             except: conn_check.append(False)
         return conn_check
-
+    '''
     def getAnomCount(self,clust,anom_sc_label):
         clust_keys = np.unique(clust)
         clust_dict = {}
@@ -152,7 +197,6 @@ class LabelAnalysis:
         hierarchy = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
         #dend = hierarchy.fit_predict(self.adj)
         #dends
-
         # 3-scale representations -> for each one, how much are preserved in communities?
         sc1_label,sc2_label,sc3_label = self.run_dend(self.graph)
 

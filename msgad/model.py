@@ -87,15 +87,6 @@ class GraphReconstruction(nn.Module):
         self.module_list = nn.ModuleList()
         for i in range(3):
             self.module_list.append(AttentionProjection(in_size,self.hidden_dim))
-        
-    def batch_mm(self, matrix, vector_batch):
-        batch_size = vector_batch.shape[0]
-        # Stack the vector batch into columns. (b, n, 1) -> (n, b)
-        vectors = vector_batch.transpose(0, 1).reshape(-1, batch_size)
-
-        # A matrix-matrix product is a batched matrix-vector product of the columns.
-        # And then reverse the reshaping. (m, b) -> (b, m, 1)
-        return matrix.mm(vectors).transpose(1, 0).reshape(batch_size, -1, 1)
 
     def stationary_distribution(self, M, device):
         """
@@ -120,12 +111,21 @@ class GraphReconstruction(nn.Module):
         return pi
 
     def forward(self,edges,feats,vis=False,vis_name=""):
-        '''
+        """
+        Obtain learned embeddings and corresponding graph reconstructions from
+        the input graph.
+
         Input:
-            graph: input dgl graph
+            edges : {array-like, torch tensor}, shape=[e,2]
+                Edge list of graph
+            feats : {array-like, torch tensor}, shape=[n,h]
+                Feature matrix of graph
         Output:
-            recons: scale-wise adjacency reconstructions
-        '''
+            recons: {array-like, torch tensor}, shape=[3,n,n]
+                Multi-scale adjacency reconstructions
+            h: {array-like, torch tensor}, shape=[3,n,h']
+                Multi-scale embeddings produced by model
+        """
         from utils import check_gpu_usage
         res_a = None
         #edges, feats, graph_ = self.process_graph(graph)
@@ -167,7 +167,9 @@ class GraphReconstruction(nn.Module):
                     score_sc = torch.cat((score_sc,attn_scores.unsqueeze(0)),dim=0)
                     hs = torch.cat((hs,h.unsqueeze(0)),dim=0)
                 del attn_scores,h ; torch.cuda.empty_cache() ; gc.collect()
-
+            
+            # import ipdb ; ipdb.set_trace()
+            # marginal_loss = score_sc.max(0)-score_sc.mean(0)
             self.attn_weights = F.softmax(score_sc,0).to(torch.float64) # scales x num filters x nodes
             check_gpu_usage('about to collect results')
             h_ =  (self.attn_weights.unsqueeze(-1)*hs).sum(2)

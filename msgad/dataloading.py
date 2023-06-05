@@ -47,6 +47,7 @@ class DataLoading:
             sc_label=[anom1,anom2,anom3,anom_single]
         else:
             sc_label = []
+            
         return adj, edge_idx, feats, truth, sc_label
 
     def fetch_dataloader(self, adj, edges):
@@ -64,9 +65,9 @@ class DataLoading:
             edges=adj.edges('eid')
             batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_edges())
             if self.device == 'cuda':
-                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=0, device=self.device)
+                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, device=self.device)
             else:
-                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=False, drop_last=True, num_workers=6, device=self.device)
+                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=6, device=self.device)
         elif self.batch_type == 'node':
             batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes()/100)
             #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
@@ -79,7 +80,21 @@ class DataLoading:
 
         return dataloader
 
+    def get_sc_label(self,sc_label):
+        batch_sc_label = {}
+        batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
+        for sc_ind,sc_ in enumerate(sc_label):
+            if batch_sc_label_keys[sc_ind] != 'single':
+                scs_comb = []
+                for sc__ in sc_:
+                    scs_comb.append(sc__)
+                batch_sc_label[batch_sc_label_keys[sc_ind]] = scs_comb
+            else:
+                batch_sc_label[batch_sc_label_keys[sc_ind]]=sc_
+        return batch_sc_label
+
     def get_batch_sc_label(self,in_nodes,sc_label,g_batch):
+        #dict_={k.item():v for k,v in zip(np.argsort(in_nodes),in_nodes)}
         dict_={k.item():v for k,v in zip(np.arange(in_nodes.shape[0]),in_nodes)}
         batch_sc_label = {}
         batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
@@ -96,7 +111,6 @@ class DataLoading:
         return batch_sc_label
 
     def get_edge_batch(self,loaded_input):
-        
         in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
         pos_edges = sub_graph_pos.edges()
         neg_edges = sub_graph_neg.edges()

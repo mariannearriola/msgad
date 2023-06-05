@@ -617,7 +617,8 @@ class Graph(FourierMixIn, DifferenceMixIn, IOMixIn, LayoutMixIn):
             W = self.W
         else:
             W = utils.symmetrize(self.W, method='average')
-
+        print('compute laplacian')
+        import ipdb ; ipdb.set_trace()
         if lap_type == 'combinatorial':
             D = sparse.diags(self.dw)
             self.L = D - W

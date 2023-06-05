@@ -68,16 +68,23 @@ class Madan(object):
 		#------------------------------------------------------------------------
 		self.pi     =  v_ones.A.T.reshape(self.N)/self.N
 		#------------------------------------------------------------------------
-
+	'''
 	def flatten_label(self,anoms,nodes):
 		anom_flat = np.intersect1d(nodes,anoms[0],return_indices=True)[0]#[0]
 		for i in anoms[1:]:
 			anom_flat=np.concatenate((anom_flat,np.intersect1d(nodes,i,return_indices=True)[0]))#[0]))
 		return anom_flat
+	'''
+	def flatten_label(self,anoms):
+		anom_flat = anoms[0]
+		for i in anoms[1:]:
+			anom_flat=np.concatenate((anom_flat,i))#[0]))
+		return anom_flat
 
 	def organize_ms_labels(self,nodes,nx_dict):
-		self.color_scheme = {'normal':'green','anom_sc1':'red','anom_sc2':'blue','anom_sc3':'purple','anom_single':'cyan'}
+		self.color_scheme = {'normal':'none','anom_sc1':'red','anom_sc2':'blue','anom_sc3':'purple','anom_single':'cyan'}
 		self.color_arr = np.full(self.N,self.color_scheme['normal'], dtype=object)
+		'''
 		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc1'],nodes))] = self.color_scheme['anom_sc1']
 		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc2'],nodes))] = self.color_scheme['anom_sc2']
 		self.color_arr[np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc3'],nodes))] = self.color_scheme['anom_sc3']
@@ -86,7 +93,19 @@ class Madan(object):
 		self.sc2_anom=np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc2'],nodes))
 		self.sc3_anom=np.vectorize(nx_dict.get)(self.flatten_label(self.sc_label['anom_sc3'],nodes))
 		self.single_anom=np.vectorize(nx_dict.get)(np.intersect1d(self.sc_label['single'],nodes))
+		'''
+		self.color_arr[self.flatten_label(self.sc_label['anom_sc1'])] = self.color_scheme['anom_sc1']
+		self.color_arr[self.flatten_label(self.sc_label['anom_sc2'])] = self.color_scheme['anom_sc2']
+		self.color_arr[self.flatten_label(self.sc_label['anom_sc3'])] = self.color_scheme['anom_sc3']
+		self.color_arr[self.sc_label['single']] = self.color_scheme['anom_single']
+		self.sc1_anom=self.flatten_label(self.sc_label['anom_sc1'])
+		self.sc2_anom=self.flatten_label(self.sc_label['anom_sc2'])
+		self.sc3_anom=self.flatten_label(self.sc_label['anom_sc3'])
+		self.single_anom=self.sc_label['single']
+		if 'cora' in self.dataset:
+			self.single_anom = self.single_anom.T[0]
 		self.find_anoms = {}
+
 		
 		for i in self.sc1_anom:
 			self.find_anoms[i] = 'sc1'
@@ -122,21 +141,6 @@ class Madan(object):
 			self.concentration =  np.linalg.norm(self.Ht, axis=0, ord=2)
 		else:
 			self.concentration =  np.linalg.norm(mat, ord=2)
-			'''
-			self.concentration = np.zeros(self.N)
-			for node in self.network.nodes:
-				# Get the cluster assignment for the current node
-				node_cluster = self.partitions[node]
-				
-				# Get the neighbors of the current node
-				neighbors = self.network.neighbors(node)
-				
-				# Count the number of neighbors that belong to different clusters
-				cut_value = sum(1 for neighbor in neighbors if self.partitions[neighbor] != node_cluster)
-				
-				# Store the cut value for the current node
-				self.concentration[node] = cut_value
-			'''
 
 		self.concentration + 2*self.concentration.std()
 	   
@@ -201,6 +205,8 @@ class Madan(object):
 		#------------------------------------------------------------------------
 		# Plotting concentration
 		#------------------------------------------------------------------------
+		if tau == 0 or tau == 1:
+			return
 		print('PLOTTING',tau)
 		comm_concent = np.zeros((self.N,2))
 		comm_concent[:,0] = list(self.interp_com.values())
@@ -240,7 +246,7 @@ class Madan(object):
 		#	print(np.unique(anom_types,return_counts=True)[-1]/np.array([self.sc1_anom.shape[0],self.sc2_anom.shape[0],self.sc3_anom.shape[0],self.single_anom.shape[0]]))
 		#sc_anoms_detected = 
 		plt.ylim(0,concentrations[sorted_idx].max())
-		norm_patch = mpatches.Patch(color='green', label='normal')
+		norm_patch = mpatches.Patch(color='none', label='normal')
 		sc1_patch = mpatches.Patch(color='red', label='anom_sc1')
 		sc2_patch = mpatches.Patch(color='blue', label='anom_sc2')
 		sc3_patch = mpatches.Patch(color='purple', label='anom_sc3')
@@ -347,7 +353,7 @@ class Madan(object):
 				#import ipdb ; ipdb.set_trace()
 			else:
 				list_partitoins = Parallel(n_jobs=n_jobs)(delayed(processInput)(i,mats[inx]) for i in range(1))
-			#import ipdb ; ipdb.set_trace()
+				#import ipdb ; ipdb.set_trace()
 			
 				self.concentration = np.zeros(self.N)
 				net = nx.from_numpy_matrix(mats[inx])

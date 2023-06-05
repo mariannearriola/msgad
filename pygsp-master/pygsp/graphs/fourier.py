@@ -168,6 +168,8 @@ class FourierMixIn(object):
                 'polynomial filter instead.'.format(
                     'full' if n_eigenvectors == self.N else 'partial',
                     self.N))
+        print('computing eig')
+        import ipdb ; ipdb.set_trace()
 
         # TODO: handle non-symmetric Laplacians. Test lap_type?
         if n_eigenvectors == self.n_vertices:

@@ -197,7 +197,6 @@ class AttentionProjection(nn.Module):
         h_filters_proj = self.filter_proj(h)
         #h_filters_proj = h_filters_proj.reshape(h_filters_proj.shape[1],h_filters_proj.shape[0],h_filters_proj.shape[-1])
         x_proj = self.x_proj(feats).unsqueeze(-1)
-        import ipdb ; ipdb.set_trace()
         attn_scores = torch.bmm(h_filters_proj, x_proj).squeeze(-1)
         return attn_scores
 

@@ -74,7 +74,7 @@ def convert_shape(aid, x, scale=15, mins=30, maxs=180):
 def plot_diag(G, sa, anoms, e, U, bar_scale=4):
     f = []
     x = np.linspace(0,2-2/bar_scale, bar_scale)
-
+    import ipdb ; ipdb.set_trace()
     print(np.unique((e/(2/bar_scale)).astype(np.int),return_counts=True)[1])
     for i in range(1):
         width = 2/(bar_scale*5)
