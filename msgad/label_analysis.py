@@ -77,7 +77,7 @@ class LabelAnalysis:
             sc2_f = list(chain(*np.array(sc2)))
         if sc3 is not None:
             sc3_f = list(chain(*np.array(sc3)))
-        
+        #db ; ipdb.set_trace()
         sc1_ret,sc2_ret,sc3_ret=[],[],[]
         overlapped=[]
         sc_sum=0
@@ -128,6 +128,7 @@ class LabelAnalysis:
 
     def postprocess_anoms(self,anom_nodes_tot,sc):
         anom_nodes1,anom_nodes2,anom_nodes3=anom_nodes_tot
+        #import ipdb ; ipdb.set_trace()
         plt_anoms_found = [i.shape[0] for i in anom_nodes_tot[sc-1]]
         if sc == 1:
             sc_label,_,_=self.remove_anom_overlap(anom_nodes1,anom_nodes3,anom_nodes2)
@@ -145,11 +146,13 @@ class LabelAnalysis:
         return sc_label,plt_anoms_found
 
 
-    def run_dend(self,graph):
+    def run_dend(self,graph,return_clusts=False):
+        self.graph = graph
         anom = self.anoms_combo
         hierarchy = LouvainIteration(resolution=1.1)
         dend = hierarchy.fit_predict(np.array(nx.adjacency_matrix(graph,weight='weight').todense()))
         clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
+        #import ipdb  ; ipdb.set_trace()
         self.thresh = 0.8
 
         anom_nodes1,anom_nodes2,anom_nodes3 = self.get_sc_label(clust1,anom),self.get_sc_label(clust2,anom),self.get_sc_label(clust3,anom)
@@ -158,9 +161,11 @@ class LabelAnalysis:
         sc1_label,_=self.postprocess_anoms(anom_nodes_tot,1)
         sc2_label,_=self.postprocess_anoms(anom_nodes_tot,2)
         sc3_label,_=self.postprocess_anoms(anom_nodes_tot,3)
-
+        print('CLUSTERS')
         print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
-    
+     
+        if return_clusts:
+            return clust1,clust2,clust3
         return sc1_label,sc2_label,sc3_label
     '''
     def check_conn(self,graph,sc_label):
@@ -189,6 +194,8 @@ class LabelAnalysis:
         return sc_label_
 
     def cluster(self,adj,label_id):
+        '''
+        '''
         self.adj = adj.detach().cpu().numpy()
         self.graph = nx.from_numpy_matrix(self.adj)
         # TODO: need to make sure that anomalies map here

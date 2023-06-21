@@ -11,11 +11,21 @@ from torch_geometric.nn import GATConv
 from torch_geometric.utils import to_dense_adj
 from torch_geometric.loader import NeighborLoader
 from sklearn.utils.validation import check_is_fitted
+import gc
 
 from .base import BaseDetector
 from .basic_nn import GCN
 from .model_utils import validate_device
 from .metrics import eval_roc_auc
+
+def check_gpu_usage(tag):
+    return
+    allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
+    cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
+
+    allocated_gb = allocated_bytes / 1e9
+    cached_gb = cached_bytes / 1e9
+    print(f"{tag} -> GPU Memory - Allocated: {allocated_gb:.2f} GB, Cached: {cached_gb:.2f} GB")
 
 
 class DOMINANT(BaseDetector):
@@ -306,18 +316,28 @@ class DOMINANT_Base(nn.Module):
         #self.struct_decoder = GATConv(hid_dim, hid_dim)
 
 
-    def forward(self, x, edge_index, dst_nodes):
+    def forward(self, x, edge_index):
+
         # encode
         #h = self.dense(x)
+        check_gpu_usage('about to run gcn')
         h_ = self.shared_encoder(x, edge_index)#[dst_nodes]#[:,dst_nodes]
+        check_gpu_usage(' gcn dine')
+        #import ipdb ; ipdb.set_trace()
+        #import ipdb ; ipdb.set_trace()
+        h_ = h_.unsqueeze(0)
+        hs_t=torch.transpose(h_,1,2)
+        recons = torch.bmm(h_,hs_t)
+
+        del hs_t,h_ ; torch.cuda.empty_cache() ; gc.collect()
         # decode feature matrix
-        x_ = self.attr_decoder(h_, edge_index)
+        #x_ = self.attr_decoder(h_, edge_index)
         # decode adjacency matrix
-        h_ = self.struct_decoder(h_, edge_index)#[dst_nodes]
+        #h_ = self.struct_decoder(h_, edge_index)#[dst_nodes]
         #s_ = torch.sigmoid(h_ @ h_.T)
         #import ipdb ; ipdb.set_trace()
         #s_ = torch.tanh(h_ @ h_.T)
-        s_ = h_@h_.T
+        #s_ = h_@h_.T
         #s_ = torch.sigmoid(s_)
         # return reconstructed matrices
-        return x_, s_
+        return recons

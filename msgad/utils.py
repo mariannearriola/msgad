@@ -22,20 +22,91 @@ import torch_geometric
 import gc
 from pygsp_ import *
 
-def dgl_to_mat(g,device='cpu'):
-    #dgl.to_networkx(g)
+def tb_write_anom(tb,edge_ids,sc_label,pred,anom_sc,sc,epoch,regloss,clustloss,nonclustloss,clust):
+    print('SCALE',anom_sc)
+    # get indices in edges that are associated with anomaly
+    a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
+    
+    # select any edges connected to an anom
+    sc_idx=np.unique(np.stack((a,b)).flatten())
 
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(pred[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
+    tb.add_scalar(f'Anom{anom_sc}_loss{sc}', expanded_average, epoch)
+
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(regloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
+    tb.add_scalar(f'Anom{anom_sc}_Regloss{sc}', expanded_average, epoch)
+
+    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
+    sc_idx = np.intersect1d(sc_idx,sc_idx_)
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(clustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
+    tb.add_scalar(f'Anom_{anom_sc}_Loss_inclust{sc}', expanded_average, epoch)
+
+    # select OUTSIDE CLUSTER, NORMALIZE BY # OUT EDGES
+    sc_idx=np.unique(np.stack((a,b)).flatten())
+    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+    sc_idx = np.intersect1d(sc_idx,sc_idx_)
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(nonclustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
+    tb.add_scalar(f'Anom_{anom_sc}_Loss_outclust{sc}', expanded_average, epoch)
+
+    # only select INSIDE cluster, outside OF ANOM
+    #sc_idx=np.intersect1d(a,b)
+    sc_idx=np.setxor1d(a,b) # get edges outside of anom
+    # get edges inside cluster
+    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
+    sc_idx = np.intersect1d(sc_idx,sc_idx_)
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(clustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
+    tb.add_scalar(f'Anom{anom_sc}_inclust_outanom{sc}', expanded_average, epoch)
+    
+    # only select edges between anom and other nodes not in anom group, in same cluster
+
+    # only select edges OUTSIDE of cluser, INSIDE anom
+    #import ipdb ; ipdb.set_trace()
+    a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
+    sc_idx=np.intersect1d(a,b)
+    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+    sc_idx = np.intersect1d(sc_idx,sc_idx_)
+    #sc_idx=np.setxor1d(a,b)
+    cl = edge_ids[:,sc_idx][0].detach().cpu()
+    average_tensor = torch.scatter_reduce(nonclustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
+    tb.add_scalar(f'Anom{anom_sc}_outclust_inanom{sc}', expanded_average, epoch)
+
+def get_sc_label(sc_label):
+    batch_sc_label = {}
+    batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
+    for sc_ind,sc_ in enumerate(sc_label):
+        if batch_sc_label_keys[sc_ind] != 'single':
+            scs_comb = []
+            for sc__ in sc_:
+                scs_comb.append(sc__)
+            batch_sc_label[batch_sc_label_keys[sc_ind]] = scs_comb
+        else:
+            batch_sc_label[batch_sc_label_keys[sc_ind]]=sc_
+    return batch_sc_label
+
+def dgl_to_mat(g,device='cpu'):
+    """Get sparse adjacency matrix from DGL graph"""
+    #dgl.to_networkx(g)
     src, dst = g.edges()
     block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1),size=(g.number_of_nodes(),g.number_of_nodes()))
-    
     #block_adj = torch.zeros(g.num_src_nodes(), g.num_dst_nodes(), device=device).to(torch.float64)
     #block_adj[src, dst] = g.edata['w'].squeeze(-1)
     return block_adj
 
-def get_spectrum(mat,tag='',load=False,get_lapl=False):
+def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=True):
     """Eigendecompose matrix for visualization"""
     device = mat.device
-    if tag != '':
+    if tag != '' and get_lapl is False and save_spectrum is False:
         #fpath = self.generate_fpath('spectrum')
         try:
             e,U = np.array(sio.loadmat(f'{tag}.mat')['e'].todense())[0],sio.loadmat(f'{tag}.mat')['U'].todense()
@@ -44,32 +115,52 @@ def get_spectrum(mat,tag='',load=False,get_lapl=False):
         except Exception as e:
             print(e)
             pass
+    
+    if tag != '' and get_lapl is True:
+        try:
+            L = sio.loadmat(f'{tag}.mat')['L'].to_dense()
+            L = torch.tensor(L).to(device).to_sparse()
+            return L
+        except Exception as e:
+            print(e)
+            pass
+    
     try:
         mat = mat.to_dense().detach().cpu().numpy()
     except Exception as e:
         print(e)
         pass
-    py_g = graphs.MultiScale(mat)
-    py_g.compute_laplacian('normalized')
-    if get_lapl is True:
-        return py_g.L
-    py_g.compute_fourier_basis()
-    sio.savemat(f'{tag}.mat',{'e':scipy.sparse.csr_matrix(py_g.e),'U':scipy.sparse.csr_matrix(py_g.U)})
-    U,e = torch.tensor(py_g.U).to(device),torch.tensor(py_g.e).to(device)
+    if lapl is None:
+        py_g = graphs.MultiScale(mat)
+        py_g.compute_laplacian('normalized')
+        if get_lapl is True:
+            sio.savemat(f'{tag}.mat',{'L':scipy.sparse.csr_matrix(py_g.L)})
+            return py_g.L
+
+        py_g.compute_fourier_basis()
+        sio.savemat(f'{tag}.mat',{'e':scipy.sparse.csr_matrix(py_g.e),'U':scipy.sparse.csr_matrix(py_g.U)})
+        U,e = torch.tensor(py_g.U).to(device),torch.tensor(py_g.e).to(device)
+    else:
+        e,U = scipy.linalg.eigh(np.array(lapl.to_dense(),order='F'),overwrite_a=True)
+        e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
+        
     return e, U
 
 def process_graph(graph):
     """Obtain graph information from input TODO: MOVE?"""
     feats = graph.ndata['feature']
+    return torch.vstack((graph.edges()[0],graph.edges()[1])), feats, graph
     mat_sparse=graph.adjacency_matrix()
-    L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
-
+    #L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
+    L = get_spectrum(mat_sparse,lapl=None,tag='',load=False,get_lapl=True,save_spectrum=True)
+    '''
     row,col = L[0]
     values = L[1]
     shape = mat_sparse.size()
     adj_matrix = sp.coo_matrix((values, (row, col)), shape=shape)
     graph = dgl.from_scipy(adj_matrix,eweight_name='w').to(graph.device)
-
+    '''
+    graph = dgl.from_scipy(L,eweight_name='w').to(graph.device)
     edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
     graph.ndata['feature'] = feats
     #if 'edge' == self.batch_type:
@@ -86,6 +177,7 @@ def check_gpu_usage(tag):
     print(f"{tag} -> GPU Memory - Allocated: {allocated_gb:.2f} GB, Cached: {cached_gb:.2f} GB")
 
 def prep_args(args):
+    """Retrieve arguments from config file"""
     with open(f'configs/{args.config}.yaml') as file:
         yaml_list = yaml.load(file,Loader=yaml.FullLoader)
     # args.epoch will be populated if datasaving
@@ -94,18 +186,22 @@ def prep_args(args):
     return yaml_list
 
 def init_recons_agg(n,nfeats,exp_params):
+    """A"""
     edge_anom_mats,node_anom_mats,recons_a,res_a_all = [],[],[],[]
-    scales = 3 if 'multi-scale' in exp_params['MODEL']['NAME'] else 1
+    scales = exp_params['SCALES']
     for i in range(scales):
         am = np.zeros((n,n))
+        #am = np.zeros((n,nfeats))
         edge_anom_mats.append(am)
         node_anom_mats.append(np.full((n,nfeats),-1.))
         recons_a.append(am)
         res_a_all.append(np.full((n,exp_params['MODEL']['HIDDEN_DIM']),-1.))
+        #res_a_all.append(np.full((n,n),-1.))
     return edge_anom_mats,node_anom_mats,recons_a,res_a_all
 
 def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params):
     """Collect batched reconstruction into graph-level reconstrution for anomaly detection"""
+    edge_ids_ = edge_ids_.to('cpu').numpy()
 
     for sc in range(struct_loss.shape[0]):
         if exp_params['MODEL']['SAMPLE_TEST']:
@@ -113,13 +209,15 @@ def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,no
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
             else:
+                #edge_anom_mats[sc] = struct_loss[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])] = struct_loss[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])]
 
+                #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
                 recons_a[sc][tuple(edge_ids_[sc,:,:])] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
                 recons_a[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = recons_a[sc][tuple(edge_ids_[sc,:,:])]
-                if res_a is not None:
-                    res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
+                #if res_a is not None:
+                #    res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         else:
             if exp_params['DATASET']['BATCH_TYPE'] == 'node':
                 node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()

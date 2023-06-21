@@ -5,6 +5,7 @@ import dgl
 import numpy as np
 import torch
 import networkx as nx
+from utils import *
 
 class DataLoading:
     def __init__(self,exp_params):
@@ -43,7 +44,9 @@ class DataLoading:
                 anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
             if 'weibo' in self.dataset:
                 anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
-            
+            if 'tfinance' in self.dataset:
+                anom3 = self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
+            #import ipdb ; ipdb.set_trace()
             sc_label=[anom1,anom2,anom3,anom_single]
         else:
             sc_label = []
@@ -80,19 +83,6 @@ class DataLoading:
 
         return dataloader
 
-    def get_sc_label(self,sc_label):
-        batch_sc_label = {}
-        batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
-        for sc_ind,sc_ in enumerate(sc_label):
-            if batch_sc_label_keys[sc_ind] != 'single':
-                scs_comb = []
-                for sc__ in sc_:
-                    scs_comb.append(sc__)
-                batch_sc_label[batch_sc_label_keys[sc_ind]] = scs_comb
-            else:
-                batch_sc_label[batch_sc_label_keys[sc_ind]]=sc_
-        return batch_sc_label
-
     def get_batch_sc_label(self,in_nodes,sc_label,g_batch):
         #dict_={k.item():v for k,v in zip(np.argsort(in_nodes),in_nodes)}
         dict_={k.item():v for k,v in zip(np.arange(in_nodes.shape[0]),in_nodes)}
@@ -110,7 +100,7 @@ class DataLoading:
 
         return batch_sc_label
 
-    def get_edge_batch(self,loaded_input):
+    def get_edge_batch(self,loaded_input,sc_label):
         in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
         pos_edges = sub_graph_pos.edges()
         neg_edges = sub_graph_neg.edges()
@@ -128,8 +118,9 @@ class DataLoading:
         g_batch.edata['w'] = w
         #import ipdb ; ipdb.set_trace()
         g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
+        batch_sc_label = get_sc_label(sc_label)
 
-        return in_nodes, in_nodes[pos_edges], in_nodes[neg_edges], g_batch, last_batch_node
+        return in_nodes, in_nodes[pos_edges], in_nodes[neg_edges], g_batch, last_batch_node, batch_sc_label
 
     def save_batch(self,loaded_input,lbl,iter,setting):
         loaded_input[0] = loaded_input[0].to_sparse()

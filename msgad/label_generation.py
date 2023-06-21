@@ -24,10 +24,11 @@ def dgl_to_nx(g):
     return nx_graph,node_ids
 
 class LabelGenerator:
-    def __init__(self,graph,feats,vis,vis_name,anoms,exp_params,visualizer):
+    def __init__(self,graph,feats,vis,vis_name,anoms,norms,exp_params,visualizer):
         self.graph = graph
         self.feats = feats
         self.exp_name = exp_params['EXP']
+        self.device = exp_params['DEVICE']
         self.dataset=exp_params['DATASET']['NAME']
         self.epoch = exp_params['MODEL']['EPOCH']
         self.label_idx = exp_params['DATASET']['LABEL_IDX']
@@ -39,8 +40,10 @@ class LabelGenerator:
         self.vis_name = vis_name
         self.vis = vis
         self.anoms= anoms
+        self.norms = norms
         self.coeffs = None
         self.visualizer = visualizer
+        self.save_spectrum = exp_params['VIS']['SAVE_SPECTRUM']
 
         self.taus = [2,3,4] ; self.b = 1
 
@@ -51,6 +54,9 @@ class LabelGenerator:
         return anom_flat
 
     def calculate_theta2(self,d):
+        """
+        ...
+        """
         thetas = []
         x = sympy.symbols('x')
         for i in range(d+1):
@@ -63,6 +69,9 @@ class LabelGenerator:
         return thetas
 
     def get_bern_coeff(self,degree):
+        """
+        ...
+        """
         def Bernstein(de, i):
             coefficients = [0, ] * i + [math.comb(de, i)]
             first_term = polynomial.polynomial.Polynomial(coefficients)
@@ -157,21 +166,27 @@ class LabelGenerator:
             g : {DGL graph}
                 Filter parameter for label generation
             ind: {int}
-                ...
+                Subset of K to use as reconstruction labels
             prods : {array-like, shape=[k,]}
-                Array containing 
+                Array containing pre-calculated product matrices
         Output:
             label: {DGL graph}
-                ...
+                Reconstruction label of k-th filter
         """
         if 'filter' in self.label_type:
             coeff = self.coeffs[ind]
             basis = copy.deepcopy(g)
             basis.edata['w'] *= coeff[0]
+            #basis_ = copy.deepcopy(basis)
             for i in range(1, len(prods)):
                 basis_ = copy.deepcopy(prods[i])
+                #basis_n = prods[i-1]; basis_n.edata['w'] *= -1
+                #basis_ = dgl.adj_sum_graph([basis_n,dgl.adj_product_graph(basis_,basis,'w')],'w')
+                #basis_ = dgl.adj_sum_graph([basis_n,basis_],'w')
+                #basis_ = dgl.adj_product_graph(g,basis_,'w')
                 basis_.edata['w'] *= coeff[i]
                 basis_ = dgl.remove_self_loop(basis_)
+                '''
                 if 'before' in self.exp_name:
                     nz = torch.abs(basis_.edata['w'])
                     if 'div' in self.exp_name:
@@ -186,36 +201,71 @@ class LabelGenerator:
                     elif 'nosample' in self.exp_name:
                         pass
                     basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
-            
+                '''
                 #sorted_idx = torch.topk(torch.abs(basis_.edata['w']),int(self.num_a_edges)).indices#/(ind+1))).indices
                 #basis_ = dgl.edge_subgraph(basis_,sorted_idx,relabel_nodes=False)
                 basis = dgl.adj_sum_graph([basis,basis_],'w')
-                del basis_
+                if torch.isnan(basis.edata['w']).any():
+                    print('nan found')
+                    import ipdb ; ipdb.set_trace()
+                
+
+                #import ipdb ; ipdb.set_trace()
+                #del basis_
+                #del basis_n, basis_f
+                #del basis_f
                 #torch.cuda.empty_cache()
-            
+            #del basis_
+            #import ipdb ; ipdb.set_trace()
+            if self.visualizer is not None:
+                self.visualizer.plot_filtered_nodes(basis,self.anoms,ind)
+
             #weight_threshold = 0.
             #mask = torch.sigmoid(basis.edata['w']) > weight_threshold
             #basis = dgl.edge_subgraph(basis,mask.nonzero().T[0],relabel_nodes=False)
+            
+            # for node, get mean...? edge weight?
+            #if 'noeig' not in self.exp_name:
+            #    plt.figure()
+            #   plt.savefig(f'{self.exp_name}_{ind}.png')
 
+
+            #del basis_
             #return basiss
+            
             if 'after' in self.exp_name:
-                nz = torch.abs(basis.edata['w'])
-                #nz = basis.edata['w']
+                #nz = torch.abs(basis.edata['w'])
+                nz = -basis.edata['w']
                 #sorted_idx = torch.topk(nz,int(self.num_a_edges)).indices
                 if 'div' in self.exp_name:
                     sorted_idx = torch.topk(nz,int(self.num_a_edges/(ind+1))).indices
                 elif 'mult' in self.exp_name:
                     sorted_idx = torch.topk(nz,int(self.num_a_edges*(ind+1))).indices
                 elif 'constant' in self.exp_name:
-                    sorted_idx = torch.topk(nz,int(self.num_a_edges)+self.graph.number_of_nodes()).indices
+                    #sorted_idx = torch.topk(nz,int(self.num_a_edges)+self.graph.number_of_nodes()).indices
+                    sorted_idx = torch.topk(nz,int(self.num_a_edges)*2).indices
                 elif 'nosample' in self.exp_name:
                     weight_threshold = 0.
                     mask = torch.sigmoid(basis.edata['w']) > weight_threshold
                     return dgl.edge_subgraph(basis,mask.nonzero().T[0],relabel_nodes=False)
                 if 'ones' in self.exp_name:
-                    basis.edata['w'] /= basis.edata['w']
-                basis = dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
-            return basis
+                    basis.edata['w'][basis.edata['w'].nonzero()] = 1.
+                basis_f = dgl.edge_subgraph(basis,sorted_idx,relabel_nodes=False)
+            
+            if self.visualizer is not None:
+                if ind == 0:
+                    self.connects_plot = np.array(self.visualizer.plot_sampled_filtered_nodes(basis,basis_f,self.anoms,ind))[np.newaxis, ...]
+                else:
+                    self.connects_plot = np.concatenate((self.connects_plot,np.array(self.visualizer.plot_sampled_filtered_nodes(basis,basis_f,self.anoms,ind))[np.newaxis, ...]),axis=0)
+            
+            legend_dict = {'normal':'green','anom_sc1':'red','anom_sc2': 'blue', 'anom_sc3': 'purple', 'single': 'yellow'}
+            if ind == self.K:
+                plt.figure()
+                for group in range(self.connects_plot.shape[1]):
+                    plt.plot(np.arange(self.connects_plot.shape[0]),self.connects_plot[:,group],color=list(legend_dict.values())[group])
+                import ipdb ; ipdb.set_trace()
+                plt.savefig(f'conns_{self.exp_name}.png')
+            return basis_f
         elif 'random-walk' in self.label_type:
             raise(NotImplementedError)
         else:
@@ -268,17 +318,21 @@ class LabelGenerator:
         elif 'lapl' in self.label_type:
             print('getting lapl')
             mat_sparse=dgl_to_mat(g).to(g.device).to(torch.float64)
-            L = get_spectrum(mat_sparse,f'og_model',get_lapl=True)
+            if not os.path.exists(f'vis/spectrum/{self.exp_name}'):
+                os.makedirs(f'vis/spectrum/{self.exp_name}')
+            L = get_spectrum(mat_sparse,tag=f'vis/spectrum/{self.exp_name}/og_model',get_lapl=True,save_spectrum=self.save_spectrum)
             #L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
-
+            
             g = dgl.from_scipy(L,eweight_name='w')
             print('got lapl')
         else:
             g.edata['w'] = torch.ones(self.num_a_edges)
         if 'elliptic' in self.dataset: print('getting dense adj')
-        if self.visualizer is not None and 'noeig' not in self.exp_name:
-            self.visualizer.filter_anoms(self.graph,adj_label,self.anoms,self.vis_name,'original')
-            #self.visualizer.filter_anoms(self.graph,adj_label.to(self.graph.device),self.anoms,self.vis_name,'og')
+
+        # NOTE: do not get the spectrum of cora for now
+        if self.visualizer is not None and 'noeig' not in self.exp_name and 'cora' not in self.dataset:
+           self.visualizer.filter_anoms(self.graph,adj_label,self.anoms,self.vis_name,'original')
+        
         # visualize input
         if self.visualizer is not None:
             adj_label=adj_label.to(self.graph.device).to(torch.float64)
@@ -298,12 +352,13 @@ class LabelGenerator:
         # make labels
         print('prepping input')
         prods = self.prep_input(g)
+        #prods = np.arange(self.K)
         print('prepped')
-        
         if 'single' in self.label_type:
-            return [g,g,g]
+            g = g.to(self.device)
+            return [g,g,g,g]
         if 'prods' in self.label_type:
-            
+            labels.append(g)
             for ind,basis in enumerate(prods):
                 nz = torch.abs(basis.edata['w'])
                 sorted_idx = np.arange(nz.shape[0])
@@ -327,15 +382,16 @@ class LabelGenerator:
               
                 for label_id,basis_ in enumerate(labels):
                     self.visualizer.filter_anoms(self.graph,dgl_to_mat(basis_).to_dense(),self.anoms,self.vis_name,label_id)
-
-            return labels
+            
+            return [i.to(self.device) for i in labels]
         if 'filter' in self.label_type:
             #self.visualizer.filter_anoms(self.graph,adj_label,self.anoms,self.vis_name,-1)
+            
             for label_id in label_idx:
                 print('making label')
                 label = self.make_label(g,label_id,prods)
                 print('label id',label_id,'label edges',label.number_of_edges())
-            
+           
                 labels.append(label)
                 #del label ; torch.cuda.empty_cache()
                 # visualize labels TODO move 
@@ -343,13 +399,13 @@ class LabelGenerator:
                     nx_graph = label.to_networkx(node_attrs=None, edge_attrs=['w'])
                     adj_matrix = nx.adjacency_matrix(nx_graph, weight='w')
                     basis_ = torch.tensor(adj_matrix.toarray())
-
+                    
                     #basis_ = label.adjacency_matrix().to_dense()
                     if 'noeig' not in self.exp_name:
                         self.visualizer.filter_anoms(self.graph,basis_,self.anoms,self.vis_name,label_id)
 
                     if 'nocluster' not in self.exp_name:
-                        e,U = get_spectrum(basis_.to(torch.float64).to(self.graph.device).to_sparse())
+                        e,U = get_spectrum(basis_.to(torch.float64).to(self.graph.device).to_sparse(),lapl=basis_.to(torch.float64).to(self.graph.device).to_sparse(),save_spectrum=self.save_spectrum)
                         e = e.to(self.graph.device) ; U = U.to(self.graph.device)
                         x_labelvis,y_labelvis=self.visualizer.plot_spectrum(e,U,self.feats.to(U.dtype))
                         xs_labelvis = np.hstack((xs_labelvis,x_labelvis)) ; ys_labelvis = np.hstack((ys_labelvis,y_labelvis))
@@ -414,4 +470,5 @@ class LabelGenerator:
 
             torch.cuda.empty_cache() ; gc.collect()
             #self.filter_anoms(labels,self.anoms,self.vis_name)
-        return labels
+        import ipdb ; ipdb.set_trace()
+        return [i.to(self.device) for i in labels]
