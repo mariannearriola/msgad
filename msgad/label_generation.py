@@ -325,8 +325,8 @@ class LabelGenerator:
             
             g = dgl.from_scipy(L,eweight_name='w')
             print('got lapl')
-        else:
-            g.edata['w'] = torch.ones(self.num_a_edges)
+        #else:
+        #    g.edata['w'] = torch.ones(self.num_a_edges)
         if 'elliptic' in self.dataset: print('getting dense adj')
 
         # NOTE: do not get the spectrum of cora for now
@@ -356,7 +356,7 @@ class LabelGenerator:
         print('prepped')
         if 'single' in self.label_type:
             g = g.to(self.device)
-            return [g,g,g,g]
+            return [g,g,g,g,g]
         if 'prods' in self.label_type:
             labels.append(g)
             for ind,basis in enumerate(prods):

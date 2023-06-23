@@ -161,27 +161,6 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
 
-    def average_with_indices(self,input_tensor, indices_tensor):
-        # Calculate the sum of the values based on indices
-        #import ipdb  ; ipdb.set_trace()
-        input_tensor,indices_tensor=input_tensor.cpu(),indices_tensor.cpu()
-    
-        average_tensor = torch.scatter_reduce(input_tensor, 0, indices_tensor, reduce="sum")
-        '''
-        bincount = lambda inds, arr: torch.scatter_reduce(arr, 0, inds, reduce="sum")
-        sum_tensor = torch.bincount(indices_tensor, weights=input_tensor)
-        
-        # Count the occurrences of each index
-        count_tensor = torch.bincount(indices_tensor)
-        
-        # Compute the average by dividing the sum by the count
-        average_tensor = torch.div(sum_tensor, count_tensor)
-        '''
-        # Expand the average tensor to match the shape of the input tensor
-        expanded_average = average_tensor[indices_tensor]
-        
-        return expanded_average
-
     def forward(self,edges,feats,edge_ids,vis=False,vis_name="",clusts=None):
         """
         Obtain learned embeddings and corresponding graph reconstructions from
@@ -193,20 +172,15 @@ class GraphReconstruction(nn.Module):
             feats : {array-like, torch tensor}, shape=[n,h]
                 Feature matrix of graph
         Output:
-            recons: {array-like, torch tensor}, shape=[3,n,n]
+            recons: {array-like, torch tensor}, shape=[scales,n,n]
                 Multi-scale adjacency reconstructions
-            h: {array-like, torch tensor}, shape=[3,n,h']
+            h: {array-like, torch tensor}, shape=[scales,n,h']
                 Multi-scale embeddings produced by model
         """
         
         from utils import check_gpu_usage
         res_a = None
         #edges, feats, graph_ = self.process_graph(graph)
-        ''''
-        if pos_edges is not None:
-            all_edges = torch.vstack((pos_edges,neg_edges))
-            #dst_nodes = torch.arange(last_batch_node+1)
-        '''
         check_gpu_usage('about to run')
         recons_x,recons_a=None,None
         if self.model_str in ['dominant','amnet']: #x, e
@@ -226,7 +200,6 @@ class GraphReconstruction(nn.Module):
             recons_a = [self.conv(graph_,feats,dst_nodes)]
         if 'multi-scale' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
-            #import ipdb ; ipdb.set_trace()
             feats = self.linear_transform_in(feats)#.unsqueeze(0)
             #import ipdb ; ipdb.set_trace()
             
@@ -234,7 +207,6 @@ class GraphReconstruction(nn.Module):
             #h_ = torch.bmm(feats, torch.transpose(feats,1,2))
             #return feats,feats,feats
             #return h_,h_,feats
-
 
             check_gpu_usage('about to run model')
             #edge_ids = torch.vstack((pos_edges,neg_edges)).to(pos_edges.device)
@@ -245,10 +217,6 @@ class GraphReconstruction(nn.Module):
                 check_gpu_usage('before conv')
                 h = self.conv(feats,edges,None)[:,0,:]#,dst_nodes)
                 check_gpu_usage('after conv')
-                # BUG->feats the same?
-                # collect attention scores
-                #attn_scores = self.module_list[ind](h,feats)
-                #attn_scores = self.attn(h,feats)
                 if 'weibo' in self.dataset:
                     check_gpu_usage('model finished')
 
@@ -260,54 +228,14 @@ class GraphReconstruction(nn.Module):
                     #score_sc = torch.cat((score_sc,attn_scores.unsqueeze(0)),dim=0)
                     hs = torch.cat((hs,h.unsqueeze(0)),dim=0)
                 del h ; torch.cuda.empty_cache() ; gc.collect()
-                
-                #del attn_scores,h ; torch.cuda.empty_cache() ; gc.collect()
-            #return hs, hs, hs
-            # marginal_loss = score_sc.max(0)-score_sc.mean(0)
-            #self.attn_weights = score_sc.to(torch.float64) 
-            #import ipdb ; ipdb.set_trace()
-            #self.attn_weights = F.softmax(score_sc,2).to(torch.float64) # scales x num filters x nodes
-            #self.attn_weights = F.softmax(score_sc,0).to(torch.float64) # scales x num filters x nodes
-            #print(self.attn_weights)
-            check_gpu_usage('about to collect results')
-            #import ipdb ; ipdb.set_trace()
-            #h_ =  (self.attn_weights.unsqueeze(-1)*hs).sum(2)
-        
-            check_gpu_usage(f'attns collected')
-            #import ipdb ; ipdb.set_trace()
-            #h_t = torch.transpose(h_,1,2)
-            check_gpu_usage('after transpose')
             
-            '''
-            h_ = generate_edge_pairs(h_[0],edge_ids[0].T)
-            hs = self.edge_clf(h_).unsqueeze(0)
-            '''
             self.final_attn = self.attn
-            '''
-            if clusts:
-                clust_att = torch.zeros(self.attn.shape).to(torch.float64).to(self.attn.device)
-                clusts = torch.tensor(clusts).to(self.attn.device)
-                alpha = 5.
-                
-                attn=self.attn
-                for i in range(self.scales):
-                    clust_att[i]=self.average_with_indices(attn[i],clusts[i])
-
-                self.final_attn = self.attn*(clust_att*alpha)
-                self.clust_att=clust_att
-            else:
-                self.final_attn = self.attn
-            '''
-            
-            #print('attn min,max',self.final_attn.min(),self.final_attn.max())
-            
-            
             hs = self.linear_after(hs)
-            
-            #import ipdb ; ipdb.set_trace()
-            #hs = hs*F.softmax(self.final_attn,1).unsqueeze(-1)
-            # hs *= F.softmax(self.attn)
+            '''
+            feat_offset = int(hs.shape[-1]/self.scales)
+            hs *= F.softmax(self.attn,1).unsqueeze(-1)
             #recons = torch.bmm(hs,torch.transpose(hs,1,2))
+            '''
             check_gpu_usage('before bmm')
             hs_t=torch.transpose(hs,1,2)
             recons = torch.bmm(hs,hs_t)
@@ -324,8 +252,6 @@ class GraphReconstruction(nn.Module):
                     recons_f = torch.cat((recons_f,recons[i,edge_ids[i,0],edge_ids[i,1]].unsqueeze(0)),dim=0)
            
             del recons; torch.cuda.empty_cache() ; gc.collect()
-            #recons = torch.stack([recons[i,edge_ids[i,0],edge_ids[i,1]] for i in range(self.scales)])#.unsqueeze(0)
-            #recons = recons[:,edge_ids[:,0],edge_ids[:,1]]
             check_gpu_usage('results collected')
             recons_f = self.decode_act(recons_f)
             check_gpu_usage('after sigmoid')

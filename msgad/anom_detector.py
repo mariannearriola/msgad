@@ -26,6 +26,7 @@ class anom_classifier():
         self.model = exp_params['MODEL']['NAME']
         self.recons = exp_params['MODEL']['RECONS']
         self.detection_type = exp_params['DETECTION']['TYPE']
+        self.title = ""
         #self.auc = AUC()
 
     def classify(self, scores, labels, clust_nodes=None):
@@ -106,7 +107,7 @@ class anom_classifier():
         plt.legend([perc_single,perc1_auc,perc2_auc,perc3_auc])
         plt.xlabel('# predictions')
         plt.ylabel('% anomaly detected')
-        plt.savefig(f'{fpath}/sc{sc}_perc_at_k.png')
+        plt.savefig(f'{fpath}/sc{sc}_perc_at_k_{self.title}.png')
 
     def hit_at_k(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
@@ -125,6 +126,30 @@ class anom_classifier():
         #plt.axhline(y=ms_anoms_num, color='b', linestyle='-')
         #plt.ylim(top=ms_anoms_num*2)
         plt.savefig(f'{fpath}/sc{sc}_hit_at_k.png')
+
+    def detect_anom_sampled(self,all_scores,clusts,anoms_all,cutoff_label,stds):
+        all_sc_anom_found = []
+        self.title += '_sampled'
+        for sc,tot_score in enumerate(np.flip(np.array(all_scores[:(cutoff_label)]),0)):
+            lbl = (cutoff_label-1-sc)
+            score_check = tot_score
+            if sc > 0:
+                score_check[sc_anom_found] = 0.
+            num_anoms_found = np.where(tot_score>tot_score.std()*stds)[0].shape[0]
+            average_tensor = torch.scatter_reduce(torch.tensor(tot_score), 0, torch.tensor(clusts[cutoff_label-1-sc]), reduce="mean")
+            clust_loss = np.array(average_tensor[clusts[cutoff_label-1-sc]])
+            sc_anom_found = np.argsort(-tot_score*clust_loss)[:num_anoms_found]
+            all_sc_anom_found.append(sc_anom_found)
+            self.plot_percentages(tot_score*clust_loss, np.argsort(-tot_score*clust_loss),anoms_all,None,lbl)
+        lbl = -1
+        score_check = tot_score ; score_check[sc_anom_found] = 0.
+        num_anoms_found = np.where(tot_score>tot_score.std()*stds)[0].shape[0]
+        average_tensor = torch.scatter_reduce(torch.tensor(tot_score), 0, torch.tensor(clusts[cutoff_label-1-sc]), reduce="mean")
+        clust_loss = np.array(average_tensor[clusts[cutoff_label-1-sc]])
+        sc_anom_found = np.argsort(-tot_score*clust_loss)[:num_anoms_found]
+        all_sc_anom_found.append(sc_anom_found)
+        self.plot_percentages(tot_score*clust_loss, np.argsort(-tot_score*clust_loss),anoms_all,None,lbl)
+        return all_sc_anom_found
 
     def detect_anom(self,sorted_errors, anom_sc1, anom_sc2, anom_sc3, label, top_nodes_perc):
         '''
@@ -168,7 +193,63 @@ class anom_classifier():
             return 0.
         return node_score
 
-    def calc_prec(self, graph, scores, label, sc_label, attns, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+    def get_scores(self,graph,mat):
+        for sc,sc_score in enumerate(mat):
+            for ind,score in enumerate(sc_score):
+                if ind == 0:
+                    #node_scores = np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()])
+                    node_scores = np.array(score[score.nonzero()]).mean()
+                else:
+                    #node_scores = np.append(node_scores, np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()]))
+                    node_scores = np.append(node_scores, np.array(score[score.nonzero()]).mean())      
+                
+                #node_scores = np.mean(sc_score,axis=1)
+            # run graph transformer with node score attributes
+            # anom_preds = anom_clf.forward(node_scores,graph.edges())
+            node_scores[np.isnan(node_scores).nonzero()] = 0.
+            if sc == 0:
+                all_scores = torch.tensor(node_scores).unsqueeze(0)
+            else:
+                all_scores = torch.cat((all_scores,torch.tensor(node_scores).unsqueeze(0)),dim=0)
+        return all_scores
+
+    # clust = nonclust if one null
+    def calc_clust_prec(self, graph, clust_scores, nonclust_scores, lbl, anoms_found_prev, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+        '''
+        Input:
+            scores: anomaly scores for all scales []
+            label: node-wise anomaly label []
+            sc_label: array containing scale-wise anomaly node ids
+            dataset: dataset string
+        '''
+        # anom_clf = MessagePassing(aggr='max')
+        if len(sc_label[0]) > 0:
+            anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
+        else:
+            anom_sc1,anom_sc2,anom_sc3=[],[],[]
+        all_clust_scores = self.get_scores(graph,clust_scores,clusts[0])[0]
+        all_nonclust_scores = self.get_scores(graph,nonclust_scores,clusts[1])[0]
+        clust_score_norm,nonclust_score_norm = all_clust_scores/all_clust_scores.max(),all_nonclust_scores/all_nonclust_scores.max()
+
+        cum_score = clust_score_norm+nonclust_score_norm
+        if anoms_found_prev is not None:
+            cum_score[anoms_found_prev] = 0.
+        num_anoms_found = np.where(cum_score>cum_score.std()*self.stds)[0].shape[0]
+        #average_tensor = torch.scatter_reduce(torch.tensor(cum_score), 0, torch.tensor(clusts), reduce="mean")
+        #clust_loss = np.array(average_tensor[clusts])
+        #sc_anom_found = np.argsort(-cum_score*clust_loss)[:num_anoms_found]
+        sc_anom_found = np.argsort(-cum_score)[:num_anoms_found]
+        self.plot_percentages(cum_score, np.argsort(-cum_score),[anom_single,anom_sc1,anom_sc2,anom_sc3],None,lbl)
+        if anoms_found_prev is not None:
+            sc_anom_found = np.append(anoms_found_prev,sc_anom_found)
+
+        return cum_score,sc_anom_found
+    #    with open('output/{}-ranking_{}.txt'.format(self.dataset, sc), 'w+') as f:
+    #        for index in sorted_errors:
+    #            f.write("%s\n" % label[index])
+    
+
+    def calc_prec(self, graph, scores, label, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
             scores: anomaly scores for all scales []
@@ -182,8 +263,7 @@ class anom_classifier():
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
         #if 'cora' in self.dataset or 'weibo' in self.dataset:
-        #    clf = anom_classifier(nu=0.5)
-        
+   
         for sc,sc_score in enumerate(scores):
             if self.recons == 'both':
                 node_scores = sc_score#.detach().cpu().numpy()
@@ -196,14 +276,19 @@ class anom_classifier():
             else:
                 for ind,score in enumerate(sc_score):
                     if ind == 0:
-                        node_scores = np.array([self.get_node_score(score)])
+                        #node_scores = np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()])
+                        node_scores = np.array(score[score.nonzero()]).mean()
                     else:
-                        node_scores = np.append(node_scores,np.array([self.get_node_score(score)]))
-                    
+                        #node_scores = np.append(node_scores, np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()]))
+                        node_scores = np.append(node_scores, np.array(score[score.nonzero()]).mean())                    
                 #node_scores = np.mean(sc_score,axis=1)
             # run graph transformer with node score attributes
             # anom_preds = anom_clf.forward(node_scores,graph.edges())
             node_scores[np.isnan(node_scores).nonzero()] = 0.
+            if sc == 0:
+                all_scores = torch.tensor(node_scores).unsqueeze(0)
+            else:
+                all_scores = torch.cat((all_scores,torch.tensor(node_scores).unsqueeze(0)),dim=0)
             if attns is not None:
                 node_scores *= attns[sc]
             sorted_errors = np.argsort(-node_scores)
@@ -280,7 +365,9 @@ class anom_classifier():
             print('\nnode scores')
             print(anom_accs)
             '''
-            
-        with open('output/{}-ranking_{}.txt'.format(self.dataset, sc), 'w+') as f:
-            for index in sorted_errors:
-                f.write("%s\n" % label[index])
+        cutoff_label = 2 ; stds = 3
+        all_sc_anom_found = self.detect_anom_sampled(all_scores,clusts,[anom_single,anom_sc1,anom_sc2,anom_sc3],cutoff_label,stds)
+        return all_scores,all_sc_anom_found
+    #    with open('output/{}-ranking_{}.txt'.format(self.dataset, sc), 'w+') as f:
+    #        for index in sorted_errors:
+    #            f.write("%s\n" % label[index])

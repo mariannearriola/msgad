@@ -22,64 +22,68 @@ import torch_geometric
 import gc
 from pygsp_ import *
 
-def tb_write_anom(tb,edge_ids,sc_label,pred,anom_sc,sc,epoch,regloss,clustloss,nonclustloss,clust):
-    print('SCALE',anom_sc)
-    # get indices in edges that are associated with anomaly
-    a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
-    
-    # select any edges connected to an anom
-    sc_idx=np.unique(np.stack((a,b)).flatten())
-
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(pred[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
-    tb.add_scalar(f'Anom{anom_sc}_loss{sc}', expanded_average, epoch)
-
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(regloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
-    tb.add_scalar(f'Anom{anom_sc}_Regloss{sc}', expanded_average, epoch)
-
-    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
+def collect_clust_loss(edge_ids,sc_idx,sc_idx_,loss):
+    """Get average loss for each cluster, and assign back to edge-wise losses"""
     sc_idx = np.intersect1d(sc_idx,sc_idx_)
     cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(clustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+    average_tensor = torch.scatter_reduce(loss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
     expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
-    tb.add_scalar(f'Anom_{anom_sc}_Loss_inclust{sc}', expanded_average, epoch)
+    return expanded_average
 
-    # select OUTSIDE CLUSTER, NORMALIZE BY # OUT EDGES
-    sc_idx=np.unique(np.stack((a,b)).flatten())
-    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
-    sc_idx = np.intersect1d(sc_idx,sc_idx_)
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(nonclustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
-    tb.add_scalar(f'Anom_{anom_sc}_Loss_outclust{sc}', expanded_average, epoch)
+class TBWriter:
+    def __init__(self,tb,edge_ids,sc_label,clust):
+        # edges connected to any anomaly
+        a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
+        self.sc_idx_all=np.unique(np.stack((a,b)).flatten())
+        self.cl_all = edge_ids[:,self.sc_idx_all][0].detach().cpu()
 
-    # only select INSIDE cluster, outside OF ANOM
-    #sc_idx=np.intersect1d(a,b)
-    sc_idx=np.setxor1d(a,b) # get edges outside of anom
-    # get edges inside cluster
-    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
-    sc_idx = np.intersect1d(sc_idx,sc_idx_)
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(clustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
-    tb.add_scalar(f'Anom{anom_sc}_inclust_outanom{sc}', expanded_average, epoch)
-    
-    # only select edges between anom and other nodes not in anom group, in same cluster
+        # only select edges inside cluster
+        self.sc_idx_inside = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
 
-    # only select edges OUTSIDE of cluser, INSIDE anom
-    #import ipdb ; ipdb.set_trace()
-    a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
-    sc_idx=np.intersect1d(a,b)
-    sc_idx_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
-    sc_idx = np.intersect1d(sc_idx,sc_idx_)
-    #sc_idx=np.setxor1d(a,b)
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(nonclustloss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()
-    tb.add_scalar(f'Anom{anom_sc}_outclust_inanom{sc}', expanded_average, epoch)
+        # only select edges outside cluster
+        self.sc_idx_outside = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+
+        self.sc_idx_inside_outside_anom=np.setxor1d(a,b) # get edges outside of anom
+        # get edges inside cluster
+        self.sc_idx_inside_outside_anom_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
+
+        a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
+        self.sc_idx_outside_inside_anom=np.intersect1d(a,b)
+        self.sc_idx_outside_inside_anom_= np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+        self.tb = tb
+
+    def tb_write_anom(self,tb,edge_ids,sc_label,pred,attn,anom_sc,sc,epoch,regloss,clustloss,nonclustloss,clust):
+        """Log loss evolution for anomaly group"""
+
+        # plot group attention
+        #tb.add_scalar(f'Att_{sc}_Anom{anom_sc}',attn[sc_label].mean(),epoch)
+        #import ipdb ; ipdb.set_trace()
+        average_tensor = torch.scatter_reduce(pred[self.sc_idx_all].detach().cpu(), 0, self.cl_all, reduce="mean")
+        expanded_average = average_tensor[self.cl_all].to(edge_ids.device).mean()
+        tb.add_scalar(f'Loss_{sc}_Anom{anom_sc}', expanded_average, epoch)
+
+        # log regularization loss
+        average_tensor = torch.scatter_reduce(regloss[self.sc_idx_all].detach().cpu(), 0, self.cl_all, reduce="mean")
+        expanded_average = average_tensor[self.cl_all].to(edge_ids.device).mean()
+        tb.add_scalar(f'Regloss{sc}_Anom{anom_sc}', expanded_average, epoch)
+
+        # only select INSIDE cluster
+        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all,self.sc_idx_inside,clustloss)
+        tb.add_scalar(f'Loss_inclust{sc}_Anom_{anom_sc}', expanded_average, epoch)
+
+        # only select OUTSIDE cluster
+        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all,self.sc_idx_outside,nonclustloss)
+        tb.add_scalar(f'Loss_outclust{sc}_Anom_{anom_sc}', expanded_average, epoch)
+
+        # only select INSIDE cluster, outside OF ANOM
+        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_inside_outside_anom,self.sc_idx_inside_outside_anom_,clustloss)
+        tb.add_scalar(f'Inclust_outanom{sc}_Anom{anom_sc}', expanded_average, epoch)
+        
+        # only select edges between anom and other nodes not in anom group, in same cluster
+
+        # only select edges OUTSIDE of cluser, INSIDE anom
+        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_outside_inside_anom,self.sc_idx_outside_inside_anom_,nonclustloss)
+        tb.add_scalar(f'Outclust_inanom{sc}_Anom{anom_sc}', expanded_average, epoch)
 
 def get_sc_label(sc_label):
     batch_sc_label = {}
@@ -96,11 +100,8 @@ def get_sc_label(sc_label):
 
 def dgl_to_mat(g,device='cpu'):
     """Get sparse adjacency matrix from DGL graph"""
-    #dgl.to_networkx(g)
     src, dst = g.edges()
     block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1),size=(g.number_of_nodes(),g.number_of_nodes()))
-    #block_adj = torch.zeros(g.num_src_nodes(), g.num_dst_nodes(), device=device).to(torch.float64)
-    #block_adj[src, dst] = g.edata['w'].squeeze(-1)
     return block_adj
 
 def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=True):
@@ -211,11 +212,11 @@ def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,no
             else:
                 #edge_anom_mats[sc] = struct_loss[sc].detach().cpu().numpy()
                 edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])] = struct_loss[sc].detach().cpu().numpy()
-                edge_anom_mats[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])]
+                edge_anom_mats[sc] = np.maximum(edge_anom_mats[sc],edge_anom_mats[sc].T)
 
                 #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
                 recons_a[sc][tuple(edge_ids_[sc,:,:])] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                recons_a[sc][tuple(np.flip(edge_ids_[sc,:,:],axis=1))] = recons_a[sc][tuple(edge_ids_[sc,:,:])]
+                recons_a[sc] = np.maximum(recons_a[sc],recons_a[sc].T)
                 #if res_a is not None:
                 #    res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
         else:
@@ -240,6 +241,7 @@ def collect_recons_label(lbl,device):
 
 
 def seed_everything(seed=1234):
+    """Set random seeds for run"""
     random.seed(seed)
     dgl.seed(seed)
     torch.manual_seed(seed)
@@ -249,12 +251,20 @@ def seed_everything(seed=1234):
     torch.backends.cudnn.deterministic = True
         
 def init_model(feat_size,exp_params):
+    """Intialize model with configuration parameters"""
     struct_model,feat_model,params=None,None,None
+    '''
+    try:
+        exp_name = exp_params['NAME']
+        struct_model = torch.load(f'{exp_name}.pt')
+    except:
+        pass
+    '''
     if exp_params['MODEL']['NAME'] == 'gcad':
         gcad_model = GCAD(2,100,1)
     elif exp_params['MODEL']['NAME'] == 'madan':
         pass
-    else:
+    elif struct_model is None:
         struct_model = GraphReconstruction(feat_size, exp_params)
   
     device = torch.device(exp_params['DEVICE'])

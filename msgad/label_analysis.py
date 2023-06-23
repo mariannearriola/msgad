@@ -151,7 +151,8 @@ class LabelAnalysis:
         anom = self.anoms_combo
         hierarchy = LouvainIteration(resolution=1.1)
         dend = hierarchy.fit_predict(np.array(nx.adjacency_matrix(graph,weight='weight').todense()))
-        clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
+        clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=0),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
+        clust0,clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=0),postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
         #import ipdb  ; ipdb.set_trace()
         self.thresh = 0.8
 
