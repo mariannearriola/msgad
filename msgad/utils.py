@@ -22,6 +22,112 @@ import torch_geometric
 import gc
 from pygsp_ import *
 
+def replace_node_ids_with_probabilities(probability_array, node_ids):
+    unique_node_ids, node_id_counts = np.unique(node_ids, return_counts=True)
+    total_nodes = len(node_ids)
+    node_id_probabilities = node_id_counts / total_nodes
+    probability_dict = dict(zip(unique_node_ids, node_id_probabilities))
+    replace_func = np.vectorize(lambda x: probability_dict.get(x, 0))
+    replaced_array = replace_func(node_ids)
+    
+    # Normalize the probabilities to sum to 1
+    replaced_array /= np.sum(replaced_array)
+    
+    return replaced_array
+
+
+def weighted_selection(edge_idx,clusts,num_edges):
+    counts=(np.unique(edge_idx,return_counts=True)[1])/edge_idx.shape[0]
+    # Calculate weights based on cluster sizes
+    edge_probs = replace_node_ids_with_probabilities(counts,edge_idx)
+
+    # Select nodes based on weights
+    selected_edges = np.random.choice(np.arange(edge_idx.shape[0]), size=num_edges, replace=False, p=edge_probs)
+    return selected_edges
+
+def ensure_unique_pairs(tensor):
+    # Sort each row of the tensor
+    sorted_tensor, _ = torch.sort(tensor, dim=0)
+
+    # Find unique rows using torch.unique
+    unique_tensor = torch.unique(sorted_tensor, dim=0)
+
+    return unique_tensor
+
+def get_contr_edges(edge_idx,clusts,scales):
+    #import ipdb ; ipdb.set_trace()
+    edge_clusts=torch.stack([i[edge_idx[ind].detach().cpu()] for ind,i in enumerate(clusts)])
+
+    # for each clustering, sample edges/nonedges for contrastive learning, balance by cluster id of edges
+    for ind in range(scales):
+        '''
+        attract_edges = torch.where(edge_clusts[ind,0]==edge_clusts[ind,1])[0]
+        repel_edges = torch.where(edge_clusts[ind,0]!=edge_clusts[ind,1])[0]
+        import ipdb ; ipdb.set_trace()
+        if ind == 0:
+            attract_edges_sel = attract_edges.unsqueeze(0)
+            repel_edges_sel = repel_edges.unsqueeze(0)
+        else:
+            attract_edges_sel = torch.cat((attract_edges_sel,attract_edges.unsqueeze(0)),dim=0)
+            repel_edges_sel = torch.cat((repel_edges_sel,repel_edges.unsqueeze(0)),dim=0)
+
+        continue
+        '''
+        sc_idx_attract = torch.where(edge_clusts[ind][0]==edge_clusts[ind][1])[0]
+        if ind == 0:
+            num_edges = sc_idx_attract.shape[0]
+        attract_clusts = edge_clusts[ind,:,sc_idx_attract]
+        if ind == 0:
+            attract_edges_sel = sc_idx_attract[weighted_selection(attract_clusts[0],clusts[ind],num_edges)].unsqueeze(0)
+        else:
+            attract_edges_sel = torch.cat((attract_edges_sel,sc_idx_attract[weighted_selection(attract_clusts[0],clusts[ind],num_edges)].unsqueeze(0)),dim=0)
+
+        sc_idx_repel = torch.where(edge_clusts[ind][0]!=edge_clusts[ind][1])[0]
+        repel_clusts = edge_clusts[ind,:,sc_idx_repel]
+
+        # sample from first row, 2nd row, (will be no intersection), then randomly select num_edges from both
+        idx_found=weighted_selection(repel_clusts[0],clusts[ind],num_edges)
+        repel_clusts_sel = sc_idx_repel[idx_found]
+        sc_idx_left=torch.tensor(np.setdiff1d(sc_idx_repel,repel_clusts_sel))
+        repel_clusts_flip = sc_idx_left[weighted_selection(edge_clusts[ind,1,sc_idx_left],clusts[ind],np.minimum(num_edges,sc_idx_left.shape[0]))]
+
+        if np.intersect1d(np.array(repel_clusts_sel),np.array(repel_clusts_flip)).shape[0] > 0:
+            raise('bug')
+
+        repel_clusts_sel=np.array(torch.cat((repel_clusts_sel,repel_clusts_flip),dim=0))
+        repel_clusts_sel = sc_idx_repel[weighted_selection(repel_clusts_sel,clusts[ind],num_edges)]
+        if ind == 0:
+            repel_edges_sel = torch.tensor(repel_clusts_sel).unsqueeze(0)
+        else:
+            repel_edges_sel = torch.cat((repel_edges_sel,torch.tensor(repel_clusts_sel).unsqueeze(0)))
+
+    return attract_edges_sel,repel_edges_sel
+
+def get_different_cluster_indices(cluster_2d, same_cluster_indices):
+    different_cluster_indices = []
+    for index in same_cluster_indices:
+        cluster_id0,cluster_id1 = torch.where(cluster_2d==index)
+        cluster_id = cluster_2d[:,cluster_id1]
+        diff_idxs = cluster_id1[torch.where(cluster_id0[0]!=cluster_id1)]
+        idx_picked= random.choice(diff_idxs)
+        while idx_picked in different_cluster_indices:
+            print('next',idx_picked)
+            idx_picked= random.choice(diff_idxs)
+        different_cluster_indices.append(idx_picked)
+    return different_cluster_indices
+
+def generate_cluster_colors(cluster_ids):
+    unique_clusters = np.unique(cluster_ids)
+    num_clusters = len(unique_clusters)
+    color_palette = ['#%06x' % random.randint(0, 0xFFFFFF) for _ in range(num_clusters)]
+    cluster_colors = {}
+
+    for idx, cluster_id in enumerate(unique_clusters):
+        cluster_colors[cluster_id] = color_palette[idx]
+    color_list = [cluster_colors[cluster_id] for cluster_id in cluster_ids]
+    return color_list
+
+
 def collect_clust_loss(edge_ids,sc_idx,sc_idx_,loss):
     """Get average loss for each cluster, and assign back to edge-wise losses"""
     sc_idx = np.intersect1d(sc_idx,sc_idx_)
@@ -31,18 +137,25 @@ def collect_clust_loss(edge_ids,sc_idx,sc_idx_,loss):
     return expanded_average
 
 class TBWriter:
-    def __init__(self,tb,edge_ids,sc_label,clust):
+    def __init__(self,tb,edge_ids, attract_edges_sel, repel_edges_sel,sc_label,clust):
         # edges connected to any anomaly
-        a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
-        self.sc_idx_all=np.unique(np.stack((a,b)).flatten())
-        self.cl_all = edge_ids[:,self.sc_idx_all][0].detach().cpu()
+        norms,anom_sc1,anom_sc2,anom_sc3,anom_single=sc_label
+        self.sc_idx_all,self.sc_idx_all,self.sc_idx_inside,self.sc_idx_outside,self.cl_all={},{},{},{},{}
+
+        self.sc_labels = ['norm','anom_sc1','anom_sc2','anom_sc3','anom_single']
+        for ind,i in enumerate(sc_label):
+            lbl = self.sc_labels[ind]
+            a,b = np.intersect1d(edge_ids[0].detach().cpu(),i,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),i,return_indices=True)[-2]
+            self.sc_idx_all[lbl]=np.unique(np.stack((a,b)).flatten())
+            self.cl_all[lbl] = edge_ids[:,self.sc_idx_all[lbl]][0].detach().cpu()
 
         # only select edges inside cluster
-        self.sc_idx_inside = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
-
+        #self.sc_idx_inside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
+        self.sc_idx_inside = attract_edges_sel
         # only select edges outside cluster
-        self.sc_idx_outside = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
-
+        #self.sc_idx_outside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+        self.sc_idx_outside = repel_edges_sel
+        '''
         self.sc_idx_inside_outside_anom=np.setxor1d(a,b) # get edges outside of anom
         # get edges inside cluster
         self.sc_idx_inside_outside_anom_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
@@ -50,40 +163,83 @@ class TBWriter:
         a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
         self.sc_idx_outside_inside_anom=np.intersect1d(a,b)
         self.sc_idx_outside_inside_anom_= np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
+        '''
         self.tb = tb
 
-    def tb_write_anom(self,tb,edge_ids,sc_label,pred,attn,anom_sc,sc,epoch,regloss,clustloss,nonclustloss,clust):
+    def tb_write_anom(self,tb,sc_label,edge_ids,pred,sc,epoch,regloss,clustloss,nonclustloss,clust,sc_idx_inside,sc_idx_outside,entropies,clust_entropies):
         """Log loss evolution for anomaly group"""
 
-        # plot group attention
-        #tb.add_scalar(f'Att_{sc}_Anom{anom_sc}',attn[sc_label].mean(),epoch)
+        for ind,i in enumerate(sc_label):
+            lbl = self.sc_labels[ind]
+            a,b = np.intersect1d(edge_ids[0],i,return_indices=True)[-2],np.intersect1d(edge_ids[1],i,return_indices=True)[-2]
+            try:
+                self.sc_idx_all[lbl]=np.unique(np.stack((a,b)).flatten())
+            except Exception as e:
+                import ipdb ; ipdb.set_trace()
+            self.cl_all[lbl] = edge_ids[:,self.sc_idx_all[lbl]][0].detach().cpu()
         #import ipdb ; ipdb.set_trace()
-        average_tensor = torch.scatter_reduce(pred[self.sc_idx_all].detach().cpu(), 0, self.cl_all, reduce="mean")
-        expanded_average = average_tensor[self.cl_all].to(edge_ids.device).mean()
-        tb.add_scalar(f'Loss_{sc}_Anom{anom_sc}', expanded_average, epoch)
+        loss_dict,regloss_dict,loss_inclust_dict,loss_outclust_dict={},{},{},{}
+        #import ipdb ; ipdb.set_trace()
+        for ind,i in enumerate(self.sc_labels):
+            # TODO: get cluster(s) associated with these anomalies for that scale
+            # get avg entropy of those clusters
+            # TODO: can always try to get node-level entropy as well
+            anom_sc = i
+            average_tensor = torch.scatter_reduce(pred[self.sc_idx_all[i]].detach().cpu(), 0, self.cl_all[i], reduce="mean")
+            expanded_average = average_tensor[self.cl_all[i]].to(edge_ids.device).mean()
+            loss_dict[anom_sc] = expanded_average 
+            tb.add_scalar(f'Loss_{sc}/Anom{anom_sc}',expanded_average, epoch)
 
-        # log regularization loss
-        average_tensor = torch.scatter_reduce(regloss[self.sc_idx_all].detach().cpu(), 0, self.cl_all, reduce="mean")
-        expanded_average = average_tensor[self.cl_all].to(edge_ids.device).mean()
-        tb.add_scalar(f'Regloss{sc}_Anom{anom_sc}', expanded_average, epoch)
+            # log regularization loss
+            average_tensor = torch.scatter_reduce(regloss[self.sc_idx_all[i]].detach().cpu(), 0, self.cl_all[i], reduce="mean")
+            expanded_average = average_tensor[self.cl_all[i]].to(edge_ids.device).mean()
+            regloss_dict[anom_sc] = expanded_average 
+            tb.add_scalar(f'Regloss{sc}/Anom{anom_sc}', expanded_average, epoch)
 
-        # only select INSIDE cluster
-        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all,self.sc_idx_inside,clustloss)
-        tb.add_scalar(f'Loss_inclust{sc}_Anom_{anom_sc}', expanded_average, epoch)
+            # only select INSIDE cluster
+            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all[i],sc_idx_inside[sc],clustloss)
+            loss_inclust_dict[anom_sc] = expanded_average 
+            tb.add_scalar(f'Loss_inclust{sc}/Anom{anom_sc}', expanded_average, epoch)
 
-        # only select OUTSIDE cluster
-        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all,self.sc_idx_outside,nonclustloss)
-        tb.add_scalar(f'Loss_outclust{sc}_Anom_{anom_sc}', expanded_average, epoch)
+            # only select OUTSIDE cluster
+            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all[i],sc_idx_outside[sc],nonclustloss)
+            loss_outclust_dict[anom_sc] = expanded_average 
+            tb.add_scalar(f'Loss_outclust{sc}/Anom{anom_sc}', expanded_average, epoch)
+            #import ipdb ; ipdb.set_trace()
+            #sc_clusters = clust[sc_label[ind]].unique()
+            #sc_entropy = entropies[sc][sc_clusters].mean()
 
-        # only select INSIDE cluster, outside OF ANOM
-        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_inside_outside_anom,self.sc_idx_inside_outside_anom_,clustloss)
-        tb.add_scalar(f'Inclust_outanom{sc}_Anom{anom_sc}', expanded_average, epoch)
-        
-        # only select edges between anom and other nodes not in anom group, in same cluster
+            clust_counts=torch.unique(clust,return_counts=True)[-1]
+            anom_clusts,anom_counts=torch.unique(clust[sc_label[ind]],return_counts=True)
+            #import ipdb ; ipdb.set_trace()
+            if i == 'norm':
+                clusts = anom_clusts[torch.where(anom_counts/clust_counts[anom_clusts] > 0.95)]
+                group_ids = np.intersect1d(clust[sc_label[ind]],clusts,return_indices=True)[1]
+            else:
+                group_ids=sc_label[ind]
 
-        # only select edges OUTSIDE of cluser, INSIDE anom
-        expanded_average = collect_clust_loss(edge_ids,self.sc_idx_outside_inside_anom,self.sc_idx_outside_inside_anom_,nonclustloss)
-        tb.add_scalar(f'Outclust_inanom{sc}_Anom{anom_sc}', expanded_average, epoch)
+            # node entropy
+            #import ipdb ; ipdb.set_trace()
+            sc_entropy = entropies[sc][group_ids].mean()
+            tb.add_scalar(f'Node_entropy{sc}/Anom{anom_sc}', sc_entropy, epoch)
+
+            # clust entropy
+            #anom_clusts = clust[sc_label[ind]].unique()
+            #clust_entropy = np.vectorize(clust_entropies[sc].get)(anom_clusts)
+            #clust_entropy = clust_entropy[clust_entropy.nonzero()].mean()
+            clust_entropy = entropies[sc][group_ids].mean()
+            tb.add_scalar(f'Clust_entropy{sc}/Anom{anom_sc}', clust_entropy, epoch)
+            '''
+            # only select INSIDE cluster, outside OF ANOM
+            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_inside_outside_anom,self.sc_idx_inside_outside_anom_,clustloss)
+            tb.add_scalar(f'Inclust_outanom{sc}_Anom{anom_sc}', expanded_average, epoch)
+            
+            # only select edges between anom and other nodes not in anom group, in same cluster
+
+            # only select edges OUTSIDE of cluser, INSIDE anom
+            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_outside_inside_anom,self.sc_idx_outside_inside_anom_,nonclustloss)
+            tb.add_scalar(f'Outclust_inanom{sc}_Anom{anom_sc}', expanded_average, epoch)
+            '''
 
 def get_sc_label(sc_label):
     batch_sc_label = {}
@@ -250,16 +406,19 @@ def seed_everything(seed=1234):
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
         
-def init_model(feat_size,exp_params):
+def init_model(feat_size,exp_params,args):
     """Intialize model with configuration parameters"""
     struct_model,feat_model,params=None,None,None
-    '''
+    loaded=False
     try:
-        exp_name = exp_params['NAME']
-        struct_model = torch.load(f'{exp_name}.pt')
-    except:
+        exp_name = exp_params['EXP']
+        if 'weibo' not in exp_name:
+            struct_model = torch.load(f'{exp_name}.pt')
+            loaded=True
+    except Exception as e:
+        print(e)
         pass
-    '''
+    
     if exp_params['MODEL']['NAME'] == 'gcad':
         gcad_model = GCAD(2,100,1)
     elif exp_params['MODEL']['NAME'] == 'madan':
@@ -278,7 +437,7 @@ def init_model(feat_size,exp_params):
     elif exp_params['MODEL']['NAME'] == 'madan':
         pass
 
-    return struct_model,params
+    return struct_model,params,loaded
 
 def getScaleClusts(dend,thresh):
     clust_labels = postprocess.cut_straight(dend,threshold=thresh)

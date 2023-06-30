@@ -60,7 +60,7 @@ class anom_classifier():
         rankings_sc[np.intersect1d(sorted_errors,anom,return_indices=True)[1]] = 1
         rankings_sc = rankings_sc.nonzero()[0]
         rankings_sc = np.append(rankings_sc,np.full(ms_anoms_num-rankings_sc.shape[0],np.max(rankings_sc)))
-        rankings_auc = auc(torch.tensor(np.arange(rankings_sc.shape[0])),torch.tensor(rankings_sc)).item()
+        rankings_auc = auc(torch.tensor(np.arange(rankings_sc.shape[0]))/rankings_sc.shape[0],torch.tensor(rankings_sc)).item()
         plt.plot(np.arange(rankings_sc.shape[0]),rankings_sc,color=color)
         fpath = f'vis/hit_at_k_model_wise/{self.dataset}/rankings/{scale_name}'
         if not os.path.exists(fpath):
@@ -81,7 +81,7 @@ class anom_classifier():
             percs_sc[rankings_sc[ranking_ind]:rankings_sc[ranking_ind+1]] = ind/rankings_sc.shape[0]
         percs_sc[rankings_sc[-1]:] = 1.
         
-        percs_auc = auc(torch.tensor(np.arange(percs_sc.shape[0])),torch.tensor(percs_sc)).item()
+        percs_auc = auc(torch.tensor(np.arange(percs_sc.shape[0]))/percs_sc.shape[0],torch.tensor(percs_sc)).item()
         
         plt.plot(np.arange(percs_sc.shape[0]),percs_sc,color=color)
         fpath = f'vis/perc_at_k_model_wise/{self.dataset}/rankings/{scale_name}'
@@ -103,10 +103,14 @@ class anom_classifier():
         fpath = f'vis/perc_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
-            
+        perc_single =  'single scale, auc' + str(round(perc_single,2))
+        perc1_auc =  'scale 1, auc' + str(round(perc1_auc,2))
+        perc2_auc =  'scale 2, auc' + str(round(perc2_auc,2))
+        perc3_auc =  'scale 3, auc' + str(round(perc3_auc,2))
         plt.legend([perc_single,perc1_auc,perc2_auc,perc3_auc])
         plt.xlabel('# predictions')
         plt.ylabel('% anomaly detected')
+        plt.title('Percent anomaly detected @ k')
         plt.savefig(f'{fpath}/sc{sc}_perc_at_k_{self.title}.png')
 
     def hit_at_k(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
@@ -193,15 +197,17 @@ class anom_classifier():
             return 0.
         return node_score
 
-    def get_scores(self,graph,mat):
+    def get_scores(self,graph,mat,clusts):
         for sc,sc_score in enumerate(mat):
             for ind,score in enumerate(sc_score):
+                node_score = 0 if score.max() == 0 else np.array(score[score.nonzero()]).mean()
+
                 if ind == 0:
                     #node_scores = np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()])
-                    node_scores = np.array(score[score.nonzero()]).mean()
+                    node_scores = node_score
                 else:
                     #node_scores = np.append(node_scores, np.array([score[np.array([n for n in graph.neighbors(ind)])].mean()]))
-                    node_scores = np.append(node_scores, np.array(score[score.nonzero()]).mean())      
+                    node_scores = np.append(node_scores, node_score)      
                 
                 #node_scores = np.mean(sc_score,axis=1)
             # run graph transformer with node score attributes
@@ -213,8 +219,24 @@ class anom_classifier():
                 all_scores = torch.cat((all_scores,torch.tensor(node_scores).unsqueeze(0)),dim=0)
         return all_scores
 
+    def anom_histogram(self,rankings,x,label,ind):
+        plt.figure()
+        sort_idx = np.argsort(rankings)
+
+        if 'anom' not in label:
+            clust_colors = np.array(generate_cluster_colors(x))
+            x = clust_colors
+        sorted_x,sorted_y=x[sort_idx],rankings[sort_idx]
+        plt.bar(np.arange(sorted_y.shape[0]),sorted_y,color=sorted_x,width=1.)
+        fpath = f'vis/histogram-scores/{self.dataset}/{self.model}/{self.epoch}/{label}'
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        fname = f'{fpath}/{ind}.png'
+        plt.savefig(fname)
+
+
     # clust = nonclust if one null
-    def calc_clust_prec(self, graph, clust_scores, nonclust_scores, lbl, anoms_found_prev, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+    def calc_clust_prec(self, graph, clust_scores, nonclust_scores, lbl, anoms_found_prev, norms, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
             scores: anomaly scores for all scales []
@@ -227,11 +249,27 @@ class anom_classifier():
             anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
+        color_names=[np.full(norms.shape,'green'),np.full(anom_sc1.shape,'red'),np.full(anom_sc2.shape,'blue'),np.full(anom_sc3.shape,'purple'),np.full(anom_single.shape,'cyan'),]
+        anoms=[norms,anom_sc1,anom_sc2,anom_sc3,anom_single]
+        color_names = np.concatenate(color_names)
+        anoms = np.concatenate(anoms)
+
         all_clust_scores = self.get_scores(graph,clust_scores,clusts[0])[0]
         all_nonclust_scores = self.get_scores(graph,nonclust_scores,clusts[1])[0]
         clust_score_norm,nonclust_score_norm = all_clust_scores/all_clust_scores.max(),all_nonclust_scores/all_nonclust_scores.max()
+        clust_score_norm[torch.where(torch.isnan(clust_score_norm))] = 0. ; nonclust_score_norm[torch.where(torch.isnan(nonclust_score_norm))] = 0.
 
         cum_score = clust_score_norm+nonclust_score_norm
+        self.anom_histogram(clust_score_norm,color_names,f'clustscore-anom',lbl)
+        self.anom_histogram(nonclust_score_norm,color_names,f'nonclustscore-anom',lbl)
+        self.anom_histogram(cum_score,color_names,f'cumscore-anom',lbl)
+
+
+        self.anom_histogram(clust_score_norm,clusts[0],f'clustscore-clust',lbl)
+        self.anom_histogram(nonclust_score_norm,clusts[1],f'nonclustscore-clust',lbl)
+        if not np.array_equal(clusts[0],clusts[1]):
+            self.anom_histogram(cum_score,clusts,f'cumscore-clust',lbl)
+
         if anoms_found_prev is not None:
             cum_score[anoms_found_prev] = 0.
         num_anoms_found = np.where(cum_score>cum_score.std()*self.stds)[0].shape[0]
@@ -300,6 +338,7 @@ class anom_classifier():
             
             hit_rankings = rankings.nonzero()[0]
             self.hit_at_k(hit_rankings,sorted_errors,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
+            
             self.plot_percentages(hit_rankings,sorted_errors,[anom_single,anom_sc1,anom_sc2,anom_sc3],ms_anoms_num,sc)
 
             #import ipdb ; ipdb.set_trace()

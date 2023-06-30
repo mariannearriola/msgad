@@ -331,7 +331,7 @@ class Visualizer:
         #plt.xticks(np.arange(len(anom_groups)), legend)s
         plt.legend(['scale1 model','scale2 model', 'scale3 model'])
 
-        import ipdb ; ipdb.set_trace()
+        #import ipdb ; ipdb.set_trace()
         print(fpath)
 
     def plot_filter_weights(self,filter_weights):

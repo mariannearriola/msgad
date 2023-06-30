@@ -19,6 +19,7 @@ from models.gcad import *
 from models.hogat import *
 import gc
 from models.gradate import *
+import sklearn
 
 class EdgeClassifier(nn.Module):
     def __init__(self, input_dim):
@@ -73,14 +74,11 @@ class GraphReconstruction(nn.Module):
         dropout = 0
         self.embed_act = act
         self.decode_act = nn.Sigmoid()
-        self.weight_decay = 0.01
-        self.lengths = [5,10,20]
         self.conv_weight = None
         if 'multi-scale' in self.model_str:
             
             num_filters = self.d
             self.conv = AMNet_ms(in_size, self.hidden_dim, 2, self.k, self.d) # k, num filters
-            
             # scales x num filters x (k+1)
             #self.conv_weight = nn.Parameter(data=torch.normal(mean=torch.full((self.scales,self.d,self.k+1),0.),std=1).to(torch.float64)).requires_grad_(True)
             #self.conv_weight = nn.Parameter(data=torch.full((self.scales,self.d,self.k+1),0.).to(torch.float64)).requires_grad_(True)
@@ -121,6 +119,8 @@ class GraphReconstruction(nn.Module):
                                             )
 
         self.linear_after = nn.Linear(in_size*(self.k+1), int(self.hidden_dim))
+        self.linear_after2 = nn.Linear(in_size*(self.k+1), int(self.hidden_dim))
+        self.linear_after3 = nn.Linear(in_size*(self.k+1), int(self.hidden_dim))
         self.final_attn = None
 
         def init_weights(m):
@@ -184,6 +184,7 @@ class GraphReconstruction(nn.Module):
         check_gpu_usage('about to run')
         recons_x,recons_a=None,None
         if self.model_str in ['dominant','amnet']: #x, e
+            entropies = []
             for ind in range(self.scales):
                 if ind == 0:
                     res = self.conv(feats,edges)
@@ -191,6 +192,21 @@ class GraphReconstruction(nn.Module):
                 else:
                     res = self.conv(feats,edges)
                     recons_a = torch.cat((recons_a,self.decode_act(res)[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)),dim=0)
+                
+                entropies.append(sklearn.metrics.silhouette_samples(1-self.decode_act(res[0]).detach().cpu(),clusts[ind]))
+                continue
+                entropies_sc = np.zeros(res.shape[1])
+                for clust in clusts[ind].unique():
+                    idx = torch.where(clusts[ind] == clust)[0]
+                    #neg_idx = np.setdiff1d(np.arange(recons_e.shape[1]),idx)
+                    #neg_idx = neg_idx[np.random.randint(0,neg_idx.shape[0],idx.shape)]
+                    clust_recons = self.decode_act(res[0])[idx][:,idx]
+                    # get avg entopy of cluster
+                    #import ipdb ; ipdb.set_trace()
+                    #qk = recons_e[sc,idx][:,neg_idx]
+                    entropies_sc[idx]=scipy.stats.entropy(clust_recons.detach().cpu())
+                    del clust_recons,idx ; torch.cuda.empty_cache()
+                entropies.append(np.array(entropies_sc))
                 del res ; torch.cuda.empty_cache()
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
             recons = [self.conv(feats, edges, 0,dst_nodes)]
@@ -200,26 +216,21 @@ class GraphReconstruction(nn.Module):
             recons_a = [self.conv(graph_,feats,dst_nodes)]
         if 'multi-scale' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
-            feats = self.linear_transform_in(feats)#.unsqueeze(0)
-            #import ipdb ; ipdb.set_trace()
-            
-
-            #h_ = torch.bmm(feats, torch.transpose(feats,1,2))
-            #return feats,feats,feats
-            #return h_,h_,feats
-
+            feats = self.linear_transform_in(feats)
             check_gpu_usage('about to run model')
-            #edge_ids = torch.vstack((pos_edges,neg_edges)).to(pos_edges.device)
-            #import ipdb ; ipdb.set_trace()
             for ind in range(self.scales):
                 # pass input through filters
-                #h = self.conv(feats,edges,self.conv_weight[ind])[:,0,:]#,dst_nodes)
                 check_gpu_usage('before conv')
                 h = self.conv(feats,edges,None)[:,0,:]#,dst_nodes)
                 check_gpu_usage('after conv')
                 if 'weibo' in self.dataset:
                     check_gpu_usage('model finished')
-
+                if ind == 0:
+                    h = self.linear_after(h)
+                elif ind == 1:
+                    h = self.linear_after2(h)
+                elif ind == 2:
+                    h = self.linear_after3(h)
                 # collect results
                 if ind == 0:
                     #score_sc = attn_scores.unsqueeze(0)
@@ -230,53 +241,57 @@ class GraphReconstruction(nn.Module):
                 del h ; torch.cuda.empty_cache() ; gc.collect()
             
             self.final_attn = self.attn
-            hs = self.linear_after(hs)
-            '''
-            feat_offset = int(hs.shape[-1]/self.scales)
-            hs *= F.softmax(self.attn,1).unsqueeze(-1)
-            #recons = torch.bmm(hs,torch.transpose(hs,1,2))
-            '''
+            #hs = self.linear_after(hs)
+            
             check_gpu_usage('before bmm')
             hs_t=torch.transpose(hs,1,2)
+            if 'elliptic' in self.dataset:
+                hs_s = hs[0].to_sparse()
+                hs_t_s = hs_t[0].to_sparse()
+                prod=torch.sparse.mm(hs_s,hs_t_s)
+                import ipdb ; ipdb.set_trace()
             recons = torch.bmm(hs,hs_t)
 
             del hs_t ; torch.cuda.empty_cache() ; gc.collect()
             check_gpu_usage('after bmm')
+            # collect entropies here
             
-
-            #import ipdb ; ipdb.set_trace()
+            recons_e = self.decode_act(recons)
+            entropies = []
+            for sc in range(recons_e.shape[0]):
+                entropies.append(sklearn.metrics.silhouette_samples(1-recons_e[sc].detach().cpu(),clusts[sc]))
+                continue
+                entropies_sc = np.zeros(recons_e.shape[1])
+                for clust in clusts[sc].unique():
+                    idx = torch.where(clusts[sc] == clust)[0]
+                    #neg_idx = np.setdiff1d(np.arange(recons_e.shape[1]),idx)
+                    #neg_idx = neg_idx[np.random.randint(0,neg_idx.shape[0],idx.shape)]
+                    clust_recons = recons_e[sc,idx][:,idx]
+                    # get avg entopy of cluster
+                    #import ipdb ; ipdb.set_trace()
+                    #qk = recons_e[sc,idx][:,neg_idx]
+                    entropies_sc[idx]=scipy.stats.entropy(clust_recons.detach().cpu())
+                    del clust_recons,idx ; torch.cuda.empty_cache()
+                entropies.append(np.array(entropies_sc))
+            
             for i in range(self.scales):
                 if i == 0:
                     recons_f = recons[i,edge_ids[i,0],edge_ids[i,1]].unsqueeze(0)
                 else:
                     recons_f = torch.cat((recons_f,recons[i,edge_ids[i,0],edge_ids[i,1]].unsqueeze(0)),dim=0)
-           
+            import ipdb ; ipdb.set_trace()
             del recons; torch.cuda.empty_cache() ; gc.collect()
             check_gpu_usage('results collected')
             recons_f = self.decode_act(recons_f)
+            #import ipdb ; ipdb.set_trace()
             check_gpu_usage('after sigmoid')
 
-            return recons_f,recons_f,hs
+            return recons_f,recons_f,hs,entropies
             
         
         # feature and structure reconstruction models
         check_gpu_usage('collecting')
         torch.cuda.empty_cache()
-        '''
-        if self.model_str in ['anomalydae','dominant','ho-gat']:
-            recons_x,recons_a = recons[0]
-            if self.model_str == 'ho-gat':
-                recons_ind = 0 if self.recons == 'feat' else 1
-                return recons[0][recons_ind], recons[0][recons_ind+1], recons[0][recons_ind+2]
-            #import ipdb ; ipdb.set_trace()
-            
-            recons_a = self.decode_act(recons_a)
-            recons_a = recons_a[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)
-            del recons_x ; torch.cuda.empty_cache()
-            #recons_a = recons_a[edge_ids[0,0],edge_ids[0,1]]#.unsqueeze(0)
-            #recons_a = recons_a.unsqueeze(0)
-            #recons_x = recons_x.unsqueeze(0)
-        '''
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         #import ipdb ; ipdb.set_trace()
         if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate','dominant']:
@@ -286,5 +301,5 @@ class GraphReconstruction(nn.Module):
         if 'weibo' in self.dataset:
             check_gpu_usage('returning results')
             
-        return recons_a,None,None
+        return recons_a,None,None,entropies
         return recons_a,recons_x,res_a

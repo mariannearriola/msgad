@@ -36,6 +36,7 @@ def graph_anomaly_detection(exp_params):
     if edge_idx is not None:
         adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feats.shape[0])
         adj.ndata['feature'] = feats
+        adj.edata['w'] = torch.ones(adj.number_of_edges()).to(adj.device)
     edges=adj.edges('eid')
     if 'tfinance' in exp_params['DATASET']['NAME'] and exp_params['VIS']['VIS_FILTERS'] == True:
         dataloader = None
@@ -45,7 +46,7 @@ def graph_anomaly_detection(exp_params):
     # intialize model (on given device)
     adj = adj.to(exp_params['DEVICE']) ; feats = feats#.to(exp_params['DEVICE'])
     struct_model,feat_model=None,None
-    struct_model,params = init_model(feats.size(1),exp_params)
+    struct_model,params,model_loaded = init_model(feats.size(1),exp_params,args)
     exp_name = exp_params['EXP'] ; scales = exp_params['SCALES']
     regularize = True if exp_params['MODEL']['CONTRASTIVE'] == True else False
 
@@ -56,7 +57,6 @@ def graph_anomaly_detection(exp_params):
         optimizer = torch.optim.Adam(struct_model.parameters(), lr = float(exp_params['MODEL']['LR']))
 
     # begin model training
-    #best_loss = torch.tensor(float('inf')).to(exp_params['DEVICE'])    
     train_attn_w,train_losses=None,None
     
     # epoch x 3 x num filters x nodes
@@ -79,18 +79,23 @@ def graph_anomaly_detection(exp_params):
             madan_analysis(adj,lbl,sc_label,anoms,exp_params)
 
     la = LabelAnalysis(get_sc_label(sc_label),exp_params['DATASET']['NAME'])
-    g = adj.to('cpu')#self.graph.device)#.to('cpu')
+
+    g = adj.to('cpu')
     g_nx = dgl_to_nx(g)[0]
 
-    clust1,clust2,clust3=la.run_dend(g_nx,return_clusts=True)
-    clusts =[clust1,clust2,clust3]
+    sc_label_new,clusts=la.run_dend(g_nx,4,return_all=True)
+    clusts = clusts[1:scales+1]
 
+    edge_idx = torch.stack((adj.edges()[0],adj.edges()[1]))
+    clusts = torch.tensor(clusts)
+
+    #attract_edges_sel,repel_edges_sel=get_contr_edges(edge_idx,clusts,scales)
+    
     for epoch in range(int(exp_params['MODEL']['EPOCH'])):
-        epoch_l = 0
+        epoch_l,iter = 0,0
         if exp_params['MODEL']['NAME'] == 'gcad': break
-        iter=0
         edge_anom_mats,node_anom_mats,recons_a,res_a_all = init_recons_agg(adj.number_of_nodes(),adj.ndata['feature'].shape[1],exp_params)
-        
+        if model_loaded: break
         for data_ind in dataloader:
             if data_ind is not None:
                 if (exp_params['DATASET']['DATADIR'] is not None and exp_params['DATASET']['DATALOAD']):
@@ -100,7 +105,7 @@ def graph_anomaly_detection(exp_params):
                 if exp_params['DATASET']['BATCH_TYPE'] == 'node':
                     all_nodes,in_nodes,g_batch=loaded_input
                 else:
-                    in_nodes, pos_edges, neg_edges, g_batch, last_batch_node, batch_sc_label = dataloading.get_edge_batch(loaded_input,sc_label)
+                    in_nodes, pos_edges, neg_edges, g_batch, last_batch_node, batch_sc_label = dataloading.get_edge_batch(loaded_input,sc_label_new)
                     if 'cora' not in exp_params['DATASET']['NAME']: print('size of batch',g_batch.num_dst_nodes(),'nodes')
             in_nodes = np.arange(0,in_nodes.shape[0])
             vis = True if (epoch == 0 and iter == 0 and exp_params['VIS']['VIS_FILTERS'] == True) else False
@@ -110,7 +115,7 @@ def graph_anomaly_detection(exp_params):
                     visualizer.sc_label = batch_sc_label
                     lg = LabelGenerator(adj,adj.ndata['feature'],vis,'train',batch_sc_label,norms,exp_params,None)
                 else:
-                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',get_sc_label(sc_label),norms,exp_params,visualizer)
+                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'train',get_sc_label(sc_label_new),norms,exp_params,visualizer)
                 
                 lbl=lg.construct_labels()
             else:
@@ -141,32 +146,29 @@ def graph_anomaly_detection(exp_params):
             # NOTE: POS EDGES AND NEG EDGES THE SAME FOR ALL SCALES
             edge_ids = torch.cat((pos_edges[0],neg_edges[0]),axis=1).unsqueeze(0).tile((scales,1,1))
             
-            A_hat,X_hat,res_a = struct_model(edges,feats,edge_ids,vis=vis,vis_name='epoch1',clusts=clusts)
-            
-            #del res_a
-            torch.cuda.empty_cache()
-            gc.collect()
+            attract_edges_sel,repel_edges_sel=get_contr_edges(edge_ids,clusts,scales)
 
-            check_gpu_usage('collecting recons label')
+            A_hat,X_hat,res_a,entropies = struct_model(edges,feats,edge_ids,vis=vis,vis_name='epoch1',clusts=clusts)
+
+            # find entropy of each cluster (scatter) for each scale
+            # compare scales in tb writer
+
+            torch.cuda.empty_cache() ; gc.collect()
+
             check_gpu_usage('recons label collected, starting loss')
-            
-            loss, struct_loss, feat_cost,regloss,clustloss,nonclustloss = loss_func(recons_label, adj.ndata['feature'], A_hat, None, None, edge_ids, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'], clusts=clusts, regularize=regularize)
+            loss, struct_loss, feat_cost,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside,all_entropies = loss_func(recons_label, adj.ndata['feature'], A_hat, None, None, edge_ids, attract_edges_sel, repel_edges_sel, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'], clusts=clusts, regularize=regularize)
             check_gpu_usage('loss collected')
             #(new_scores.max(0).values-new_scores.mean(0))/(new_scores.max(0).values-new_scores.mean(0)).sum()
             if exp_params['MODEL']['NAME'] == 'gradate':
                 loss = A_hat[0]
-            #import ipdb ; ipdb.set_trace()
+            import ipdb ; ipdb.set_trace()
             
             try:
                 l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
             except Exception as e:
                 print(e)
                 import ipdb ; ipdb.set_trace()
-            '''
-            if l < best_loss:
-                best_loss = dl
-                torch.save(model,'best_model.pt')
-            '''
+
             epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
             if exp_params['MODEL']['DEBUG']:
                 if iter % 100 == 0:
@@ -181,7 +183,7 @@ def graph_anomaly_detection(exp_params):
 
             if exp_params['VIS']['VIS_LOSS']:
                 visualizer.sc_label = batch_sc_label
-                edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
+                #edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
                 edge_ids_ = edge_ids
                 node_ids_ = g_batch.nodes()
 
@@ -201,28 +203,30 @@ def graph_anomaly_detection(exp_params):
         '''
         if exp_params['DATASET']['DATASAVE']: continue 
         
+        # TODO check entropies
+        #import ipdb; ipdb.set_trace()
+
+
         print('epoch done',epoch,loss)
-        if 'weibo' in exp_params['DATASET']['NAME']:
+        #if 'weibo' in exp_params['DATASET']['NAME']:
+        if True:
+            #import ipdb; ipdb.set_trace()
+            anoms_all = [norms,batch_sc_label['single'],visualizer.flatten_label(batch_sc_label['anom_sc1']),visualizer.flatten_label(batch_sc_label['anom_sc2']),visualizer.flatten_label(batch_sc_label['anom_sc3'])]
             if epoch == 0 and iter == 1:
-                tb_writer_norm = [TBWriter(tb,edge_ids[0],norms,clusts[sc]) for sc in range(scales)]
-                tb_writer_single = [TBWriter(tb,edge_ids[0],batch_sc_label['single'],clusts[sc]) for sc in range(scales)]
-                tb_writer_sc1 = [TBWriter(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc1']),clusts[sc]) for sc in range(scales)]
-                tb_writer_sc2 = [TBWriter(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc2']),clusts[sc]) for sc in range(scales)]
-                tb_writer_sc3 = [TBWriter(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc3']),clusts[sc]) for sc in range(scales)]
+                #anoms_all = [norms,batch_sc_label['single'],visualizer.flatten_label(batch_sc_label['anom_sc1']),visualizer.flatten_label(batch_sc_label['anom_sc2']),visualizer.flatten_label(batch_sc_label['anom_sc3'])]
+                #import ipdb ; ipdb.set_trace()
+                tb_writers = [TBWriter(tb, edge_ids[sc], attract_edges_sel[sc], repel_edges_sel[sc], anoms_all,clusts[sc]) for sc in range(scales)]
             for sc,l in enumerate(loss):
+                # TODO: CHECK IF EDGE IDS CHANGE
+                #import ipdb ; ipdb.set_trace()
+                #import ipdb ; ipdb.set_trace()
                 tb.add_scalar(f'Loss_{sc}', l, epoch)
                 tb.add_scalar(f'RegLoss_{sc}', regloss[sc].sum(), epoch)
                 tb.add_scalar(f'ClustLoss_{sc}', clustloss[sc].sum(), epoch)
                 tb.add_scalar(f'NonClustLoss_{sc}', nonclustloss[sc].sum(), epoch)
                 #tb.add_scalar(f'AvgAtt_{sc}',F.softmax(struct_model.attn,0)[sc].mean())
                 clust = clusts[sc]
-                
-                tb_writer_norm[sc].tb_write_anom(tb,edge_ids[0],norms,struct_loss[sc],F.softmax(struct_model.attn,0)[sc],'normal',sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust)
-                tb_writer_single[sc].tb_write_anom(tb,edge_ids[0],batch_sc_label['single'],struct_loss[sc],F.softmax(struct_model.attn,0)[sc],'single',sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust)
-                tb_writer_sc1[sc].tb_write_anom(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc1']),struct_loss[sc],F.softmax(struct_model.attn,0)[sc],1,sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust)
-                tb_writer_sc2[sc].tb_write_anom(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc2']),struct_loss[sc],F.softmax(struct_model.attn,0)[sc],2,sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust)
-                tb_writer_sc3[sc].tb_write_anom(tb,edge_ids[0],visualizer.flatten_label(batch_sc_label['anom_sc3']),struct_loss[sc],F.softmax(struct_model.attn,0)[sc],3,sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust)
-            #import ipdb ; ipdb.set_trace()
+                tb_writers[sc].tb_write_anom(tb,anoms_all,edge_ids[0].detach().cpu(), struct_loss[sc],sc,epoch,regloss[sc],clustloss[sc],nonclustloss[sc],clust,sc_idx_inside,sc_idx_outside,entropies,all_entropies)
             if struct_model.final_attn is not None:
                 tb.add_histogram(f'Filt_att',F.softmax(struct_model.final_attn,0),epoch)
 
@@ -244,10 +248,9 @@ def graph_anomaly_detection(exp_params):
         for name, param in struct_model.named_parameters():
             tb.add_histogram(name, param.flatten(), epoch)
 
-    # save/load trained model model
-    if exp_params['DATASET']['DATASAVE'] == True and args.dataload:
-        torch.save(struct_model,f'{exp_name}.pt')
-
+        # save/load trained model model
+        if epoch > 1 and epoch == int(exp_params['MODEL']['EPOCH'])-1:
+            torch.save(struct_model,f'{exp_name}.pt')
 
     # accumulate node-wise anomaly scores via model evaluation
     if exp_params['MODEL']['NAME'] not in ['madan','gcad'] and struct_model: struct_model.eval()
@@ -277,20 +280,25 @@ def graph_anomaly_detection(exp_params):
             all_nodes,in_nodes,g_batch= loaded_input
             pos_edges,neg_edges=None,None
         else:
-            in_nodes, pos_edges, neg_edges, g_batch, last_batch_node,batch_sc_label = dataloading.get_edge_batch(loaded_input,sc_label)
+            in_nodes, pos_edges, neg_edges, g_batch, last_batch_node,batch_sc_label = dataloading.get_edge_batch(loaded_input,sc_label_new)
             #edge_ids = torch.vstack((pos_edges,neg_edges))
         in_nodes = np.arange(0,in_nodes.shape[0])
+
         # load data/labels
         if struct_model and exp_params['MODEL']['NAME'] != 'gcad':
             if not exp_params['DATASET']['DATALOAD']:
-                if exp_params['VIS']['VIS_FILTERS']:
+                if not exp_params['VIS']['VIS_FILTERS']:
                     visualizer.sc_label = batch_sc_label
-                    lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'test',batch_sc_label,in_nodes[norms],exp_params,visualizer)
+                    lg = LabelGenerator(adj,adj.ndata['feature'],vis,'train',batch_sc_label,norms,exp_params,None)
+                    #lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'test',batch_sc_label,in_nodes[norms],exp_params,visualizer)
                 else:
                     lg = LabelGenerator(g_batch,g_batch.ndata['feature'],vis,'test',batch_sc_label,in_nodes[norms],exp_params,None)
                 lbl=lg.construct_labels()
             else:
                 lbl = lbl[1:]
+
+            if 'elliptic' in exp_params['DATASET']['NAME']:
+                import ipdb ; ipdb.set_trace()
             lbl_eids = lbl[0].edge_ids(pos_edges[:,0],pos_edges[:,1])
             pos_edges = torch.stack([torch.stack(i.find_edges(lbl_eids)) for i in lbl])
             neg_edges = torch.stack([torch.stack(dgl.sampling.global_uniform_negative_sampling(i,pos_edges.shape[-1])) for i in lbl])
@@ -309,7 +317,8 @@ def graph_anomaly_detection(exp_params):
             edges, feats, graph_ = process_graph(adj)
      
             edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
-            A_hat,X_hat,res_a = struct_model(edges,feats,edge_ids,vis=vis,vis_name='test',clusts=clusts)
+            A_hat,X_hat,res_a,entropies = struct_model(edges,feats,edge_ids,vis=vis,vis_name='test',clusts=clusts)
+            import ipdb ; ipdb.set_trace()
 
         if exp_params['MODEL']['NAME'] == 'gcad':
             adj_ = dgl_to_mat(g_batch)
@@ -322,6 +331,7 @@ def graph_anomaly_detection(exp_params):
 
         # collect anomaly scores
         #edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
+        
         edge_ids = torch.cat((pos_edges[0],neg_edges[0]),axis=1).unsqueeze(0).tile((scales,1,1))
         edge_ids_ = edge_ids
         node_ids_ = g_batch.nodes()
@@ -330,7 +340,7 @@ def graph_anomaly_detection(exp_params):
         #A_hat = torch.stack([A_hat[i,edge_ids[i,0],edge_ids[i,1]] for i in range(scales)])
 
         #loss, struct_loss, feat_cost = loss_func(recons_label, adj.ndata['feature'], A_hat, None, res_a.detach().cpu(), edge_ids, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'], clusts=clusts)
-        loss, struct_loss, feat_cost,_,_,_ = loss_func(recons_label, adj.ndata['feature'], A_hat, None, None, edge_ids, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'], clusts=clusts, regularize=regularize)
+        loss, struct_loss, feat_cost,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside,all_entropies = loss_func(recons_label, adj.ndata['feature'], A_hat, None, None, edge_ids, attract_edges_sel, repel_edges_sel, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'], clusts=clusts, regularize=regularize)
         #loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, res_a.detach().cpu(), edge_ids, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'],clusts=clusts)
         if exp_params['MODEL']['NAME'] == 'gradate':
             loss = A_hat[0]
@@ -359,16 +369,16 @@ def graph_anomaly_detection(exp_params):
     if exp_params['MODEL']['RECONS'] == 'both':
         print('struct scores')
         a_clf = anom_classifier(exp_params)
-        a_clf.calc_prec(None, [np.mean(edge_anom_mats[0],axis=1)], truth, sc_label, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, [np.mean(edge_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
         print('feat scores')
-        a_clf.calc_prec(None, [np.mean(node_anom_mats[0],axis=1)], truth, sc_label, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, [np.mean(node_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
         print('combined scores')
-        a_clf.calc_prec(None, loss.detach().cpu().numpy(), truth, sc_label, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, loss.detach().cpu().numpy(), truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
     else:
         if exp_params['DATASET']['BATCH_TYPE'] == 'node':
             if -1 in node_anom_mats[0]:
                 raise('node not sampled')
-            a_clf.calc_prec(None,node_anom_mats, truth, sc_label, cluster=False, input_scores=True)
+            a_clf.calc_prec(None,node_anom_mats, truth, sc_label_new, cluster=False, input_scores=True)
         else:
             if 'multi-scale' in exp_params['MODEL']['NAME']:
                 #attns = F.softmax(train_attn_w[-1],1).numpy()
@@ -377,34 +387,38 @@ def graph_anomaly_detection(exp_params):
                 attns = None
             
             if not exp_params['MODEL']['SAMPLE_TEST']:
-                a_clf.calc_prec(dgl_to_mat(adj), struct_loss.detach().cpu().numpy(), truth, sc_label, attns, cluster=False, input_scores=True)
+                a_clf.calc_prec(dgl_to_mat(adj), struct_loss.detach().cpu().numpy(), truth, sc_label_new, attns, cluster=False, input_scores=True)
             else:
                 a_clf.title = 'loss'
-                a_clf.calc_prec(dgl_to_nx(adj)[0], edge_anom_mats, truth, sc_label, attns, clusts, cluster=False)
+                a_clf.calc_prec(dgl_to_nx(adj)[0], edge_anom_mats, truth, sc_label_new, attns, clusts, cluster=False)
                 
 
-                a_clf.title = 'regloss' ; a_clf.stds = 3
+                a_clf.title = 'regloss' ; a_clf.stds = 5
                 anoms_found = None
                 losses = []
-
+                #nonclustloss,clustloss=nonclustloss.detach().cpu(),clustloss.detach().cpu()
+                #import ipdb ; ipdb.set_trace()
                 # multiply by edges
-                losses.append([np.zeros(edge_anom_mats[0].shape),nonclustloss[0]*edge_anom_mats[0],(clusts[0],clusts[0])])
-                losses.append([clustloss[1]*edge_anom_mats[1],np.zeros(edge_anom_mats[0].shape),(clusts[1],clusts[1])])
-                losses.append([clustloss[2]*edge_anom_mats[2],nonclustloss[-2]*edge_anom_mats[-2],(clusts[2],clusts[-2])])
-                losses.append([clustloss[3]*edge_anom_mats[3],nonclustloss[-3]*edge_anom_mats[-3],(clusts[3],clusts[-3])])
+                losses.append([torch.zeros(struct_loss[0].shape),nonclustloss[0]*struct_loss[0],(clusts[0],clusts[0])])
+                losses.append([clustloss[1]*struct_loss[1],nonclustloss[1]*struct_loss[1],(clusts[1],clusts[1])])
+                losses.append([clustloss[2]*struct_loss[2],torch.zeros(struct_loss[0].shape),(clusts[2],clusts[2])])
                 
-                import ipdb ; ipdb.set_trace()
+                #losses.append([clustloss[1]*struct_loss[1],torch.zeros(struct_loss[0].shape),(clusts[1],clusts[1])])
+                #losses.append([clustloss[2]*struct_loss[2],nonclustloss[-2]*struct_loss[-2],(clusts[2],clusts[-2])])
+                #losses.append([clustloss[3]*struct_loss[3],nonclustloss[-3]*struct_loss[-3],(clusts[3],clusts[-3])])
+                stds = [5,4,4]
+                #import ipdb ; ipdb.set_trace()
                 a_clf.title = 'clustprec'
+
                 for i in range(scales):
+                    a_clf.stds=stds[i]
                     #edge_anom_mats = [np.zeros(edge_anom_mats[0].shape)]
                     #node_anom_mats,edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,regloss[i].unsqueeze(0),feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params)
                     #a_clf.calc_prec(dgl_to_nx(adj)[0], edge_anom_mats, truth, sc_label, attns, clusts, cluster=False)
 
-                    edge_anom_mats_ = [np.zeros(edge_anom_mats[0].shape)]
-                    node_anom_mats,clust_edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,losses[i][0].unsqueeze(0),feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats_,recons_a,res_a_all,exp_params)
-                    edge_anom_mats_ = [np.zeros(edge_anom_mats[0].shape)]
-                    node_anom_mats,nonclust_edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,losses[i][1].unsqueeze(0),feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats_,recons_a,res_a_all,exp_params)
-                    scores,anoms_found = a_clf.calc_clust_prec(dgl_to_nx(adj)[0], clust_edge_anom_mats, nonclust_edge_anom_mats, i, anoms_found, sc_label, attns, losses[i][-1], cluster=False)
+                    edge_anom_mats_ = [np.zeros(edge_anom_mats[0].shape)] ; node_anom_mats,clust_edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,losses[i][0].unsqueeze(0),feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats_,recons_a,res_a_all,exp_params)
+                    edge_anom_mats_ = [np.zeros(edge_anom_mats[0].shape)] ; node_anom_mats,nonclust_edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,losses[i][1].unsqueeze(0),feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats_,recons_a,res_a_all,exp_params)
+                    scores,anoms_found = a_clf.calc_clust_prec(dgl_to_nx(adj)[0], clust_edge_anom_mats, nonclust_edge_anom_mats, i, anoms_found, norms, sc_label, attns, losses[i][-1], cluster=False)
                     
                     '''
                     a_clf.title = 'nonclustloss'

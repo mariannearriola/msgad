@@ -41,7 +41,8 @@ class DataLoading:
         if 1 in truth:
             anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
             if 'yelpchi' in self.dataset:
-                anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
+                anom1=self.rearrange_anoms(anom1[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
+                #anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
             if 'weibo' in self.dataset:
                 anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
             if 'tfinance' in self.dataset:
@@ -112,9 +113,10 @@ class DataLoading:
         if self.datasave: g_batch = block[0]
         w = g_batch.edata['w']
         feat = g_batch.ndata['feature']
+        
         g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes[g_batch.dstnodes()])][:,torch.argsort(in_nodes[g_batch.dstnodes()])]
         src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
-        g_batch = dgl.graph((src,dst)).to(g_batch.device)
+        g_batch = dgl.graph((src,dst),num_nodes=in_nodes.shape[0]).to(g_batch.device)
         g_batch.edata['w'] = w
         #import ipdb ; ipdb.set_trace()
         g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
@@ -136,6 +138,20 @@ class DataLoading:
         torch.cuda.empty_cache()
 
     def load_batch(self,iter,setting):
+        """
+        Load batch from pickle file
+
+        Input:
+            iter : {str}
+                Edge list of graph
+            feats : {array-like, torch tensor}, shape=[n,h]
+                Feature matrix of graph
+        Output:
+            recons: {array-like, torch tensor}, shape=[scales,n,n]
+                Multi-scale adjacency reconstructions
+            h: {array-like, torch tensor}, shape=[scales,n,h']
+                Multi-scale embeddings produced by model
+        """
         dirpath = f'{self.datadir}/{self.exp_name}/{self.dataset}/{setting}'
         with open (f'{dirpath}/{iter}.pkl','rb') as fin:
             batch_dict = pkl.load(fin)

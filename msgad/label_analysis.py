@@ -8,16 +8,23 @@ from itertools import chain
 
 class LabelAnalysis:
     def __init__(self,anoms,dataset):
-        self.anoms,self.anoms_combo = self.processAnoms(anoms)
         self.thresh = 0.8
         self.dataset = dataset
+        self.anoms,self.anoms_combo = self.processAnoms(anoms)
 
     def flatten_label(self,anoms):
         if len(anoms) == 0: return anoms
+        if 'elliptic' in self.dataset:
+            anoms = anoms[0]
         anom_flat = anoms[0]
+        if 'elliptic' in self.dataset:
+            anom_flat = anom_flat[0]
         if len(anoms) > 1:
             for i in anoms[1:]:
-                anom_flat=np.concatenate((anom_flat,i))
+                if 'elliptic' in self.dataset:
+                    anom_flat=np.concatenate((anom_flat,i[0]))
+                else:
+                    anom_flat=np.concatenate((anom_flat,i))
         return anom_flat
 
     def processAnoms(self,anoms):
@@ -45,65 +52,10 @@ class LabelAnalysis:
             except:
                 conn_check.append(False)
         return conn_check
-    '''
-    def remove_anom_overlap(self,anom_nodes_tot,anom,anom_ex):
-        sc1 = anom_nodes_tot[anom]
-        
-        sc1_ret,sc2_ret,sc3_ret=[],[],[]
-        overlapped=[]
-        sc_sum=0
-        for sc in sc1:
-            if len(anom_ex) == 0:
-                sc1_ret.append(sc)
-                sc_sum += len(sc)
-                continue
-            overlap=False
 
-            for ex in anom_ex:
-                if len(np.intersect1d(sc,list(chain(*np.array(anom_nodes_tot[ex])))))!=0:
-                    overlap=True
+    def remove_anom_overlap(self,anom,anom_next):
+        return np.setdiff1d(self.flatten_label(anom),np.unique(self.flatten_label(self.flatten_label(anom_next))))
 
-            if overlap is True:
-                overlapped.append(sc)
-            else:
-                sc1_ret.append(sc)
-                sc_sum += len(sc)
-        return sc1_ret
-    '''
-    def remove_anom_overlap(self,sc1,sc2,sc3):
-        #sc1,sc2,sc3=np.array(sc1),np.array(sc2),np.array(sc3)
-        sc1_f = list(chain(*np.array(sc1)))
-        if sc2 is not None:
-            sc2_f = list(chain(*np.array(sc2)))
-        if sc3 is not None:
-            sc3_f = list(chain(*np.array(sc3)))
-        #db ; ipdb.set_trace()
-        sc1_ret,sc2_ret,sc3_ret=[],[],[]
-        overlapped=[]
-        sc_sum=0
-        for sc in sc1:
-            if sc2 is None and sc3 is not None:
-                if len(np.intersect1d(sc,sc3_f))==0:
-                    sc1_ret.append(sc)
-                    sc_sum += len(sc)
-                else:
-                    overlapped.append(sc)
-            elif sc3 is None and sc2 is not None:
-                if len(np.intersect1d(sc,sc2_f))==0:
-                    sc1_ret.append(sc)
-                    sc_sum += len(sc)
-                else:
-                    overlapped.append(sc)
-            elif sc2 is not None and sc3 is not None:
-                if len(np.intersect1d(sc,sc2_f))==0 and len(np.intersect1d(sc,sc3_f))==0:
-                    sc1_ret.append(sc)
-                    sc_sum += len(sc)
-                else:
-                    overlapped.append(sc)
-            elif sc2 is None and sc3 is None:
-                sc1_ret.append(sc)
-                sc_sum += len(sc)
-        return sc1_ret,overlapped,sc_sum
     def getAnomCount(self,clust,anom_sc_label):
         clust_keys = np.unique(clust)
         clust_dict = {}
@@ -118,64 +70,46 @@ class LabelAnalysis:
         return clust_dict,np.array(anom_count),np.array(node_count)
 
     def get_sc_label(self,clust,anom):
+        """
+        Given a clustering, find clusters that are anomaly-dominated
+        """
         clust1_dict,anoms1,nodes1 = self.getAnomCount(clust,anom)
-        anoms_find1=anoms1[np.where(anoms1/nodes1 > self.thresh)[0]]
-        nodes_find1=anoms1[np.where(anoms1/nodes1 > self.thresh)[0]]
-        #import ipdb ; ipdb.set_trace()
-        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=3)]
-        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=3)]
+        min_anom_size = int(np.unique(clust,return_counts=True)[-1].mean())
+        anom_nodes1=[np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=min_anom_size and False not in self.check_conn(clust1_dict[x]))]
         return anom_nodes1
 
-    def postprocess_anoms(self,anom_nodes_tot,sc):
-        anom_nodes1,anom_nodes2,anom_nodes3=anom_nodes_tot
-        #import ipdb ; ipdb.set_trace()
-        plt_anoms_found = [i.shape[0] for i in anom_nodes_tot[sc-1]]
-        if sc == 1:
-            sc_label,_,_=self.remove_anom_overlap(anom_nodes1,anom_nodes3,anom_nodes2)
-        elif sc == 2:
-            sc_label,_,_=self.remove_anom_overlap(anom_nodes2,anom_nodes3,None)
-        elif sc == 3:
-            sc_label,_,_=self.remove_anom_overlap(anom_nodes3,None,None)
+    def postprocess_anoms(self,anom_nodes_tot):
+        '''Remove overlap from detected anomalies'''
 
-        plt_anoms_found = [i.shape[0] for i in sc_label]
-
-        conns=np.array(self.check_conn(sc_label)).nonzero()[0]
-        sc_label = np.array(sc_label)[conns] if len(conns) > 0 else []
-        plt_anoms_found = np.array(plt_anoms_found)[conns] if len(conns) > 0 else []
-        
-        return sc_label,plt_anoms_found
+        sc_label = []
+        for ind,anom in enumerate(anom_nodes_tot):
+            sc_label.append(self.remove_anom_overlap(anom,anom_nodes_tot[ind+1:]))
+        return sc_label
 
 
-    def run_dend(self,graph,return_clusts=False):
+    def run_dend(self,graph,scales,return_clusts=False,return_all=False):
+        """Partition the graph into multi-scale cluster & """
         self.graph = graph
         anom = self.anoms_combo
-        hierarchy = LouvainIteration(resolution=1.1)
+        if 'yelpchi' in self.dataset or 'elliptic' in self.dataset:
+            hierarchy = Paris()
+        else:
+            hierarchy = LouvainIteration(resolution=1.1,depth=scales)
+
         dend = hierarchy.fit_predict(np.array(nx.adjacency_matrix(graph,weight='weight').todense()))
-        clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=0),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
-        clust0,clust1,clust2,clust3 = postprocess.cut_straight(dend,threshold=0),postprocess.cut_straight(dend,threshold=1),postprocess.cut_straight(dend,threshold=2),postprocess.cut_straight(dend,threshold=3)
-        #import ipdb  ; ipdb.set_trace()
+
+        clusts = [postprocess.cut_straight(dend,threshold=scale) for scale in range(scales)]
         self.thresh = 0.8
 
-        anom_nodes1,anom_nodes2,anom_nodes3 = self.get_sc_label(clust1,anom),self.get_sc_label(clust2,anom),self.get_sc_label(clust3,anom)
-        anom_nodes_tot = [anom_nodes1,anom_nodes2,anom_nodes3]
-        #sc1_label,sc2_label,sc3_label = self.postprocess_anoms(graph,anom_nodes_tot)
-        sc1_label,_=self.postprocess_anoms(anom_nodes_tot,1)
-        sc2_label,_=self.postprocess_anoms(anom_nodes_tot,2)
-        sc3_label,_=self.postprocess_anoms(anom_nodes_tot,3)
+        anom_nodes = [self.get_sc_label(clust,anom) for clust in clusts]
+        sc_all = self.postprocess_anoms(anom_nodes)
+        
         print('CLUSTERS')
-        print([i.shape[0] for i in sc1_label],[i.shape[0] for i in sc2_label],[i.shape[0] for i in sc3_label])
-     
-        if return_clusts:
-            return clust1,clust2,clust3
-        return sc1_label,sc2_label,sc3_label
-    '''
-    def check_conn(self,graph,sc_label):
-        conn_check=[]
-        for i in sc_label:
-            try: conn_check.append(nx.is_connected(graph.subgraph(i)))
-            except: conn_check.append(False)
-        return conn_check
-    '''
+        print([i.shape[0] for i in sc_all])
+        print([np.unique(clusts[i][sc_all[i]]).shape[0] for i in range(scales)])
+        return sc_all,clusts
+    
+
     def getAnomCount(self,clust,anom_sc_label):
         clust_keys = np.unique(clust)
         clust_dict = {}
@@ -257,9 +191,6 @@ class LabelAnalysis:
 
     def check_conn_anom(self,ndict,scale):
         coeffs = []
-        #if -1 in ndict.values():
-        #    raise('not all nodes ranked')
         for sc in scale:
             coeffs.append(nx.average_clustering(self.graph,sc)/self.graph_conn)
-            #coeffs.append(np.vectorize(ndict.get)(sc).mean())
         return coeffs
