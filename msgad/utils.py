@@ -21,6 +21,9 @@ import torch
 import torch_geometric
 import gc
 from pygsp_ import *
+import sklearn
+import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 
 def replace_node_ids_with_probabilities(probability_array, node_ids):
     unique_node_ids, node_id_counts = np.unique(node_ids, return_counts=True)
@@ -117,6 +120,7 @@ def get_different_cluster_indices(cluster_2d, same_cluster_indices):
     return different_cluster_indices
 
 def generate_cluster_colors(cluster_ids):
+    
     unique_clusters = np.unique(cluster_ids)
     num_clusters = len(unique_clusters)
     color_palette = ['#%06x' % random.randint(0, 0xFFFFFF) for _ in range(num_clusters)]
@@ -124,111 +128,334 @@ def generate_cluster_colors(cluster_ids):
 
     for idx, cluster_id in enumerate(unique_clusters):
         cluster_colors[cluster_id] = color_palette[idx]
+
     color_list = [cluster_colors[cluster_id] for cluster_id in cluster_ids]
     return color_list
 
+def generate_adjacency_matrix(cluster_ids):
+    mask = cluster_ids.unsqueeze(0) == cluster_ids.unsqueeze(1)
+    clust_edges = mask.nonzero().T
+    gr = dgl.graph((clust_edges[0],clust_edges[1]))
+    nonclust_edges = torch.stack(dgl.sampling.global_uniform_negative_sampling(gr,clust_edges.shape[-1]))
+    return torch.cat((clust_edges,nonclust_edges),dim=1)
+    unique_clusters = (cluster_ids).unique()
+    num_clusters = len(unique_clusters)
+    num_nodes = len(cluster_ids)
 
-def collect_clust_loss(edge_ids,sc_idx,sc_idx_,loss):
-    """Get average loss for each cluster, and assign back to edge-wise losses"""
-    sc_idx = np.intersect1d(sc_idx,sc_idx_)
-    cl = edge_ids[:,sc_idx][0].detach().cpu()
-    average_tensor = torch.scatter_reduce(loss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
-    expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
-    return expanded_average
+    # Create an empty adjacency matrix
+    adjacency_matrix = torch.zeros((num_nodes, num_nodes))
+
+    # Create a dictionary to map cluster IDs to node indices
+    cluster_indices = {cluster: torch.where(cluster_ids == cluster)[0] for cluster in unique_clusters}
+
+    # Iterate over each cluster and connect nodes within the same cluster
+    for cluster in unique_clusters:
+        nodes_in_cluster = cluster_indices[cluster]
+        adjacency_matrix[nodes_in_cluster[:, None], nodes_in_cluster] = 1
+
+    return adjacency_matrix
+
 
 class TBWriter:
     def __init__(self,tb,edge_ids, attract_edges_sel, repel_edges_sel,sc_label,clust):
+        '''
         # edges connected to any anomaly
-        norms,anom_sc1,anom_sc2,anom_sc3,anom_single=sc_label
         self.sc_idx_all,self.sc_idx_all,self.sc_idx_inside,self.sc_idx_outside,self.cl_all={},{},{},{},{}
-
-        self.sc_labels = ['norm','anom_sc1','anom_sc2','anom_sc3','anom_single']
+        #self.opt_entropies,self.avg_opt_entropies=[],[]
         for ind,i in enumerate(sc_label):
-            lbl = self.sc_labels[ind]
             a,b = np.intersect1d(edge_ids[0].detach().cpu(),i,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),i,return_indices=True)[-2]
-            self.sc_idx_all[lbl]=np.unique(np.stack((a,b)).flatten())
-            self.cl_all[lbl] = edge_ids[:,self.sc_idx_all[lbl]][0].detach().cpu()
-
+            self.sc_idx_all[ind]=np.unique(np.concatenate((a,b)).flatten())
+            self.cl_all[ind] = edge_ids[:,self.sc_idx_all[ind]][0].detach().cpu()
+        self.sc_labels = sc_label
         # only select edges inside cluster
         #self.sc_idx_inside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
         self.sc_idx_inside = attract_edges_sel
         # only select edges outside cluster
         #self.sc_idx_outside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
         self.sc_idx_outside = repel_edges_sel
-        '''
-        self.sc_idx_inside_outside_anom=np.setxor1d(a,b) # get edges outside of anom
-        # get edges inside cluster
-        self.sc_idx_inside_outside_anom_ = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
 
-        a,b = np.intersect1d(edge_ids[0].detach().cpu(),sc_label,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),sc_label,return_indices=True)[-2]
-        self.sc_idx_outside_inside_anom=np.intersect1d(a,b)
-        self.sc_idx_outside_inside_anom_= np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
-        '''
         self.tb = tb
+        '''
+        self.clust = clust
+        self.sc_labels = sc_label
 
-    def tb_write_anom(self,tb,sc_label,edge_ids,pred,sc,epoch,regloss,clustloss,nonclustloss,clust,sc_idx_inside,sc_idx_outside,entropies,clust_entropies):
+    def collect_clust_loss(self,edge_ids,sc_idx,loss):
+        """Get average loss for each cluster, and assign back to edge-wise losses"""
+        #sc_idx = np.intersect1d(sc_idx,sc_idx_)
+        cl = edge_ids[:,sc_idx][0].detach().cpu()
+        average_tensor = torch.scatter_reduce(loss[sc_idx].detach().cpu(), 0, cl, reduce="mean")
+        expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
+        return expanded_average
+
+    def get_group_idx(self,edge_ids,clust,i):
+        dgl_g = dgl.graph((edge_ids[:,0],edge_ids[:,1]))
+        return dgl_g.out_edges(i,form='eid')
+        #return torch.cat((dgl_g.out_edges(i)[0],dgl_g.out_edges(i)[1]))
+        #group_cluster = clust[i].unique()
+        #a = np.where(np.array(clust[edge_ids[0]][:, None]) == np.array(group_cluster))[0]
+        #b = np.where(np.array(clust[edge_ids[1]][:, None]) == np.array(group_cluster))[0]
+        if len(i) == 0: return torch.tensor([])
+        try:
+            a = torch.where(edge_ids[0][:, None] == i)[0]
+            b = torch.where(edge_ids[1][:, None] == i)[0]
+        except:
+            import ipdb  ; ipdb.set_trace()
+        
+        #a,b = np.intersect1d(edge_ids[0],i,return_indices=True)[-2],np.intersect1d(edge_ids[1],i,return_indices=True)[-2]
+        #group_cluster = clust[i].unique()
+        #sc_idx_inside_ov = np.concatenate((a,b))
+        sc_idx_inside_ov = torch.cat((a,b))
+        #cl_all = np.concatenate((edge_ids[:,a],edge_ids[:,b]),axis=1)
+        return sc_idx_inside_ov
+
+    def plot_sep_scores(self,scores,avg_score,cluster_labels,anom_sc):
+        """https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html#sphx-glr-auto-examples-cluster-plot-kmeans-silhouette-analysis-py"""
+        n_clusters = cluster_labels.unique().shape[0]
+        fig, ax1= plt.subplots(1, 1)
+        fig.set_size_inches(18, 7)
+
+        # The 1st subplot is the silhouette plot
+        # The silhouette coefficient can range from -1, 1 but in this example all
+        # lie within [-0.1, 1]
+        ax1.set_xlim([-0.1, 1])
+        # The (n_clusters+1)*10 is for inserting blank space between silhouette
+        # plots of individual clusters, to demarcate them clearly.
+        ax1.set_ylim([0, len(scores) + (n_clusters + 1) * 10])
+
+        
+        y_lower = 10
+        for i in range(n_clusters):
+            # Aggregate the silhouette scores for samples belonging to
+            # cluster i, and sort them
+            ith_cluster_silhouette_values = scores[cluster_labels == i]
+
+            ith_cluster_silhouette_values.sort()
+
+            size_cluster_i = ith_cluster_silhouette_values.shape[0]
+            y_upper = y_lower + size_cluster_i
+
+            color = cm.nipy_spectral(float(i) / n_clusters)
+            ax1.fill_betweenx(
+                np.arange(y_lower, y_upper),
+                0,
+                ith_cluster_silhouette_values,
+                facecolor=color,
+                edgecolor=color,
+                alpha=0.7,
+            )
+
+            # Label the silhouette plots with their cluster numbers at the middle
+            ax1.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
+
+            # Compute the new y_lower for next plot
+            y_lower = y_upper + 10  # 10 for the 0 samples
+        ax1.set_title("The silhouette plot for the various clusters.")
+        ax1.set_xlabel("The silhouette coefficient values")
+        ax1.set_ylabel("Cluster label")
+
+        # The vertical line for average silhouette score of all the values
+        ax1.axvline(x=avg_score, color="red", linestyle="--")
+
+        ax1.set_yticks([])  # Clear the yaxis labels / ticks
+        ax1.set_xticks([-0.1, 0, 0.2, 0.4, 0.6, 0.8, 1])
+
+        plt.savefig(f'clust_figs/clusts_{anom_sc}.png')
+
+    def plot_sep_scores_group(self,scores,avg_score,anom_group,anom_sc):
+        """https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html#sphx-glr-auto-examples-cluster-plot-kmeans-silhouette-analysis-py"""
+        fig, ax1= plt.subplots(1, 1)
+        fig.set_size_inches(18, 7)
+
+        # The 1st subplot is the silhouette plot
+        # The silhouette coefficient can range from -1, 1 but in this example all
+        # lie within [-0.1, 1]
+        ax1.set_xlim([-0.1, 1])
+        # The (n_clusters+1)*10 is for inserting blank space between silhouette
+        # plots of individual clusters, to demarcate them clearly.
+        ax1.set_ylim([0, len(anom_group) + (len(anom_group) + 1) * 10])
+
+        
+        y_lower = 10
+        for i in range(len(scores)):
+            # Aggregate the silhouette scores for samples belonging to
+            # cluster i, and sort them
+            ith_cluster_silhouette_values = scores[i][anom_group]
+
+            ith_cluster_silhouette_values.sort()
+
+            size_cluster_i = ith_cluster_silhouette_values.shape[0]
+            y_upper = y_lower + size_cluster_i
+
+            color = cm.nipy_spectral(float(i) / len(scores))
+            ax1.fill_betweenx(
+                np.arange(y_lower, y_upper),
+                0,
+                ith_cluster_silhouette_values,
+                facecolor=color,
+                edgecolor=color,
+                alpha=0.7,
+            )
+
+            # Label the silhouette plots with their cluster numbers at the middle
+            ax1.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
+
+            # Compute the new y_lower for next plot
+            y_lower = y_upper + 10  # 10 for the 0 samples
+        ax1.set_title("The silhouette plot for the various clusters.")
+        ax1.set_xlabel("The silhouette coefficient values")
+        ax1.set_ylabel("Cluster label")
+
+        # The vertical line for average silhouette score of all the values
+        #ax1.axvline(x=np.array(avg_score).mean(), color="red", linestyle="--")
+
+        ax1.set_yticks([])  # Clear the yaxis labels / ticks
+        ax1.set_xticks([-0.1, 0, 0.2, 0.4, 0.6, 0.8, 1])
+
+        plt.savefig(f'clust_figs/clusts_{anom_sc}.png')
+
+    def sampled_edges(self,tensor):
+        ones_indices = torch.nonzero(tensor == 1).flatten()
+        zeros_indices = torch.nonzero(tensor == 0).flatten()
+
+        # Randomly sample an equal number of indices from each group
+        num_samples = min(len(ones_indices), len(zeros_indices))
+        sampled_ones_indices = random.sample(ones_indices.tolist(), num_samples)
+        sampled_zeros_indices = random.sample(zeros_indices.tolist(), num_samples)
+
+        # Concatenate the sampled indices together
+        sampled_indices = sampled_ones_indices + sampled_zeros_indices
+        return sampled_indices
+
+    def tb_write_anom(self,tb,adj,sc_label,edge_ids,pred,loss,sc,epoch,regloss,clustloss,nonclustloss,clusts,sc_idx_inside,sc_idx_outside,entropies,clust_entropies):
         """Log loss evolution for anomaly group"""
+        # sc idx all: contains all edge idx associated with each anomaly
+        #import ipdb ; ipdb.set_trace()
+        # removing edges if there is no cluster between them, does not add edges
+        clust = clusts[sc]
+        pred_opt = torch.zeros(pred.shape)
+        #a1 = edge_ids[:,np.where(clust[edge_ids[0]]==clust[edge_ids[1]])[0]]
 
+        
+        a1 = torch.where(clust[edge_ids[:,0]]==clust[edge_ids[:,1]])[0]
+        pred_opt[a1] = 1.
+
+        anom_clusts = copy.deepcopy(clust)
+        it = clust.max()+1
+        # get anomalous clusters found
+        '''
+        for ind, i in enumerate(sc_label[:-1]):
+            if ind != 3:
+                anom_clusts[i] = it ; it += 1
+            else:
+                for ac in np.unique(clusts[ind-1][i]):
+                    anom_clusts[i[np.where(clusts[ind-1][i]==ac)]] = it ; it += 1
+        '''
+        '''
+        try:
+            for ind, i in enumerate(sc_label[:-1]):
+                if ind != sc+1:
+                    for ac in np.unique(clusts[ind-1][i]):
+                        anom_clusts[i[np.where(clusts[ind-1][i]==ac)]] = it ; it += 1
+        except:
+            import ipdb ; ipdb.set_trace()
+        '''  
+        #adjacency_matrix = self.generate_adjacency_matrix(clust)
+        #return adjacency_matrix
+        #adjacency_matrix = 1-adjacency_matrix
+        #np.fill_diagonal(adjacency_matrix,0)
+
+        #opt_entropy = sklearn.metrics.silhouette_samples(adjacency_matrix,anom_clusts,metric="precomputed")
+        #import ipdb ; ipdb.set_trace()
+        #avg_opt_entropy = sklearn.metrics.silhouette_score(adjacency_matrix,anom_clusts,metric="precomputed")
+        
+        # randomly sample edge/nonedge
+        #self.opt_entropies.append(opt_entropy) ; self.avg_opt_entropies.append(avg_opt_entropy)
+      
+        #import ipdb ; ipdb.set_trace()
+        mean_intras,mean_inters=[],[]
         for ind,i in enumerate(sc_label):
-            lbl = self.sc_labels[ind]
-            a,b = np.intersect1d(edge_ids[0],i,return_indices=True)[-2],np.intersect1d(edge_ids[1],i,return_indices=True)[-2]
-            try:
-                self.sc_idx_all[lbl]=np.unique(np.stack((a,b)).flatten())
-            except Exception as e:
-                import ipdb ; ipdb.set_trace()
-            self.cl_all[lbl] = edge_ids[:,self.sc_idx_all[lbl]][0].detach().cpu()
-        #import ipdb ; ipdb.set_trace()
-        loss_dict,regloss_dict,loss_inclust_dict,loss_outclust_dict={},{},{},{}
-        #import ipdb ; ipdb.set_trace()
-        for ind,i in enumerate(self.sc_labels):
-            # TODO: get cluster(s) associated with these anomalies for that scale
-            # get avg entropy of those clusters
-            # TODO: can always try to get node-level entropy as well
-            anom_sc = i
-            average_tensor = torch.scatter_reduce(pred[self.sc_idx_all[i]].detach().cpu(), 0, self.cl_all[i], reduce="mean")
-            expanded_average = average_tensor[self.cl_all[i]].to(edge_ids.device).mean()
-            loss_dict[anom_sc] = expanded_average 
+            anom = torch.tensor(i).to(edge_ids.device)
+            if len(anom) == 0: continue
+            
+            anom_neighbors=torch.stack(adj.out_edges(anom)).T
+            anom_neighbors=anom_neighbors[(~torch.isin(clust[anom_neighbors].unique(),clust[anom])).nonzero()]
+
+            
+            # gets all edges related to a group
+            sc_idx_inside_ov = self.get_group_idx(edge_ids,clust,anom)
+            # won't be perfectly balanced, depends on anomaly group
+            #import ipdb ; ipdb.set_trace()
+            sc_idx_inside_ov = sc_idx_inside_ov[torch.isin(sc_idx_inside_ov,torch.cat((sc_idx_inside[sc],sc_idx_outside[sc])).cuda())]
+            samp_edges = self.sampled_edges(pred_opt[sc_idx_inside_ov])
+            anom_sc = ind if ind != len(self.sc_labels)-1 else 'norm'
+            '''
+            if sc == 2:
+                print('clusters',clust.unique().shape[0])
+                self.plot_sep_scores_group(self.opt_entropies,self.avg_opt_entropies,i,anom_sc)
+                #self.plot_sep_scores(self.opt_entropies,self.avg_opt_entropies,clust,anom_sc)
+                #import ipdb  ; ipdb.set_trace()
+            '''
+            expanded_average = loss[sc_idx_inside_ov].mean()
+            #expanded_average = loss[sc_idx_inside_ov][samp_edges].mean()
             tb.add_scalar(f'Loss_{sc}/Anom{anom_sc}',expanded_average, epoch)
 
             # log regularization loss
-            average_tensor = torch.scatter_reduce(regloss[self.sc_idx_all[i]].detach().cpu(), 0, self.cl_all[i], reduce="mean")
-            expanded_average = average_tensor[self.cl_all[i]].to(edge_ids.device).mean()
-            regloss_dict[anom_sc] = expanded_average 
+            #expanded_average=regloss[sc_idx_inside_ov][samp_edges].mean()
+            expanded_average=regloss[sc_idx_inside_ov].mean()
             tb.add_scalar(f'Regloss{sc}/Anom{anom_sc}', expanded_average, epoch)
 
+            # optimal ; best 
+            expanded_average = pred_opt[sc_idx_inside_ov].mean()
+            tb.add_scalar(f'Opt_conn{sc}/Anom{anom_sc}',expanded_average,epoch)
+
             # only select INSIDE cluster
-            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all[i],sc_idx_inside[sc],clustloss)
-            loss_inclust_dict[anom_sc] = expanded_average 
-            tb.add_scalar(f'Loss_inclust{sc}/Anom{anom_sc}', expanded_average, epoch)
+            #expanded_average = clustloss[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
+            mean_intra = clustloss[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean()
+            tb.add_scalar(f'Loss_inclust{sc}/Anom{anom_sc}', mean_intra, epoch)
+
+            expanded_average = pred_opt[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean()
+            #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
+            tb.add_scalar(f'Loss_inclust_opt{sc}/Anom{anom_sc}', expanded_average, epoch)
 
             # only select OUTSIDE cluster
-            expanded_average = collect_clust_loss(edge_ids,self.sc_idx_all[i],sc_idx_outside[sc],nonclustloss)
-            loss_outclust_dict[anom_sc] = expanded_average 
-            tb.add_scalar(f'Loss_outclust{sc}/Anom{anom_sc}', expanded_average, epoch)
-            #import ipdb ; ipdb.set_trace()
-            #sc_clusters = clust[sc_label[ind]].unique()
-            #sc_entropy = entropies[sc][sc_clusters].mean()
+            #expanded_average = nonclustloss[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
+            mean_inter = nonclustloss[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean()
+            tb.add_scalar(f'Loss_outclust{sc}/Anom{anom_sc}', mean_inter, epoch)
+            
+            tb.add_scalar(f'Silhouette{sc}/Anom{anom_sc}', (mean_inter-mean_intra)/torch.max(mean_intra,mean_inter), epoch)
 
+
+            expanded_average = pred_opt[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean()
+            #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
+            tb.add_scalar(f'Loss_outclust_opt{sc}/Anom{anom_sc}', expanded_average, epoch)
+            mean_inters.append(mean_inter) ; mean_intras.append(mean_intra)
+            '''
             clust_counts=torch.unique(clust,return_counts=True)[-1]
             anom_clusts,anom_counts=torch.unique(clust[sc_label[ind]],return_counts=True)
-            #import ipdb ; ipdb.set_trace()
             if i == 'norm':
+                # > 95% normal nodes
                 clusts = anom_clusts[torch.where(anom_counts/clust_counts[anom_clusts] > 0.95)]
                 group_ids = np.intersect1d(clust[sc_label[ind]],clusts,return_indices=True)[1]
             else:
                 group_ids=sc_label[ind]
-
+            '''
             # node entropy
-            #import ipdb ; ipdb.set_trace()
-            sc_entropy = entropies[sc][group_ids].mean()
-            tb.add_scalar(f'Node_entropy{sc}/Anom{anom_sc}', sc_entropy, epoch)
+            #sc_entropy = entropies[sc][i].mean()
+            #tb.add_scalar(f'Node_entropy{sc}/Anom{anom_sc}', sc_entropy, epoch)
+            
+            #sc_entropy = opt_entropy[group_ids].mean()
+            #tb.add_scalar(f'Node_opt_entropy{sc}/Anom{anom_sc}', sc_entropy, epoch)
+
+            #sc_entropy = nx.density(nx.from_numpy_matrix(adjacency_matrix[i][:,i]))
+            #tb.add_scalar(f'Node_opt_density{sc}/Anom{anom_sc}', sc_entropy, epoch)
+
 
             # clust entropy
             #anom_clusts = clust[sc_label[ind]].unique()
             #clust_entropy = np.vectorize(clust_entropies[sc].get)(anom_clusts)
             #clust_entropy = clust_entropy[clust_entropy.nonzero()].mean()
-            clust_entropy = entropies[sc][group_ids].mean()
-            tb.add_scalar(f'Clust_entropy{sc}/Anom{anom_sc}', clust_entropy, epoch)
+            #clust_entropy = entropies[sc][group_ids].mean()
+            #tb.add_scalar(f'Clust_entropy{sc}/Anom{anom_sc}', clust_entropy, epoch)
             '''
             # only select INSIDE cluster, outside OF ANOM
             expanded_average = collect_clust_loss(edge_ids,self.sc_idx_inside_outside_anom,self.sc_idx_inside_outside_anom_,clustloss)
@@ -240,6 +467,10 @@ class TBWriter:
             expanded_average = collect_clust_loss(edge_ids,self.sc_idx_outside_inside_anom,self.sc_idx_outside_inside_anom_,nonclustloss)
             tb.add_scalar(f'Outclust_inanom{sc}_Anom{anom_sc}', expanded_average, epoch)
             '''
+
+        print('done')
+        return mean_intras,mean_inters
+
 
 def get_sc_label(sc_label):
     batch_sc_label = {}
@@ -260,7 +491,7 @@ def dgl_to_mat(g,device='cpu'):
     block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1),size=(g.number_of_nodes(),g.number_of_nodes()))
     return block_adj
 
-def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=True):
+def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=True,n_eig=None):
     """Eigendecompose matrix for visualization"""
     device = mat.device
     if tag != '' and get_lapl is False and save_spectrum is False:
@@ -294,7 +525,9 @@ def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=Tr
             sio.savemat(f'{tag}.mat',{'L':scipy.sparse.csr_matrix(py_g.L)})
             return py_g.L
 
-        py_g.compute_fourier_basis()
+
+    
+        py_g.compute_fourier_basis(n_eigenvectors=n_eig)
         sio.savemat(f'{tag}.mat',{'e':scipy.sparse.csr_matrix(py_g.e),'U':scipy.sparse.csr_matrix(py_g.U)})
         U,e = torch.tensor(py_g.U).to(device),torch.tensor(py_g.e).to(device)
     else:

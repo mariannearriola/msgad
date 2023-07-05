@@ -167,7 +167,7 @@ class GraphReconstruction(nn.Module):
         the input graph.
 
         Input:
-            edges : {array-like, torch tensor}, shape=[e,2]
+            edges : {array-like, torch tensor}, shape=[s,e,2]
                 Edge list of graph
             feats : {array-like, torch tensor}, shape=[n,h]
                 Feature matrix of graph
@@ -186,14 +186,16 @@ class GraphReconstruction(nn.Module):
         if self.model_str in ['dominant','amnet']: #x, e
             entropies = []
             for ind in range(self.scales):
+                continue
                 if ind == 0:
                     res = self.conv(feats,edges)
                     recons_a = self.decode_act(res)[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)
                 else:
                     res = self.conv(feats,edges)
                     recons_a = torch.cat((recons_a,self.decode_act(res)[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)),dim=0)
-                
-                entropies.append(sklearn.metrics.silhouette_samples(1-self.decode_act(res[0]).detach().cpu(),clusts[ind]))
+                dist_mat = 1-self.decode_act(res[0]).detach().cpu()
+                dist_mat.fill_diagonal_(0)
+                entropies.append(sklearn.metrics.silhouette_samples(dist_mat,clusts[ind],metric="precomputed"))
                 continue
                 entropies_sc = np.zeros(res.shape[1])
                 for clust in clusts[ind].unique():
@@ -258,8 +260,10 @@ class GraphReconstruction(nn.Module):
             
             recons_e = self.decode_act(recons)
             entropies = []
+            
             for sc in range(recons_e.shape[0]):
-                entropies.append(sklearn.metrics.silhouette_samples(1-recons_e[sc].detach().cpu(),clusts[sc]))
+                continue
+                entropies.append(sklearn.metrics.silhouette_samples(1-recons_e[sc].detach().cpu(),clusts[sc].detach().cpu(),metric='precomputed'))
                 continue
                 entropies_sc = np.zeros(recons_e.shape[1])
                 for clust in clusts[sc].unique():
@@ -273,17 +277,14 @@ class GraphReconstruction(nn.Module):
                     entropies_sc[idx]=scipy.stats.entropy(clust_recons.detach().cpu())
                     del clust_recons,idx ; torch.cuda.empty_cache()
                 entropies.append(np.array(entropies_sc))
-            
             for i in range(self.scales):
                 if i == 0:
-                    recons_f = recons[i,edge_ids[i,0],edge_ids[i,1]].unsqueeze(0)
+                    recons_f = recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)
                 else:
-                    recons_f = torch.cat((recons_f,recons[i,edge_ids[i,0],edge_ids[i,1]].unsqueeze(0)),dim=0)
-            import ipdb ; ipdb.set_trace()
+                    recons_f = torch.cat((recons_f,recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)),dim=0)
             del recons; torch.cuda.empty_cache() ; gc.collect()
             check_gpu_usage('results collected')
             recons_f = self.decode_act(recons_f)
-            #import ipdb ; ipdb.set_trace()
             check_gpu_usage('after sigmoid')
 
             return recons_f,recons_f,hs,entropies

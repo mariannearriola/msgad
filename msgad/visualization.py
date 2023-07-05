@@ -33,6 +33,19 @@ class Visualizer:
             os.makedirs(fpath)
         return fpath
 
+    def plot_spectral_gap(self,e,name):
+        # Example eigenvalue vector
+        # Generate x-axis values for the eigenvalue indices
+        eigenvalue_indices = np.arange(len(e))
+
+        # Plot the eigenvalue index vs. eigenvalues
+        plt.scatter(eigenvalue_indices, e)
+        plt.xlabel('Eigenvalue Index')
+        plt.ylabel('Eigenvalues')
+        plt.title('Eigenvalue Index vs. Eigenvalues')
+        fpath = self.generate_fpath('gap-test')
+        plt.savefig(f'{fpath}/{name}.png')
+
     def plot_spectrum(self,e,U,signal,color=None):
         c = U.T@signal
         M = torch.zeros((40+1,c.shape[1])).to(e.device).to(U.dtype)

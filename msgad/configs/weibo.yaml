@@ -1,25 +1,26 @@
-EXP: 'weibo-debug-testsampling-after-constant-ones-newplot-nocluster'
-VIS_FILTERS: True
-VIS_CONCENTRATION: False
-VIS_LOSS: True
+EXP: 'weibos-sc3-newanom'
+SCALES: 1
 DEVICE: 'cuda'
 
 DATASET:
-    NAME: 'weibo_'
+    NAME: 'weibo'
     DATADIR: 'batch_data'
-    LABEL_TYPE: 'amnet-filter-full'
+    LABEL_TYPE: 'single'
     BATCH_SIZE: 0
     BATCH_TYPE: 'edge'
-    K: 5
+    K: 1
     LABEL_IDX: None
+    CLUST_IND: 3
   
 MODEL:
     NAME: 'multi-scale-amnet'
     RECONS: 'struct'
+    CONTRASTIVE: True
     D: 5
-    EPOCH: 2
+    K: 5
+    EPOCH: 150
     HIDDEN_DIM: 128
-    LR: 1e-3
+    LR: 1e-4
     DEBUG: True
     SAMPLE_TRAIN: True
     SAMPLE_TEST: True
@@ -27,3 +28,9 @@ MODEL:
 
 DETECTION:
     TYPE: 'mean'
+
+VIS:
+    VIS_FILTERS: False
+    VIS_CONCENTRATION: False
+    VIS_LOSS: True
+    SAVE_SPECTRUM: False

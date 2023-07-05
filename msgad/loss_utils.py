@@ -5,15 +5,6 @@ from utils import *
 import random
 
 
-def generate_unique_numbers(n, start_range, end_range):
-    if n > (end_range - start_range + 1):
-        raise ValueError("The range is not large enough to generate n unique numbers.")
-    
-    numbers = np.arange(start_range, end_range + 1)  # Create an array with numbers within the specified range
-    np.random.shuffle(numbers)  # Shuffle the array randomly
-    
-    return numbers[:n]  # Return the first n elements of the shuffled array
-
 def loss_func(graph, feat, A_hat, X_hat, res_a, edge_ids, attract_sel,repel_sel, sample=False, recons='struct', alpha=None, clusts=None, regularize=True):
     """
     Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction
@@ -58,17 +49,9 @@ def loss_func(graph, feat, A_hat, X_hat, res_a, edge_ids, attract_sel,repel_sel,
     #loss=torch.nn.functional.mse_loss(A_hat[0], graph[0].ndata['feature'], reduction='none')
     #loss = torch.abs(A_hat[0] - graph[0].ndata['feature'])
     #loss = A_hat[0] - graph[0].adjacency_matrix().to_dense().to(A_hat[0].device)
+
     print(A_hat.min(),A_hat.max())
-    #if A_hat.max() > 0.9:
-    #    print('checking')
-    #import ipdb ; ipdb.set_trace()
-    #return loss.sum(),loss.unsqueeze(0),loss.unsqueeze(0)
-
     clusts = torch.tensor(clusts)
-    all_clust = clusts.unique().sort()
-    margin = 1.
-    #import ipdb ; ipdb.set_trace()
-
     edge_ids_tot = []
     for recons_ind,preds in enumerate([A_hat, X_hat]):
         if preds == None: continue
@@ -79,13 +62,10 @@ def loss_func(graph, feat, A_hat, X_hat, res_a, edge_ids, attract_sel,repel_sel,
                     sampled_pred = sc_pred
                     lbl_edges = torch.zeros(sampled_pred.shape).to(sampled_pred.device).to(torch.float64)
                     check_gpu_usage('before edge idx')
-                    edge_idx=graph[ind].has_edges_between(edge_ids[ind,0,:],edge_ids[ind,1,:])
-                    edge_idx = edge_idx.nonzero()
-                    edge_idx = edge_idx.T[0]
-                    
+                    edge_idx=graph[ind].has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]
                     # bug?
-                    lbl_edges[edge_idx] = graph[ind].edata['w'][graph[ind].edge_ids(edge_ids[ind,0,:][edge_idx],edge_ids[ind,1,:][edge_idx])].to(torch.float64)
-                    total_struct_error, edge_struct_errors,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside,entropies = get_sampled_losses(sampled_pred,edge_ids[ind],lbl_edges,ind,attract_sel[ind],repel_sel[ind],clusts[ind],regularize)
+                    lbl_edges[edge_idx] = graph[ind].edata['w'][graph[ind].edge_ids(edge_ids[ind][:,0][edge_idx],edge_ids[ind][:,1][edge_idx])].to(torch.float64)
+                    total_struct_error, edge_struct_errors,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside,entropies = get_sampled_losses(sampled_pred,edge_ids[ind],lbl_edges,ind,attract_sel,repel_sel,clusts[ind],regularize)
 
                     del sampled_pred, lbl_edges, edge_idx
                     torch.cuda.empty_cache()
@@ -107,16 +87,11 @@ def loss_func(graph, feat, A_hat, X_hat, res_a, edge_ids, attract_sel,repel_sel,
                     edge_struct_errors = torch.sqrt(torch.sum(torch.pow(sc_pred - adj_label, 2),1))
                     total_struct_error = torch.mean(edge_struct_errors)
             
-
             # feature loss
             if recons_ind == 1 and recons in ['feat','both']:
                 #import ipdb ; ipdb.set_trace()
                 feat_error = torch.nn.functional.mse_loss(sc_pred,feat.to(feat.device),reduction='none')
                 total_feat_error = torch.mean(feat_error,dim=1)
-            
-            if total_struct_error <= -1:
-                print('negative loss')
-                import ipdb ; ipdb.set_trace()
 
             # accumulate errors
             if all_costs is None:
@@ -155,7 +130,6 @@ def loss_func(graph, feat, A_hat, X_hat, res_a, edge_ids, attract_sel,repel_sel,
                 else:
                     all_costs = torch.add(total_struct_error*alpha,torch.mean(total_feat_error)*(1-alpha)).unsqueeze(0)
  
-    #import ipdb ; ipdb.set_trace()
     del feat, total_feat_error, total_struct_error ; torch.cuda.empty_cache()
     return all_costs, all_struct_error, all_feat_error, all_reg_error, all_clust_error, all_nonclust_error, all_sc_idx_inside, all_sc_idx_outside, all_entropies#, edge_ids_tot
 
@@ -179,50 +153,44 @@ def get_sampled_losses(pred,edges,label,ind,attract_sel,repel_sel,clusts=None,re
             edge-wise errors
     """
     edge_errors=torch.nn.functional.mse_loss(pred.to(torch.float64), label, reduction='none')
-    
+    #import ipdb ; ipdb.set_trace()
+    #edge_errors = torch.zeros(edge_errors.shape).to(edge_errors.device)
     regloss=torch.zeros(edge_errors.shape).to(edge_errors.device)
     reg_clust = torch.zeros(edge_errors.shape).to(edge_errors.device)
     reg_nonclust = torch.zeros(edge_errors.shape).to(edge_errors.device)
-    reg_nonclust_sample = torch.zeros(edge_errors.shape).to(edge_errors.device)
-
-    #in_reg_weights = [0,1,]
-    #in_reg_weights = np.ones(4)
-    #out_reg_weights = [1,1,0]
-    #out_reg_weights = np.ones(4)
-    #import ipdb ; ipdb.set_trace()
-    if regularize is True:      
-        #import ipdb ; ipdb.set_trace()
+    
+    if regularize is True:
         epsilon = 0.
-        attract_edges = torch.where(clusts[edges][0]==clusts[edges[1]])[0]
-        repel_edges = torch.where(clusts[edges][0]!=clusts[edges[1]])[0]
-        repel_edges = repel_edges[torch.tensor(np.random.randint(0,repel_edges.shape[0],attract_edges.shape))]
-        alpha = 0.8
-        sc_idx = attract_edges
-        clust_loss =  (1-pred[sc_idx]+epsilon)
+        attract_edges = torch.where(clusts[edges][:,0]==clusts[edges[:,1]])[0]
+        repel_edges = torch.where(clusts[edges][:,0]!=clusts[edges[:,1]])[0]
 
-        edge_errors[sc_idx]= edge_errors[sc_idx] + alpha * clust_loss
-        reg_clust[sc_idx] = alpha * clust_loss
+        repel_edges = repel_edges[torch.tensor(np.random.randint(0,repel_edges.shape[0],attract_edges.shape))]
+        alpha = 0.5
+        clust_loss =  (1-pred[attract_edges])
+        edge_errors[attract_edges]= edge_errors[attract_edges] + alpha * clust_loss
+        #edge_errors[attract_edges]=  clust_loss
+        reg_clust[attract_edges] = alpha * clust_loss
+
         nonclust=repel_edges
         nonclust_loss = pred[nonclust]
         reg_nonclust[nonclust] = alpha * nonclust_loss
-        #reg_nonclust_sample[nonclust[sample_non]] = alpha * pred[sample_non]
-
-        #edge_errors[sample_non] = edge_errors[sample_non] + alpha * pred[sample_non]
         edge_errors[nonclust] = edge_errors[nonclust] + alpha * nonclust_loss
-
+        #edge_errors[nonclust]=  nonclust_loss
         regloss = reg_clust + reg_nonclust
+
         print((alpha*clust_loss)[(alpha*clust_loss).nonzero()[:,0]].mean(),(alpha*pred[nonclust])[(alpha*pred[nonclust]).nonzero()[:,0]].mean())
-        print(f'correct edges for clust {ind}',torch.where(pred[sc_idx]>=0.5)[0].shape[0]/pred[sc_idx].shape[0])
+        print(f'correct edges for clust {ind}',torch.where(pred[attract_edges]>=0.5)[0].shape[0]/pred[attract_edges].shape[0])
         print(f'correct non-edges {ind}',torch.where(pred[nonclust]<0.5)[0].shape[0]/pred[nonclust].shape[0])
     print('correct edges',torch.where(pred[label.nonzero()][:,0]>=0.5)[0].shape[0]/pred[label.nonzero()][:,0].shape[0])
     print('correct non-edges',torch.where(pred[~label.nonzero()][:,0]<0.5)[0].shape[0]/pred[~label.nonzero()][:,0].shape[0])
             
-    total_error = torch.sum(edge_errors)
-    #import ipdb ; ipdb.set_trace()
+
+    total_error = torch.mean(edge_errors)
     recons_e = pred
 
     # get node-wise + cluster-wise entropy of loss?
     entropies = {}
+    '''
     for clust in clusts.unique():
         idx = attract_edges[torch.where(clusts[edges][0][attract_edges]==clust)]
         clust_recons = recons_e[idx]
@@ -230,14 +198,11 @@ def get_sampled_losses(pred,edges,label,ind,attract_sel,repel_sel,clusts=None,re
         if np.isnan(entropies[clust.item()]):
             entropies[clust.item()] = 0.
         del clust_recons,idx ; torch.cuda.empty_cache()
-    
-    #total_error = torch.sum(edge_errors)
+    '''
     if torch.isnan(total_error):
-        print('nan')
-        import ipdb ; ipdb.set_trace()
-    #import ipdb ; ipdb.set_trace()
+        raise('reconstruction contains nan')
         
-    return total_error, edge_errors, regloss, reg_clust, reg_nonclust,sc_idx,nonclust,entropies
+    return total_error, edge_errors, regloss, reg_clust, reg_nonclust, attract_edges,nonclust,entropies
 
 def average_with_indices(input_tensor, indices_tensor):
     input_tensor,indices_tensor=input_tensor,indices_tensor

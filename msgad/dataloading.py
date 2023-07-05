@@ -118,9 +118,8 @@ class DataLoading:
         src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
         g_batch = dgl.graph((src,dst),num_nodes=in_nodes.shape[0]).to(g_batch.device)
         g_batch.edata['w'] = w
-        #import ipdb ; ipdb.set_trace()
         g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
-        batch_sc_label = get_sc_label(sc_label)
+        batch_sc_label = sc_label
 
         return in_nodes, in_nodes[pos_edges], in_nodes[neg_edges], g_batch, last_batch_node, batch_sc_label
 
