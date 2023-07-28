@@ -25,6 +25,9 @@ import sklearn
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 
+def torch_overlap(a,b):
+    return a[(a.view(1, -1) == b.view(-1, 1)).any(dim=0)]
+
 def replace_node_ids_with_probabilities(probability_array, node_ids):
     unique_node_ids, node_id_counts = np.unique(node_ids, return_counts=True)
     total_nodes = len(node_ids)
@@ -56,55 +59,6 @@ def ensure_unique_pairs(tensor):
     unique_tensor = torch.unique(sorted_tensor, dim=0)
 
     return unique_tensor
-
-def get_contr_edges(edge_idx,clusts,scales):
-    #import ipdb ; ipdb.set_trace()
-    edge_clusts=torch.stack([i[edge_idx[ind].detach().cpu()] for ind,i in enumerate(clusts)])
-
-    # for each clustering, sample edges/nonedges for contrastive learning, balance by cluster id of edges
-    for ind in range(scales):
-        '''
-        attract_edges = torch.where(edge_clusts[ind,0]==edge_clusts[ind,1])[0]
-        repel_edges = torch.where(edge_clusts[ind,0]!=edge_clusts[ind,1])[0]
-        import ipdb ; ipdb.set_trace()
-        if ind == 0:
-            attract_edges_sel = attract_edges.unsqueeze(0)
-            repel_edges_sel = repel_edges.unsqueeze(0)
-        else:
-            attract_edges_sel = torch.cat((attract_edges_sel,attract_edges.unsqueeze(0)),dim=0)
-            repel_edges_sel = torch.cat((repel_edges_sel,repel_edges.unsqueeze(0)),dim=0)
-
-        continue
-        '''
-        sc_idx_attract = torch.where(edge_clusts[ind][0]==edge_clusts[ind][1])[0]
-        if ind == 0:
-            num_edges = sc_idx_attract.shape[0]
-        attract_clusts = edge_clusts[ind,:,sc_idx_attract]
-        if ind == 0:
-            attract_edges_sel = sc_idx_attract[weighted_selection(attract_clusts[0],clusts[ind],num_edges)].unsqueeze(0)
-        else:
-            attract_edges_sel = torch.cat((attract_edges_sel,sc_idx_attract[weighted_selection(attract_clusts[0],clusts[ind],num_edges)].unsqueeze(0)),dim=0)
-
-        sc_idx_repel = torch.where(edge_clusts[ind][0]!=edge_clusts[ind][1])[0]
-        repel_clusts = edge_clusts[ind,:,sc_idx_repel]
-
-        # sample from first row, 2nd row, (will be no intersection), then randomly select num_edges from both
-        idx_found=weighted_selection(repel_clusts[0],clusts[ind],num_edges)
-        repel_clusts_sel = sc_idx_repel[idx_found]
-        sc_idx_left=torch.tensor(np.setdiff1d(sc_idx_repel,repel_clusts_sel))
-        repel_clusts_flip = sc_idx_left[weighted_selection(edge_clusts[ind,1,sc_idx_left],clusts[ind],np.minimum(num_edges,sc_idx_left.shape[0]))]
-
-        if np.intersect1d(np.array(repel_clusts_sel),np.array(repel_clusts_flip)).shape[0] > 0:
-            raise('bug')
-
-        repel_clusts_sel=np.array(torch.cat((repel_clusts_sel,repel_clusts_flip),dim=0))
-        repel_clusts_sel = sc_idx_repel[weighted_selection(repel_clusts_sel,clusts[ind],num_edges)]
-        if ind == 0:
-            repel_edges_sel = torch.tensor(repel_clusts_sel).unsqueeze(0)
-        else:
-            repel_edges_sel = torch.cat((repel_edges_sel,torch.tensor(repel_clusts_sel).unsqueeze(0)))
-
-    return attract_edges_sel,repel_edges_sel
 
 def get_different_cluster_indices(cluster_2d, same_cluster_indices):
     different_cluster_indices = []
@@ -157,7 +111,7 @@ def generate_adjacency_matrix(cluster_ids):
 
 
 class TBWriter:
-    def __init__(self,tb,edge_ids, attract_edges_sel, repel_edges_sel,sc_label,clust):
+    def __init__(self,tb,edge_ids, attract_edges_sel, repel_edges_sel,sc_label,clust,anoms,exp_params):
         '''
         # edges connected to any anomaly
         self.sc_idx_all,self.sc_idx_all,self.sc_idx_inside,self.sc_idx_outside,self.cl_all={},{},{},{},{}
@@ -178,6 +132,9 @@ class TBWriter:
         '''
         self.clust = clust
         self.sc_labels = sc_label
+        self.anoms = anoms
+        self.anoms_cuda = torch.tensor(anoms).cuda()
+        self.model_ind = exp_params['MODEL']['IND']
 
     def collect_clust_loss(self,edge_ids,sc_idx,loss):
         """Get average loss for each cluster, and assign back to edge-wise losses"""
@@ -187,26 +144,14 @@ class TBWriter:
         expanded_average = average_tensor[cl].to(edge_ids.device).mean()#/cl.shape[0]
         return expanded_average
 
-    def get_group_idx(self,edge_ids,clust,i):
+    def get_group_idx(self,edge_ids,clust,i,anom_wise=True):
+        """Get all edges associated with an anomaly group OR of the cluster(s) of the anomaly group"""
         dgl_g = dgl.graph((edge_ids[:,0],edge_ids[:,1]))
-        return dgl_g.out_edges(i,form='eid')
-        #return torch.cat((dgl_g.out_edges(i)[0],dgl_g.out_edges(i)[1]))
-        #group_cluster = clust[i].unique()
-        #a = np.where(np.array(clust[edge_ids[0]][:, None]) == np.array(group_cluster))[0]
-        #b = np.where(np.array(clust[edge_ids[1]][:, None]) == np.array(group_cluster))[0]
-        if len(i) == 0: return torch.tensor([])
-        try:
-            a = torch.where(edge_ids[0][:, None] == i)[0]
-            b = torch.where(edge_ids[1][:, None] == i)[0]
-        except:
-            import ipdb  ; ipdb.set_trace()
-        
-        #a,b = np.intersect1d(edge_ids[0],i,return_indices=True)[-2],np.intersect1d(edge_ids[1],i,return_indices=True)[-2]
-        #group_cluster = clust[i].unique()
-        #sc_idx_inside_ov = np.concatenate((a,b))
-        sc_idx_inside_ov = torch.cat((a,b))
-        #cl_all = np.concatenate((edge_ids[:,a],edge_ids[:,b]),axis=1)
-        return sc_idx_inside_ov
+        if anom_wise:
+            return dgl_g.out_edges(i,form='eid')
+        else:
+            anom_clusts = clust[i].unique()
+            return dgl_g.out_edges(np.intersect1d(clust,anom_clusts,return_indices=True)[-2],form='eid')
 
     def plot_sep_scores(self,scores,avg_score,cluster_labels,anom_sc):
         """https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html#sphx-glr-auto-examples-cluster-plot-kmeans-silhouette-analysis-py"""
@@ -314,6 +259,7 @@ class TBWriter:
         plt.savefig(f'clust_figs/clusts_{anom_sc}.png')
 
     def sampled_edges(self,tensor):
+        """For sampling an even number of in-clust/out-clust edges"""
         ones_indices = torch.nonzero(tensor == 1).flatten()
         zeros_indices = torch.nonzero(tensor == 0).flatten()
 
@@ -326,109 +272,129 @@ class TBWriter:
         sampled_indices = sampled_ones_indices + sampled_zeros_indices
         return sampled_indices
 
-    def tb_write_anom(self,tb,adj,sc_label,edge_ids,pred,loss,sc,epoch,regloss,clustloss,nonclustloss,clusts,sc_idx_inside,sc_idx_outside,entropies,clust_entropies):
+    def tb_write_anom(self,tb,adj,sc_label,edge_ids,pred,loss,sc,epoch,regloss,clustloss,nonclustloss,clusts,sc_idx_inside,sc_idx_outside,entropies):
         """Log loss evolution for anomaly group"""
         # sc idx all: contains all edge idx associated with each anomaly
-        #import ipdb ; ipdb.set_trace()
         # removing edges if there is no cluster between them, does not add edges
-        clust = clusts[sc]
+        if self.model_ind != None:
+            clust = clusts[self.model_ind]
+        else:
+            clust = clusts[sc]
         pred_opt = torch.zeros(pred.shape)
-        #a1 = edge_ids[:,np.where(clust[edge_ids[0]]==clust[edge_ids[1]])[0]]
-
-        
+    
+        #a1 = torch_overlap(torch.where(clust[edge_ids[:,0]]==clust[edge_ids[:,1]])[0],torch.where(clust[edge_ids[:,1]]==clust[edge_ids[:,0]])[0])
         a1 = torch.where(clust[edge_ids[:,0]]==clust[edge_ids[:,1]])[0]
         pred_opt[a1] = 1.
 
         anom_clusts = copy.deepcopy(clust)
         it = clust.max()+1
-        # get anomalous clusters found
-        '''
-        for ind, i in enumerate(sc_label[:-1]):
-            if ind != 3:
-                anom_clusts[i] = it ; it += 1
-            else:
-                for ac in np.unique(clusts[ind-1][i]):
-                    anom_clusts[i[np.where(clusts[ind-1][i]==ac)]] = it ; it += 1
-        '''
-        '''
-        try:
-            for ind, i in enumerate(sc_label[:-1]):
-                if ind != sc+1:
-                    for ac in np.unique(clusts[ind-1][i]):
-                        anom_clusts[i[np.where(clusts[ind-1][i]==ac)]] = it ; it += 1
-        except:
-            import ipdb ; ipdb.set_trace()
-        '''  
-        #adjacency_matrix = self.generate_adjacency_matrix(clust)
-        #return adjacency_matrix
-        #adjacency_matrix = 1-adjacency_matrix
-        #np.fill_diagonal(adjacency_matrix,0)
-
-        #opt_entropy = sklearn.metrics.silhouette_samples(adjacency_matrix,anom_clusts,metric="precomputed")
-        #import ipdb ; ipdb.set_trace()
-        #avg_opt_entropy = sklearn.metrics.silhouette_score(adjacency_matrix,anom_clusts,metric="precomputed")
-        
-        # randomly sample edge/nonedge
-        #self.opt_entropies.append(opt_entropy) ; self.avg_opt_entropies.append(avg_opt_entropy)
-      
-        #import ipdb ; ipdb.set_trace()
         mean_intras,mean_inters=[],[]
-        for ind,i in enumerate(sc_label):
-            anom = torch.tensor(i).to(edge_ids.device)
-            if len(anom) == 0: continue
-            
-            anom_neighbors=torch.stack(adj.out_edges(anom)).T
-            anom_neighbors=anom_neighbors[(~torch.isin(clust[anom_neighbors].unique(),clust[anom])).nonzero()]
+        all_dicts = []
+        sc_labels = np.unique(sc_label)
+        for ind,i in enumerate(sc_labels):
+            anom = torch.tensor(self.anoms[np.where(np.array(sc_label)==i)])#.to(edge_ids.device)
 
             
+            #import ipdb; ipdb.set_trace()
+            #anom_neighbors=torch.stack(adj.out_edges(anom)).T
+            #anom_neighbors=anom_neighbors[(~torch.isin(clust[anom_neighbors].unique(),clust[anom])).nonzero()]
+
             # gets all edges related to a group
-            sc_idx_inside_ov = self.get_group_idx(edge_ids,clust,anom)
-            # won't be perfectly balanced, depends on anomaly group
-            #import ipdb ; ipdb.set_trace()
-            sc_idx_inside_ov = sc_idx_inside_ov[torch.isin(sc_idx_inside_ov,torch.cat((sc_idx_inside[sc],sc_idx_outside[sc])).cuda())]
-            samp_edges = self.sampled_edges(pred_opt[sc_idx_inside_ov])
-            anom_sc = ind if ind != len(self.sc_labels)-1 else 'norm'
-            '''
-            if sc == 2:
-                print('clusters',clust.unique().shape[0])
-                self.plot_sep_scores_group(self.opt_entropies,self.avg_opt_entropies,i,anom_sc)
-                #self.plot_sep_scores(self.opt_entropies,self.avg_opt_entropies,clust,anom_sc)
-                #import ipdb  ; ipdb.set_trace()
-            '''
-            expanded_average = loss[sc_idx_inside_ov].mean()
-            #expanded_average = loss[sc_idx_inside_ov][samp_edges].mean()
-            tb.add_scalar(f'Loss_{sc}/Anom{anom_sc}',expanded_average, epoch)
-
-            # log regularization loss
-            #expanded_average=regloss[sc_idx_inside_ov][samp_edges].mean()
-            expanded_average=regloss[sc_idx_inside_ov].mean()
-            tb.add_scalar(f'Regloss{sc}/Anom{anom_sc}', expanded_average, epoch)
-
-            # optimal ; best 
-            expanded_average = pred_opt[sc_idx_inside_ov].mean()
-            tb.add_scalar(f'Opt_conn{sc}/Anom{anom_sc}',expanded_average,epoch)
-
-            # only select INSIDE cluster
-            #expanded_average = clustloss[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
-            mean_intra = clustloss[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean()
-            tb.add_scalar(f'Loss_inclust{sc}/Anom{anom_sc}', mean_intra, epoch)
-
-            expanded_average = pred_opt[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean()
-            #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
-            tb.add_scalar(f'Loss_inclust_opt{sc}/Anom{anom_sc}', expanded_average, epoch)
-
-            # only select OUTSIDE cluster
-            #expanded_average = nonclustloss[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
-            mean_inter = nonclustloss[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean()
-            tb.add_scalar(f'Loss_outclust{sc}/Anom{anom_sc}', mean_inter, epoch)
             
-            tb.add_scalar(f'Silhouette{sc}/Anom{anom_sc}', (mean_inter-mean_intra)/torch.max(mean_intra,mean_inter), epoch)
+            gr_clusts = np.unique(clust[anom])
+            # GET CLUSTER-WISE VALUES, then report mean across clusters
+            gr_dict = {'Loss':[],'RegLoss':[],'Opt_conn':[],'Loss_inclust':[],'Loss_inclust_opt':[],'Loss_outclust':[],'Loss_outclust_opt':[],'Silhouette':[],'Inclust_edges':[],'Outclust_edges':[]}
+            gr_anom_sizes,gr_sizes= [],[]
+            for clust_ind,gr_clust in enumerate(gr_clusts):
+                #import ipdb ; ipdb.set_trace()
+                #gr_anom = np.intersect1d(np.where(clust==gr_clust)[0],anom)
+                gr_anom = np.where(clust==gr_clust)[0]
+                gr_anom_sizes.append(gr_anom.shape[0])
+                gr_sizes.append(np.where(clust==gr_clust)[0].shape[0])
 
+            
+                #sc_idx_inside_ov = self.get_group_idx(edge_ids,clust,gr_anom,anom_wise=True)
+                '''
+                sc_idx_aa = sc_idx_inside_ov[torch.isin(adj.out_edges(gr_anom)[1],self.anoms_cuda).nonzero()[:,0]]
+                sc_idx_aa = sc_idx_aa[torch.isin(sc_idx_aa,torch.cat((sc_idx_inside[sc],sc_idx_outside[sc])).cuda())]
 
-            expanded_average = pred_opt[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean()
-            #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
-            tb.add_scalar(f'Loss_outclust_opt{sc}/Anom{anom_sc}', expanded_average, epoch)
-            mean_inters.append(mean_inter) ; mean_intras.append(mean_intra)
+                # anom-anom
+                mean_intra = clustloss[sc_idx_aa][pred_opt[sc_idx_aa].nonzero()].mean().detach().cpu()
+                gr_dict['Loss_inclust_aa'].append(mean_intra)
+                
+                sc_idx_an = sc_idx_inside_ov[torch.isin(adj.out_edges(gr_anom)[1],self.anoms_cuda)==0]
+                sc_idx_an = sc_idx_an[torch.isin(sc_idx_an,torch.cat((sc_idx_inside[sc],sc_idx_outside[sc])).cuda())]
+                # anom-normal
+                mean_intra = clustloss[sc_idx_an][pred_opt[sc_idx_an].nonzero()].mean().detach().cpu()
+                gr_dict['Loss_inclust_an'].append(mean_intra)
+                
+                '''
+                # won't be perfectly balanced, depends on anomaly group
+                #sc_idx_inside_ov = sc_idx_inside_ov[torch.isin(sc_idx_inside_ov,torch.cat((sc_idx_inside[sc],sc_idx_outside[sc])).cuda())]
+                
+                #samp_edges = self.sampled_edges(pred_opt[sc_idx_inside_ov])
+                anom_sc = ind if ind != len(self.sc_labels)-1 else 'norm'
+                '''
+                if sc == 2:
+                    print('clusters',clust.unique().shape[0])
+                    self.plot_sep_scores_group(self.opt_entropies,self.avg_opt_entropies,i,anom_sc)
+                    #self.plot_sep_scores(self.opt_entropies,self.avg_opt_entropies,clust,anom_sc)
+                    #import ipdb  ; ipdb.set_trace()
+                '''
+
+                #gr_dict['Loss'].append(loss[sc_idx_inside_ov].mean().detach().cpu())
+                gr_dict['Loss'].append(loss[gr_anom].mean().detach().cpu())
+                #expanded_average = loss[sc_idx_inside_ov][samp_edges].mean()
+
+                # log regularization loss
+                #expanded_average=regloss[sc_idx_inside_ov][samp_edges].mean()
+                #gr_dict['RegLoss'].append(regloss[sc_idx_inside_ov].mean().detach().cpu())
+                gr_dict['RegLoss'].append(regloss[gr_anom].mean().detach().cpu())
+
+                # optimal ; best 
+                #gr_dict['Opt_conn'].append(pred_opt[sc_idx_inside_ov].mean())
+
+                # only select INSIDE cluster
+                #expanded_average = clustloss[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
+                #mean_intra = clustloss[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean().detach().cpu()
+                mean_intra = clustloss[gr_anom].mean().detach().cpu()
+                gr_dict['Loss_inclust'].append(mean_intra)
+                
+                #gr_dict['Inclust_edges'].append(clustloss[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].shape[0])
+                #import ipdb ; ipdb.set_trace()
+
+                #gr_dict['Loss_inclust_opt'].append(pred_opt[sc_idx_inside_ov][pred_opt[sc_idx_inside_ov].nonzero()].mean().detach().cpu())
+                #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][pred_opt[sc_idx_inside_ov][samp_edges].nonzero()].mean()
+
+                # only select OUTSIDE cluster
+                #expanded_average = nonclustloss[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
+                
+                #mean_inter = nonclustloss[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean().detach().cpu()
+                mean_inter = nonclustloss[gr_anom].mean().detach().cpu()
+                gr_dict['Loss_outclust'].append(mean_inter)
+                #gr_dict['Outclust_edges'].append(nonclustloss[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].shape[0])
+
+                gr_dict['Silhouette'].append((mean_inter-mean_intra)/torch.max(mean_intra,mean_inter))
+
+                #gr_dict['Loss_outclust_opt'].append(pred_opt[sc_idx_inside_ov][torch.where(pred_opt[sc_idx_inside_ov]==0)[0]].mean())
+                #expanded_average = pred_opt[sc_idx_inside_ov][samp_edges][torch.where(pred_opt[sc_idx_inside_ov][samp_edges]==0)[0]].mean()
+            #print('avg size of anom group',ind,(np.array(gr_anom_sizes)).mean(),len(gr_anom_sizes))
+
+            for k,v in gr_dict.items():
+                kname = k + f'_{sc}/Anom{anom_sc}'
+                '''
+                if 'Loss' in k and 'clust' in k:
+                    if 'inclust' in k:
+                        arr =np.array(gr_dict['Loss_inclust'])*np.array(gr_dict['Inclust_edges'])
+                    elif 'outclust' in k:
+                        arr =np.array(gr_dict['Loss_outclust'])*np.array(gr_dict['Outclust_edges'])
+                    gr_dict[k] = arr[~np.isnan(arr)].mean()
+                else:
+                '''
+                gr_dict[k] = np.array(v)[~np.isnan(np.array(v))].mean()
+                tb.add_scalar(kname,np.array(v)[~np.isnan(np.array(v))].mean(), epoch)
+            mean_intras.append(gr_dict['Loss_inclust'])
+            mean_inters.append(gr_dict['Loss_outclust'])
             '''
             clust_counts=torch.unique(clust,return_counts=True)[-1]
             anom_clusts,anom_counts=torch.unique(clust[sc_label[ind]],return_counts=True)
@@ -467,9 +433,8 @@ class TBWriter:
             expanded_average = collect_clust_loss(edge_ids,self.sc_idx_outside_inside_anom,self.sc_idx_outside_inside_anom_,nonclustloss)
             tb.add_scalar(f'Outclust_inanom{sc}_Anom{anom_sc}', expanded_average, epoch)
             '''
-
         print('done')
-        return mean_intras,mean_inters
+        return torch.tensor(mean_intras),torch.tensor(mean_inters)
 
 
 def get_sc_label(sc_label):
@@ -538,8 +503,8 @@ def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=Tr
 
 def process_graph(graph):
     """Obtain graph information from input TODO: MOVE?"""
-    feats = graph.ndata['feature']
-    return torch.vstack((graph.edges()[0],graph.edges()[1])), feats, graph
+    feats = graph[0].ndata['feature']
+    return [torch.vstack((i.edges()[0],i.edges()[1])) for i in graph], feats
     mat_sparse=graph.adjacency_matrix()
     #L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
     L = get_spectrum(mat_sparse,lapl=None,tag='',load=False,get_lapl=True,save_spectrum=True)
@@ -558,7 +523,6 @@ def process_graph(graph):
     return edges, feats, graph
 
 def check_gpu_usage(tag):
-    return
     allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
     cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
 
@@ -578,7 +542,7 @@ def prep_args(args):
 def init_recons_agg(n,nfeats,exp_params):
     """A"""
     edge_anom_mats,node_anom_mats,recons_a,res_a_all = [],[],[],[]
-    scales = exp_params['SCALES']
+    scales = exp_params['MODEL']['SCALES']
     for i in range(scales):
         am = np.zeros((n,n))
         #am = np.zeros((n,nfeats))

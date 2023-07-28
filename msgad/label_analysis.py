@@ -1,4 +1,7 @@
+import sknetwork
 from sknetwork.hierarchy import postprocess, LouvainIteration
+from sknetwork.visualization import svg_dendrogram
+from IPython.display import SVG
 import numpy as np
 import torch
 from utils import *
@@ -6,46 +9,31 @@ import dgl
 import networkx as nx
 from itertools import chain
 import sklearn
+import os
+import matplotlib.pyplot as plt
+from cairosvg import svg2png
+from scipy.cluster import hierarchy
+from scipy.interpolate import make_interp_spline
+from scipy.interpolate import pchip
+import scipy.io as sio
+from pygsp_ import graphs
 
 class LabelAnalysis:
-    def __init__(self,anoms,dataset):
+    def __init__(self,dataset,all_anoms,norms,exp):
+        self.exp=exp
+        self.visualize=False
         self.thresh = 0.8
         self.dataset = dataset
-        self.anoms,self.anoms_combo = self.processAnoms(anoms)
-
-    def flatten_label(self,anoms):
-        if len(anoms) == 0: return anoms
-        if 'elliptic' in self.dataset:
-            anoms = anoms[0]
-        anom_flat = anoms[0]
-        if 'elliptic' in self.dataset:
-            anom_flat = anom_flat[0]
-        if len(anoms) > 1:
-            for i in anoms[1:]:
-                if 'elliptic' in self.dataset:
-                    anom_flat=np.concatenate((anom_flat,i[0]))
-                else:
-                    anom_flat=np.concatenate((anom_flat,i))
-        return anom_flat
-
-    def processAnoms(self,anoms):
-        new_dict = {}
-        all_anom = None
-        for anom_ind,anom in enumerate(anoms.values()):
-            if list(anoms.keys())[anom_ind] == 'single':
-                anom_f = anom
-            else:
-                anom_f = self.flatten_label(anom)
-            new_dict[list(anoms.keys())[anom_ind]] = anom_f
-            if all_anom is None: all_anom = anom_f
-            else: all_anom = np.append(all_anom,anom_f)
-        return new_dict,all_anom
-
-    def getScaleClusts(self,dend,thresh):
-        clust_labels = postprocess.cut_straight(dend,threshold=thresh)
-        return clust_labels
+        self.anoms_combo = all_anoms
+        self.fname = f'batch_data/labels'
+        self.ranking_thresh = 0.8
+        self.min_anom_size=3
+        self.min_sil = 0.
+        self.norms = norms
+        if not os.path.exists(self.fname): os.makedirs(self.fname)
 
     def check_conn(self,sc_label):
+        """Filter out disconnected anomaly clusters"""
         conn_check=[]
         for i in sc_label:
             try:
@@ -54,12 +42,129 @@ class LabelAnalysis:
                 conn_check.append(False)
         return conn_check
 
-    def remove_anom_overlap(self,anom,anom_next):
-        if len(anom) == 0:
-            return np.array([])
-        #return np.setdiff1d(self.flatten_label(anom),np.unique(self.flatten_label(self.flatten_label(anom_next))))
-        next_anoms=self.flatten_label([self.flatten_label(i) for i in anom_next])
-        return np.setdiff1d(self.flatten_label(anom),np.unique(next_anoms))
+    def remove_anom_overlap(self,clusts):
+        """For an anomaly group, find cluster it is best associated with. Prioritizes larger clusters """
+
+        anom_clusts,best_rankings = np.full(self.anoms_combo.shape,-1),np.full(self.anoms_combo.shape,-1)
+        max_clust = np.array([np.unique(i,return_counts=True)[-1].max() for i in clusts]).max()
+        for clust_ind,clust in enumerate(clusts):
+            clust_rankings = self.rank_anom_clustering(clust,clust_ind,max_clust)
+            all_rankings = clust_rankings[np.newaxis,...] if clust_ind == 0 else np.vstack((all_rankings,clust_rankings[np.newaxis,...]))
+            anom_clusts[np.where(clust_rankings>best_rankings)] = clust_ind
+            best_rankings = np.maximum(clust_rankings,best_rankings)
+        
+        #anom_clusts[np.where(best_rankings < self.ranking_thresh)] = 0
+
+        # Assign labels using group_ids and max_context_indices
+        anom_clusts = self.assign_nodes_to_clusters(all_rankings.T,np.stack(clusts).T[self.anoms_combo])
+
+        #anom_clusts = np.argmax(all_rankings,axis=0)
+
+        
+        #anom_clusts = self.fclust_scales[self.anoms_combo]-1
+        print('before thresholding',np.unique(anom_clusts,return_counts=True)[-1])
+        
+        anom_clusts += 1
+        # only get largest cluster from each anomaly (debugging)
+        anom_clusters =  np.stack(clusts)[:,self.anoms_combo][anom_clusts-1,np.arange(anom_clusts.shape[0])]
+        idx_keep = []
+        #import ipdb ; ipdb.set_trace()
+        for i in range(self.scales-1):
+            sc_cluster = anom_clusters[(anom_clusts==(i+1)).nonzero()[0]]
+            #els,cts = np.unique(sc_cluster,return_counts=True)
+            if sc_cluster.shape[0] == 0: continue
+            sc_rankings = all_rankings[i][anom_clusts==(i+1)]
+            els = np.unique(sc_rankings)
+            try:
+                idx_keep.append((all_rankings[i]==els.max()).nonzero()[0])
+            except Exception as e:
+                import ipdb ; ipdb.set_trace()
+                print(e)
+            #idx_keep.append((anom_clusters==els[np.argmax(cts)]).nonzero()[0])
+            #idx_keep.append((anom_clusters==els[np.argmax(cts)]).nonzero()[0])
+            #idx_drop = (anom_clusters!=els[np.argmax(cts)]).nonzero()[0] if idx_drop is None else np.concatenate((idx_drop,(anom_clusters!=els[np.argmax(cts)]).nonzero()[0]))
+        anom_clusts = np.zeros(anom_clusts.shape)
+        for id,idx in enumerate(idx_keep):
+            anom_clusts[idx] = id+1
+        anom_clusts = anom_clusts.astype(int)
+        #import ipdb ; ipdb.set_trace()
+        #els,cts = np.unique(idx_drop,return_counts=True)
+        #anom_clusts_nz[els[cts==(self.scales-1)]]=0
+        #anom_clusts[els[cts==(self.scales-1)]]=0
+        clusts_kept = anom_clusters[anom_clusts.nonzero()]
+        
+        
+        #anom_clusts[all_rankings[(anom_clusts),np.arange(all_rankings.shape[1])] == 0] = -1
+        #anom_clusts += 1
+        
+        
+        print('after thresholding',np.unique(anom_clusts,return_counts=True)[-1])
+        
+        return anom_clusts
+
+    def assign_nodes_to_clusters(self, node_scores, cluster_ids):
+        """
+        Assign nodes to contexts based on context-specific clusters with the highest
+        average scores. Prioritizes larger clusters
+
+        Input:
+            node_scores : {array-like}, shape=[scales, n]
+                Computed node rankings for each context
+            cluster_ids : {array-like}, shape=[scales,n]
+                Cluster IDs
+        Output:
+            assigned_contexts: {array-like, torch tensor}, shape=[scales,n]
+                Context IDs for each node
+        """
+        # Step 1: Calculate average scores for each node across all contexts
+        #average_scores = np.mean(node_scores, axis=1)
+        cluster_scores = np.zeros((np.max(cluster_ids), node_scores.shape[1]))
+        for context in range(node_scores.shape[1]):
+            for cluster in range(np.max(cluster_ids)):
+                mask = (cluster_ids[:, context] == cluster+1)
+                cluster_scores[cluster, context] = np.mean(node_scores[mask, context])
+
+        # Step 2: Find the cluster with the highest average score for each context
+        #highest_scoring_clusters = np.argmax(cluster_scores, axis=0)
+
+        # Step 3: Assign nodes to context-specific clusters
+        num_nodes, num_contexts = node_scores.shape[0], node_scores.shape[1]
+        assigned_contexts = np.full(cluster_ids.shape[0],-1)
+        
+        # prioritize larger scales
+        #for context in range(num_contexts-1,-1,-1):
+        for context in range(num_contexts):
+            # Sort nodes by average scores in the current context
+            #sorted_nodes = np.argsort(node_scores[:, context])[::-1]
+            sorted_nodes = np.argsort(node_scores[:, context])
+            # Assign nodes to the highest-scoring cluster, considering constraints
+            for node in sorted_nodes:
+                cluster = cluster_ids[node, context]
+
+                # assigned to a different cluster, not unassigned
+                if assigned_contexts[node] != context and assigned_contexts[node] != -1:
+                    # Check if any other node in the same context-specific cluster is assigned
+                    
+                    # assigned to a different cluster ; skip
+                    prev_context =  assigned_contexts[node]
+                
+                    prev_cluster = cluster_ids[node,prev_context]
+                    prev_score = node_scores[node,prev_context]
+                    # which context has the higher node score?
+                    if node_scores[node,context] > prev_score:
+                        #import ipdb ; ipdb.set_trace()
+                        # all nodes in the previous cluster: set scores to -1
+                        #node_scores[np.where(cluster_ids[:,prev_context]==prev_cluster),prev_context] = -1
+                        assigned_contexts[np.where(cluster_ids[:,prev_context]==prev_cluster)] = -1
+                    else:
+                        continue
+                
+                if node_scores[node,context] != 0:
+                #if node_scores[node,context] != 2:
+                    assigned_contexts[np.where(cluster_ids[:,context]==cluster)] = context
+                #assigned_clusters[node, context] = cluster
+
+        return assigned_contexts
 
     def getAnomCount(self,clust,all_anoms):
         """Retrieve all cluster information associated with anomalies"""
@@ -75,158 +180,346 @@ class LabelAnalysis:
             node_count.append(clust_dict[key].shape[0])
         return clust_dict,np.array(anom_count),np.array(node_count)
     
+    def rank_anom_clustering(self,cluster,clust_ind,max_clust):
+        """Score anomaly group with a given clustering"""
+        rankings = np.full(self.anoms_combo.shape[0],0.)
+
+        anom_clusters = np.unique(cluster[self.anoms_combo])
+        # silhouette scores, normalized between 0 and 1
+        sil_samps_norm = (self.sil_samps[clust_ind] - self.sil_samps[clust_ind].min()) / (self.sil_samps[clust_ind].max() - self.sil_samps[clust_ind].min())
+        
+        for anom_clust in anom_clusters:
+            # avg silhouette score in cluster
+            rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = 1 * sil_samps_norm[np.where(cluster[self.anoms_combo] == anom_clust)[0]].mean()
+            # percentage of anoms in cluster
+            rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]
+            #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = 1 if np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]>0.8 else 0
+            # size
+            #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += 0.5*(np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0])/max_clust
+            #if np.unique(self.incons_scs[clust_ind][np.where(cluster[self.anoms_combo] == anom_clust)[0]]).shape[0] != 1:
+            #    print('mult incons')
+            #    import ipdb ; ipdb.set_trace()
+            # inconsistency
+            #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += self.incons_scs[clust_ind][np.where(cluster[self.anoms_combo] == anom_clust)[0]]
+
+            # threshold on min anoms and min % of anoms
+            if np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0] < self.min_anom_size or np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0] < self.thresh:
+                rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = 0
+
+        return rankings
 
     def filter_anom_crit(self,clust1_dict,anom,anoms1,nodes1,sil_samps):
-        return [np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if (x in np.where(anoms1/nodes1 > self.thresh)[0] and clust1_dict[x].shape[0]>=self.min_anom_size and False not in self.check_conn(clust1_dict[x]) and sil_samps[clust1_dict[x]].mean() > self.min_sil)]
-
-
+        """Filter anoms: currently no filtering, done in removing overlap"""
+        return [np.intersect1d(clust1_dict[x],anom) for x in clust1_dict.keys() if x in np.where(anoms1/nodes1 > 0)[0]]
+        
     def get_sc_label(self,graph,clust,anom):
-        """
-        Given a clustering, find clusters that are anomaly-dominated
-        """
+        """Given a clustering, find clusters that are anomaly-dominated"""
         
         dist = 1-np.array(nx.adjacency_matrix(graph,weight='weight').todense()).astype(np.float64)
         np.fill_diagonal(dist,0)
         sil_samps = sklearn.metrics.silhouette_samples(dist,clust,metric='precomputed')
-        #import ipdb; ipdb.set_trace()
         clust1_dict,anoms1,nodes1 = self.getAnomCount(clust,anom)
         #min_anom_size = int(np.unique(clust,return_counts=True)[-1].mean())
-        self.min_anom_size=3
-        self.min_sil = 0.3
-        #import ipdb; ipdb.set_trace()
         anom_nodes1=self.filter_anom_crit(clust1_dict,anom,anoms1,nodes1,sil_samps)
         return anom_nodes1
 
-    def postprocess_anoms(self,anom_nodes_tot):
+    def postprocess_anoms(self,clusts):
         '''Remove overlap from detected anomalies in a top-down manner (prioritize LARGER SCALE anomalies)'''
-        sc_label = [[]]
-        for ind,anom in enumerate(anom_nodes_tot):
-            sc_label.append(self.remove_anom_overlap(anom,anom_nodes_tot[ind+1:]))
+        sc_label = self.remove_anom_overlap(clusts)
         return sc_label
 
-
+    
+    def plot_dend(self,dend,colors,**kwargs):
+        plt.figure(figsize=(30, 15))
+        plt.title(f'Hierarchical clustering for {self.dataset}')
+        #plt.legend(np.unique(colors))
+        with plt.rc_context({'lines.linewidth': 0.5}):
+            rdict = hierarchy.dendrogram(dend,link_color_func=lambda k: colors[k],no_labels=True)
+        
+        fpath = self.generate_fpath(f'preprocess_vis/{self.dataset}/{self.exp}')
+        plt.savefig(f'{fpath}/dend.png')
+        
     def get_clusts(self,graph,scales,resolution=1.0):
-        if 'yelpchi' in self.dataset or 'elliptic' in self.dataset:
-            hierarchy = Paris()
-        else:
-            #hierarchy = Paris()
-            hierarchy = LouvainIteration(resolution=resolution,depth=scales)
-            #hierarchy = LouvainHierarchy(resolution=resolution)
+        #resolutions = np.arange(.4,.9,.1)
+        resolutions = [.8]
+        adj = np.array(nx.adjacency_matrix(graph,weight='weight').todense())
+        for res in resolutions:
+            if 'yelpchi' in self.dataset or 'elliptic' in self.dataset:
+                hierarchy = Paris()
+            else:
+                hierarchy = LouvainIteration(resolution=res,depth=scales)
+                #hierarchy = LouvainHierarchy(resolution=resolution)
+   
+            dend = hierarchy.fit_predict(adj)
+            incons = scipy.cluster.hierarchy.inconsistent(dend,scales+1)
+            
+            #print('dasgupta',res,sknetwork.hierarchy.dasgupta_score(adj, dend))
+            #print('tree',res,sknetwork.hierarchy.tree_sampling_divergence(adj, dend))
+            # dendrogram ->
+            clusts = [postprocess.cut_straight(dend,threshold=scale) for scale in range(scales+1)]
+            '''
+            clusts,incons_scs = [],[]
+            for scale in range(scales+1):
+                clusts.append(postprocess.cut_straight(dend,threshold=scale))
+                n = (dend.shape[0] + 1)
+                cluster = {i: [i] for i in range(n)}
+                cluster_incons = {i: 0 for i in range(n)}
+                
+                for t in range(n - 1):
+                    i = int(dend[t][0])
+                    j = int(dend[t][1])
+                    if dend[t][2] < scale and i in cluster and j in cluster:
+                        cluster[n + t] = cluster.pop(i) + cluster.pop(j)
+                        cluster_incons[n+t] = incons[t][-1]
+                
+                clusters = list(cluster.values())
+         
+                sizes = np.array([len(nodes) for nodes in clusters])
+                index = np.argsort(-sizes)
+                clusters = [clusters[i] for i in index]
+                dend_ids = list(cluster.keys())
+                
+                labels = np.zeros(n, dtype=int)
+                label_incons = np.zeros(n, dtype=float)
+                for label, nodes in enumerate(clusters):
+                    labels[nodes] = label
+                    label_incons[nodes] = cluster_incons[dend_ids[label]]
+                
+                incons_scs.append(label_incons)
+            fcluster = scipy.cluster.hierarchy.fcluster(dend,2.7,depth=scales+1)
+            #import ipdb ; ipdb.set_trace()
+            L,M = scipy.cluster.hierarchy.leaders(dend,fcluster)
+            result_dict = {key: value for key, value in zip(M, L)}
+            leaders=np.vectorize(result_dict.get)(fcluster)
+            max_lvls=[fcluster.shape[0]] ; max_val = dend.shape[0]
+            for merge in dend:
+                # Get the IDs of the merged clusters
+                left_node_id, right_node_id = int(merge[0]), int(merge[1])
+                if left_node_id > max_lvls[-1] and right_node_id > max_lvls[-1]:
+                    max_lvls.append(new_node_id)
+                new_node_id = max_val+1
+                max_val = np.maximum(max_val,new_node_id)
+            fclust_scales = (np.array(max_lvls)[:, np.newaxis] < leaders).sum(0)-1
+        '''
+        fclust_scales=None
+        return clusts, dend, fclust_scales
 
-        dend = hierarchy.fit_predict(np.array(nx.adjacency_matrix(graph,weight='weight').todense()))
-        clusts = [postprocess.cut_straight(dend,threshold=scale) for scale in range(scales)]
-        return clusts
+    def get_group_stats(self,graph,clusts,group,norms,sc,norm=False):
+        unique_clusts = np.unique((clusts[group]))
+        group_dict = {'avg_sil':[]}
+        for ind,j in enumerate(unique_clusts):
+            if ind == 0:
+                group_dict['avg_density'] = []
+                group_dict['avg_size'] = []
+                group_dict['avg_sp'] = []
+                group_dict['anom_feat_dist'] = []
+                group_dict['norm_feat_dist'] = []
+            clust_anoms = np.where(clusts == j)[0]
+            anom_subgraph = graph.subgraph(clust_anoms)
+            group_dict['avg_density'].append(nx.density(anom_subgraph))
+            group_dict['avg_size'].append(anom_subgraph.number_of_nodes())
+            try:
+                group_dict['avg_sp'].append(nx.average_shortest_path_length(anom_subgraph))
+            except Exception as e:
+                pass
+            group_dict['avg_sil'].append(self.sil_samps[sc][clust_anoms].mean())
+            # avg euclidean distance between features
+            group_dict['anom_feat_dist'].append(sklearn.metrics.pairwise.euclidean_distances(graph.nodes[0]['feats'][clust_anoms]).mean())
+            if not norm:
+                group_dict['norm_feat_dist'].append(sklearn.metrics.pairwise.euclidean_distances(graph.nodes[0]['feats'][clust_anoms],graph.nodes[0]['feats'][norms]).mean())
+        for key in list(group_dict.keys()):
+            group_dict[key] = np.array(group_dict[key]).mean()
+        return group_dict
 
-    def run_dend(self,graph,scales,return_clusts=False,return_all=False):
+    def find_node_id(self, dendrogram, original_n_nodes, target_original_node_id):
+        """Get dendrogram node ids corresponding to node id; used for coloring dendrogram"""
+        # Initialize a mapping to keep track of node IDs
+        node_id_mapping = {i: i for i in range(original_n_nodes)}
+        max_val = original_n_nodes-1
+        # Traverse the dendrogram and update the node ID mapping
+        max_lvls=[original_n_nodes]
+        for merge in dendrogram:
+            # Get the IDs of the merged clusters
+            left_node_id, right_node_id = int(merge[0]), int(merge[1])
+    
+            if left_node_id > max_lvls[-1] and right_node_id > max_lvls[-1]:
+                max_lvls.append(new_node_id)
+                
+            new_node_id = max_val+1
+            # Update the node ID mapping for the merged clusters
+            
+            node_id_mapping[left_node_id] = new_node_id
+            node_id_mapping[right_node_id] = new_node_id
+            max_val = np.maximum(max_val,new_node_id)
+        #return node_id_mapping[target_original_node_id]
+
+        dend_ids = [target_original_node_id]
+        prev_dend = dend_ids[-1]
+        
+        try:
+            cur_lvl = 0
+            while True:
+                if dend_ids[-1] == node_id_mapping[prev_dend]:
+                    print('found equal')
+                    return dend_ids[:-1]
+                if node_id_mapping[prev_dend] >= max_lvls[cur_lvl]:
+                    dend_ids.append(node_id_mapping[prev_dend])
+                    cur_lvl += 1
+                prev_dend = node_id_mapping[prev_dend]                
+        except:
+            return dend_ids[:-1]
+
+    def run_dend(self,graph,scales,return_clusts=False,return_all=False,load=False):
         """Partition the graph into multi-scale cluster & """
+        if load or os.path.exists(f'{self.fname}/{self.dataset}_labels.mat'):
+            mat = sio.loadmat(f'{self.fname}/{self.dataset}_labels.mat')
+            sc_all,clusts = mat['labels'][0],mat['clusts']
+            return list(sc_all),torch.tensor(clusts) 
         self.graph = graph
         anom = self.anoms_combo
-        clusts = self.get_clusts(graph,scales,1.)
-        #import ipdb ; ipdb.set_trace()
-        
-        clusts = clusts[1:]
-        self.thresh = 0.9
-        #import ipdb; ipdb.set_trace()
-        anom_nodes = [self.get_sc_label(graph,clust,anom) for clust in clusts]
-        sc_all = self.postprocess_anoms(anom_nodes)
-        #import ipdb; ipdb.set_trace()
-        sc_all[0] = np.setdiff1d(anom,self.flatten_label(sc_all[1:]))
-        for clust_ind,clust in enumerate(clusts):
-            for ind,sc in enumerate(sc_all):
-                if len(sc) == 0: continue
-                group_clusts = np.unique(clust[sc])
-                
-                all_ = []
-                for gc in group_clusts:
-                    all_.append(np.where(clust[sc]==gc)[0].shape[0]/np.where(clust==gc)[0].shape[0])
-                print('clust',clust_ind,'anom',ind,all_)
+
+        self.scales = scales
+        clusts,dend,self.fclust_scales = self.get_clusts(graph,scales,1.1)
+        clusts = clusts[1:-1] #; self.incons_scs = self.incons_scs[1:-1]
         #import ipdb ; ipdb.set_trace()
         dist = 1-np.array(nx.adjacency_matrix(graph,weight='weight').todense()).astype(np.float64)
         np.fill_diagonal(dist,0)
-        sil_samps = [sklearn.metrics.silhouette_samples(dist,clust,metric='precomputed') for clust in clusts]
-        #import ipdb ; ipdb.set_trace()
-        for sc,sil_samp in enumerate(sil_samps):
-            print(f'avg sil scale {sc}',[sil_samp[i].mean() for i in sc_all[1:]])
-        #import ipdb ; ipdb.set_trace()
+        self.sil_samps = [sklearn.metrics.silhouette_samples(dist,clust,metric='precomputed') for clust in clusts]
+
+        #anom_nodes = [self.get_sc_label(graph,clust,anom) for clust in clusts]
+        sc_all = self.postprocess_anoms(clusts)
+
+        # prints connectivity info of every anomaly and all clusters associated with it across scales
+        for clust_ind,clust in enumerate(clusts):
+            for ind,sc in enumerate(np.unique(sc_all)):
+                anom_clusts = clust[self.anoms_combo[np.where(sc_all==sc)]]
+                if len(anom_clusts) == 0: continue
+                group_clusts = np.unique(anom_clusts)
+                
+                all_ = []
+                for gc in group_clusts:
+                    all_.append(round(np.where(anom_clusts==gc)[0].shape[0]/np.where(clust==gc)[0].shape[0],3))
+
+                print('clust',clust_ind,'anom',ind,all_)
+        print('anomalous clusters found',[np.unique((clusts[i-1][self.anoms_combo[np.where(sc_all==i)]])).shape[0] for i in range(np.unique(sc_all).shape[0])])
         
-        print('anomalies found',[i.shape[0] for i in sc_all])
-        #import ipdb ; ipdb.set_trace()
-        print('anomalous clusters found',[np.unique((clusts[i][torch.tensor(sc_all[i])])).shape[0] for i in range(len(clusts))])
+        if True:
+            # plot dendrogram
+            #new_dend = sknetwork.hierarchy.aggregate_dendrogram(dend,n_clusters=50)#no_labels=True
+            
+            sc_all_unique = np.unique(sc_all)
+            colors = np.full(int(dend.max()+2),'green',dtype='object')
+            # add opacity based on silhouette score/overral ranking
+            #sc_colors=[(103, 242, 209),(255,0,0),(0, 0, 255),(90, 34, 139)]
+            sc_colors=['orange','red','blue','purple']
+            for i in sc_all_unique:
+                #all_node_ids = []
+                #if i != 0:
+                #    sil_samps_norm = (self.sil_samps[i-1] - self.sil_samps[i-1].min()) / (self.sil_samps[i-1].max() - self.sil_samps[i-1].min())
+                for sc_node in self.anoms_combo[(sc_all==i).nonzero()]:
+                    node_ids = np.array(self.find_node_id(dend[:,:2],dend.shape[0]+1,sc_node))
+                    #all_node_ids = np.concatenate((all_node_ids,node_ids))
+                    colors[node_ids.astype(int)] = sc_colors[i]
+                    '''
+                    if i != 0:
+                        for j in node_ids:
+                            colors[j.astype(int)] = sc_colors[i] + (sil_samps_norm[sc_node],)
+                    else:
+                        for j in node_ids:
+                            colors[j.astype(int)] = sc_colors[i]
+                    '''
+            import ipdb ; ipdb.set_trace()
+            if self.visualize:
+                self.plot_dend(dend,colors)
+
+                # plot spectrum
+                #self.plot_spectrum()
+                plt.figure()
+                self.plot_spectrum_graph(graph,[],'norm',graph.nodes[0]['feats'])
+                for i in sc_all_unique:
+                    group = self.anoms_combo[(sc_all==i).nonzero()]
+                    self.plot_spectrum_graph(graph,group,i,graph.nodes[0]['feats'])
+
     
+                clust_dicts = []
+                sc_all_clusts = []
+                for j in np.unique(sc_all):
+                    sc_all_clusts.append(self.anoms_combo[np.where(sc_all==j)])
+                sc_all_clusts.append(self.norms)
+                import ipdb ; ipdb.set_trace()
+                for i in range(len(clusts)):
+                    print('scale',i)
+                    clust_dicts.append({})
+                    norm_clusts,norm_clust_counts = np.unique(clusts[i][sc_all_clusts[-1]],return_counts=True)
+                    for jind,j in enumerate(sc_all_clusts):
+                        if jind-1 != i and jind != len(sc_all_clusts)-1: continue
+
+                        if jind == len(sc_all_clusts)-1:
+                            gr_dict = self.get_group_stats(graph,clusts[i],sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],j,i,norm=True)
+                        #gr_dict = self.get_group_stats(graph,clusts[i],j,sc_all_clusts[-1],i)
+                        gr_dict = self.get_group_stats(graph,clusts[i],j,sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],i)
+                        
+                        print('group',jind,gr_dict)
+                        if jind == 0:
+                            clust_dicts[i] = gr_dict
+        sio.savemat(f'{self.fname}/{self.dataset}_labels.mat',{'labels':sc_all,'clusts':clusts})
         
         return sc_all,torch.tensor(clusts)
-    
 
-    def postprocess_scales(self,sc_label):
-        conns = np.array(self.check_conn(sc_label)).nonzero()[0]
-        # only take connected anomalies
-        sc_label_ = np.array(sc_label)[conns] if len(conns) > 0 else np.array([])
-        print([i.shape[0] for i in sc_label_])
-        return sc_label_
-
-    def cluster(self,adj,label_id):
-        '''
-        '''
-        self.adj = adj.detach().cpu().numpy()
-        self.graph = nx.from_numpy_matrix(self.adj)
-        # TODO: need to make sure that anomalies map here
-        self.label_id = label_id
-        print('clustering for',self.label_id-1)
-        hierarchy = LouvainIteration()  # changed from iteration; wasn't forming connected subgraphs
-        #dend = hierarchy.fit_predict(self.adj)
-        #dends
-        # 3-scale representations -> for each one, how much are preserved in communities?
-        sc1_label,sc2_label,sc3_label = self.run_dend(self.graph)
-
-        if label_id == 0:
-            self.sc1_og,self.sc1_og_f = sc1_label,self.flatten_label(sc1_label)
-            self.sc2_og,self.sc2_og_f = sc2_label,self.flatten_label(sc2_label)
-            self.sc3_og,self.sc3_og_f = sc3_label,self.flatten_label(sc3_label)
+    def plot_spectrum(self,e,U,signal,color=None):
+        c = U.T@signal
+        M = torch.zeros((40+1,c.shape[1])).to(torch.tensor(U).dtype)#.to(e.device).to(U.dtype)
+        for j in range(c.shape[0]):
+            idx = max(min(int(e[j] / 0.05), 40-1),0)
+            M[idx] += c[j]**2
+        M=M/sum(M)
+        M[torch.where(torch.isnan(M))]=0
+        y = torch.mean(M,axis=1)*100
+        x = np.arange(y.shape[0])
+        #if 'weibo' in self.dataset:
+        #    x = x[15:25] ; y = y[15:25]
+        spline = pchip(x, y)
+        #spline = make_interp_spline(x, y, k=21)
+        X_ = np.linspace(x.min(), x.max(), 801)
+        Y_ = spline(X_)
+        if color:
+            plt.plot(X_,Y_,color=color)
         else:
-            if len(sc1_label) > 0:
-                print('scale1 recovered',self.check_anom_recovered(sc1_label))
-            else:
-                print('scale1 recovered []')
-            if len(sc2_label) > 0:
-                print('scale2 recovered',self.check_anom_recovered(sc2_label))
-            else:
-                print('scale2 recovered []')
-            if len(sc3_label) > 0:
-                print('scale3 recovered',self.check_anom_recovered(sc3_label))
-            else:
-                print('scale3 recovered []')
-            
+            plt.plot(X_,Y_)
+        #plt.axis('equal')
+        return X_,y
+    def plot_spectrum_graph(self,graph,anoms,img_lbl,feats):
+        #from utils import get_spectrum
+        #lbl = graph.adjacency_matrix().to(torch.float64)
+        lbl = nx.adjacency_matrix(graph).todense().astype(np.float64) # TODO: CHECK FOR SELF LOOPS
+        #e,U = get_spectrum(lbl,tag=f'anom_vis{self.dataset}',save_spectrum=self.save_spectrum)
+        py_g = graphs.MultiScale(lbl)
+        try:
+            mat = sio.loadmat(f'{self.dataset}_eig.mat')
+            e,U = mat['e'][0],mat['U']
+        except:
+            py_g.compute_laplacian('normalized')
+            py_g.compute_fourier_basis()
+            e,U = py_g.e,py_g.U
+            mat = {} ; mat['e'],mat['U'] = e,U 
+            sio.savemat(f'{self.dataset}_eig.mat',mat)
+        legend_arr = ['No anom. signal','Single node anom.','Anom. scale 1','Anom. scale 2','Anom. scale 3']
+        signal = np.random.randn(feats.shape[0],feats.shape[0])+1
 
-        #ndict = self.node_ranks()
-        ndict = {}
-        self.graph_conn = nx.average_clustering(self.graph)
-        ret_arr = [self.check_conn_anom(ndict,self.sc1_og),self.check_conn_anom(ndict,self.sc2_og),self.check_conn_anom(ndict,self.sc3_og)]
-        print('sc1 og connectivity',ret_arr[0])
-        print('sc2 og connectivity',ret_arr[1])
-        print('sc3 og connectivity',ret_arr[2])
-        return ret_arr
+        signal[anoms]=(np.random.randn(U.shape[0])*400*self.anoms_combo.shape[0]/len(anoms))+1#*anom_tot/anom.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
+        x,y=self.plot_spectrum(e,U,signal)
+        plt.legend(legend_arr)
+        #fpath = self.generate_fpath('filter_anom_vis')
+        
+        plt.xticks(x[np.arange(0,y.shape[0],step=5)*20],np.round(np.arange(y.shape[0],step=5)*0.05,2))
+        plt.gca().yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
+        plt.xlabel(r'$\lambda$')
+        d_name = self.dataset.split("_")[0]
+        plt.title(f'Spectrum for {d_name}, label {img_lbl}')
+        fpath = self.generate_fpath(f'preprocess_vis/{self.dataset}/{self.exp}')
+        plt.savefig(f'{fpath}/spectra.png')
 
-    def check_anom_recovered(self,sc_label):
-        sc1 = np.intersect1d(self.sc1_og_f,self.flatten_label(sc_label)).shape[0]
-        sc2 = np.intersect1d(self.sc2_og_f,self.flatten_label(sc_label)).shape[0]
-        sc3 = np.intersect1d(self.sc3_og_f,self.flatten_label(sc_label)).shape[0]
-        single = self.flatten_label(sc_label).shape[0]-sc1-sc2-sc3
-        return sc1,sc2,sc3,single
-
-    def node_ranks(self):
-        connected_graphs = [g for g in nx.connected_components(self.graph)]
-        ndict = {k:-1. for k in self.graph.nodes}
-        for connected_graph_nodes in connected_graphs:
-            subgraph = self.graph.subgraph(connected_graph_nodes)
-            try:
-                ndict.update({k:v for k,v in zip(list(connected_graph_nodes),list(nx.centrality.eigenvector_centrality(self.graph,max_iter=200).values()))})
-            except Exception as e:
-                print(e)
-                import ipdb ; ipdb.set_trace()
-        return ndict
-
-    def check_conn_anom(self,ndict,scale):
-        coeffs = []
-        for sc in scale:
-            coeffs.append(nx.average_clustering(self.graph,sc)/self.graph_conn)
-        return coeffs
+    def generate_fpath(self,fpath):
+        if not os.path.exists(fpath):
+            os.makedirs(fpath)
+        return fpath

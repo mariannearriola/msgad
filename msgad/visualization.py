@@ -550,6 +550,8 @@ class Visualizer:
         plt.savefig(f'{fpath}/filter{img_num}.png')
 
 
+    
+
     def filter_anoms(self,graph,label,anoms,vis_name,img_num=None):
 
         signal = np.random.randn(self.feats.shape[0],self.feats.shape[0])

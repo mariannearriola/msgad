@@ -97,19 +97,15 @@ class BernConv(MessagePassing):
 
     def forward(self, x, edge_index, conv_weight, edge_weight: OptTensor = None,
                 lambda_max: OptTensor = None):
-
         if lambda_max is None:
             lambda_max = torch.tensor(2.0, dtype=x.dtype, device=x.device)
         if not isinstance(lambda_max, torch.Tensor):
             lambda_max = torch.tensor(lambda_max, dtype=x.dtype,
                                       device=x.device)
         assert lambda_max is not None
+        edge_index, norm = self.__norm__(edge_index.T, x.size(self.node_dim),
+                                         edge_weight, 'sym', lambda_max, dtype=x.dtype)
 
-        edge_index, norm = self.__norm__(edge_index, x.size(self.node_dim),
-                                         edge_weight, 'sym', lambda_max, dtype=x.dtype)
-    
-        mat = self.__norm__(edge_index, x.size(self.node_dim),
-                                         edge_weight, 'sym', lambda_max, dtype=x.dtype)
         Bx_0 = x
         Bx = [Bx_0]
         Bx_next = Bx_0

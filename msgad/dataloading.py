@@ -19,12 +19,6 @@ class DataLoading:
         self.datasave = exp_params['DATASET']['DATASAVE']
         self.exp_name = exp_params['EXP']
 
-    def rearrange_anoms(self,anom):
-        ret_anom = []
-        for anom_ in anom:
-            ret_anom.append(anom_[0])
-        return ret_anom
-
     def load_anomaly_detection_dataset(self):
         """Load anomaly detection graph dataset for model training & anomaly detection"""
         data_mat = sio.loadmat(f'data/{self.dataset}.mat')
@@ -38,42 +32,66 @@ class DataLoading:
         elif 'Network' in data_mat.keys():
             adj = data_mat['Network']
         truth = data_mat['Label'].flatten()
-        if 1 in truth:
-            anom1,anom2,anom3,anom_single=data_mat['anom_sc1'],data_mat['anom_sc2'],data_mat['anom_sc3'],data_mat['anom_single']
-            if 'yelpchi' in self.dataset:
-                anom1=self.rearrange_anoms(anom1[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
-                #anom1=self.rearrange_anoms(anom1) ; anom2=self.rearrange_anoms(anom2) ; anom3=self.rearrange_anoms(anom3) ; anom_single = anom_single[0]
-            if 'weibo' in self.dataset:
-                anom1=self.rearrange_anoms(anom1[0]) ; anom2=self.rearrange_anoms(anom2[0]) ; anom3=self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
-            if 'tfinance' in self.dataset:
-                anom3 = self.rearrange_anoms(anom3[0]) ; anom_single = anom_single[0]
-            #import ipdb ; ipdb.set_trace()
-            sc_label=[anom1,anom2,anom3,anom_single]
-        else:
-            sc_label = []
-            
-        return adj, edge_idx, feats, truth, sc_label
+        return adj, edge_idx, feats, truth
 
-    def fetch_dataloader(self, adj, edges):
+    def fetch_dataloader(self, adj, pos_edges_full, neg_edges_full):
+        """
+        Prepare DGL dataloader given DGL graph
+
+        Input:
+            adj : {DGL graph}
+                Input graph
+        """
         if self.dataload:
             return np.arange(len(os.listdir(f'{self.datadir}/{self.exp_name}/{self.dataset}/train')))
         if self.batch_type == 'edge':
-            if 'tfinance' in self.dataset:
-                num_neighbors = 10
-                sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
+            if True:
+                num_neighbors = 10 # NUM CONTRASTIVE PAIRS ?!
+                sampler = dgl.dataloading.NeighborSampler([num_neighbors])
+                #sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
             else:
                 sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
 
-            neg_sampler = dgl.dataloading.negative_sampler.GlobalUniform(1)
-            sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)
-            edges=adj.edges('eid')
-            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_edges())
+            neg_sampler = dgl.dataloading.negative_sampler.GlobalUniform(1,exclude_self_loops=True)
+            #reverse_eids = torch.cat([torch.arange(int(adj.number_of_edges()/2),  int(adj.number_of_edges())), torch.arange(0, int(adj.number_of_edges()/2))]).to(adj.device)
+            sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)#,exclude='reverse_id',reverse_eids=reverse_eids)
+            edges=adj.edges('eid') ; edge_weights = adj.edata['w'].detach().cpu()
+            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes()*num_neighbors)#int(adj.number_of_edges())
             if self.device == 'cuda':
-                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, device=self.device)
+                #import ipdb ; ipdb.set_trace()
+                
+                dgl.distributed.initialize('graph-name')
+                
+                part_g=dgl.distributed.partition_graph(adj.to('cpu'), 'graph_name', 1, num_hops=1, part_method='metis',out_path='output/')
+                dist_g = dgl.distributed.DistGraph('graph_name', part_config='output/graph_name.json')
+                def sample_(seeds):
+                    seeds = torch.LongTensor(np.asarray(seeds))
+                    frontier = dgl.distributed.sample_neighbors(dist_g, adj.nodes(), 10)
+                    block = dgl.to_block(frontier, seeds)
+                    pos_edges_samp = torch.stack(block.edges()).T
+
+                    # Create boolean masks for both edge lists
+                    subsampled_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
+                    subsampled_indices = torch.arange(len(pos_edges_samp))
+                    subsampled_mask[subsampled_indices] = 1
+                    full_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
+                    full_indices = torch.arange(len(pos_edges_samp))
+                    full_mask[full_indices] = 1
+                    indices_in_full = torch.nonzero(subsampled_mask & full_mask).squeeze()
+                    neg_edges_samp = neg_edges_full[indices_in_full]
+                    block.edata['w'] = edge_weights[indices_in_full]
+
+                    # Find the indices of the subsampled edge list in the original edge list
+                    
+                    return block, pos_edges_samp, neg_edges_samp
+             
+                dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=adj.number_of_nodes(),collate_fn=sample_, shuffle=False)
+                
+                #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, device=self.device)
             else:
                 dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=6, device=self.device)
         elif self.batch_type == 'node':
-            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes()/100)
+            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes())
             #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
             sampler = dgl.dataloading.ShaDowKHopSampler([4])
             if self.device == 'cuda':
@@ -84,56 +102,62 @@ class DataLoading:
 
         return dataloader
 
-    def get_batch_sc_label(self,in_nodes,sc_label,g_batch):
-        #dict_={k.item():v for k,v in zip(np.argsort(in_nodes),in_nodes)}
-        dict_={k.item():v for k,v in zip(np.arange(in_nodes.shape[0]),in_nodes)}
-        batch_sc_label = {}
-        batch_sc_label_keys = ['anom_sc1','anom_sc2','anom_sc3','single']
-        in_nodes_ = in_nodes.detach().cpu().numpy()
-        for sc_ind,sc_ in enumerate(sc_label):
-            if batch_sc_label_keys[sc_ind] != 'single':
-                scs_comb = []
-                for sc__ in sc_:
-                    scs_comb.append(np.vectorize(dict_.get)(sc__))
-                batch_sc_label[batch_sc_label_keys[sc_ind]] = scs_comb
-            else:
-                batch_sc_label[batch_sc_label_keys[sc_ind]]=np.vectorize(dict_.get)(sc_)
-
-        return batch_sc_label
-
     def get_edge_batch(self,loaded_input,sc_label):
-        in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_input
-        pos_edges = sub_graph_pos.edges()
-        neg_edges = sub_graph_neg.edges()
-        pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
-        neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
-        last_batch_node = torch.max(neg_edges)
-        #last_batch_node = torch.max(pos_edges)
-        g_batch = block
-        if self.datasave: g_batch = block[0]
-        w = g_batch.edata['w']
-        feat = g_batch.ndata['feature']
-        
-        g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes[g_batch.dstnodes()])][:,torch.argsort(in_nodes[g_batch.dstnodes()])]
-        src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
-        g_batch = dgl.graph((src,dst),num_nodes=in_nodes.shape[0]).to(g_batch.device)
-        g_batch.edata['w'] = w
-        g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
-        batch_sc_label = sc_label
+        """
+        Organize and prepare batched info across scales for model
 
-        return in_nodes, in_nodes[pos_edges], in_nodes[neg_edges], g_batch, last_batch_node, batch_sc_label
+        Input:
+            loaded_input : {array-like}
+                DGL dataloading contents
+            sc_label : {array-like}, shape=[anoms]
+        """
+        g_batches,pos_edges_tot,neg_edges_tot = [],[],[]
+        for sc,loaded_in in enumerate(loaded_input):
+            in_nodes, sub_graph_pos, sub_graph_neg, block = loaded_in
+            pos_edges = sub_graph_pos.edges()
+            neg_edges = sub_graph_neg.edges()
+            pos_edges = torch.vstack((pos_edges[0],pos_edges[1])).T
+            neg_edges = torch.vstack((neg_edges[0],neg_edges[1])).T
+            g_batch = block[-1]#[0]
+            if self.datasave: g_batch = block[0]
+            w = g_batch.edata['w']
+            feat = g_batch.ndata['feature']
+            
+            g_adj = g_batch.adjacency_matrix().to_dense()[torch.argsort(in_nodes[g_batch.dstnodes()])][:,torch.argsort(in_nodes[g_batch.dstnodes()])]
+            src,dst=g_adj.nonzero()[:,0],g_adj.nonzero()[:,1]
+            g_batch = dgl.graph((src,dst),num_nodes=in_nodes.shape[0]).to(g_batch.device)
+            g_batch.edata['w'] = w
+            g_batch.ndata['feature']=feat['_N']#[in_nodes[g_batch.dstnodes()]]
+            batch_sc_label = sc_label
+            
+            in_nodes_tot = in_nodes.unsqueeze(0) if sc == 0 else torch.cat((in_nodes_tot,in_nodes.unsqueeze(0)),dim=0)
+            pos_edges_tot.append(in_nodes[pos_edges])
+            neg_edges_tot.append(in_nodes[neg_edges])
+            g_batches.append(g_batch)
+            batch_sc_labels = torch.tensor(batch_sc_label).unsqueeze(0) if sc == 0 else torch.cat((batch_sc_labels,torch.tensor(batch_sc_label).unsqueeze(0)))
+        return in_nodes_tot, pos_edges_tot, neg_edges_tot, g_batches, batch_sc_labels
 
     def save_batch(self,loaded_input,lbl,iter,setting):
-        loaded_input[0] = loaded_input[0].to_sparse()
-        if self.batch_type == 'edge':
-            loaded_input[-1] = loaded_input[-1][0]
+        """
+        Save batch to pickle file
+
+        Input:
+            loaded_input : {array-like}
+                DGL dataloading contents
+            lbl : {array-like}, shape=[scales]
+                Reconstruction labels (DGL graphs)
+            iter: {int}
+                Batch ID
+            setting: {str}
+                Train/test
+        """
+        #loaded_input[0] = loaded_input[0].to_sparse()
         dirpath = f'{self.datadir}/{self.exp_name}/{self.dataset}/{setting}'
         if not os.path.exists(dirpath):
             os.makedirs(dirpath)
         with open (f'{dirpath}/{iter}.pkl','wb') as fout:
             pkl.dump({'loaded_input':loaded_input,'label':[l for l in lbl]},fout)
-        for i in range(len(loaded_input)):
-            del loaded_input[0]
+
         torch.cuda.empty_cache()
 
     def load_batch(self,iter,setting):
@@ -141,10 +165,10 @@ class DataLoading:
         Load batch from pickle file
 
         Input:
-            iter : {str}
-                Edge list of graph
-            feats : {array-like, torch tensor}, shape=[n,h]
-                Feature matrix of graph
+            iter : {int}
+                Batch ID
+            setting : {str}
+                Train/test
         Output:
             recons: {array-like, torch tensor}, shape=[scales,n,n]
                 Multi-scale adjacency reconstructions
@@ -156,7 +180,7 @@ class DataLoading:
             batch_dict = pkl.load(fin)
         loaded_input = batch_dict['loaded_input']
         lbl = batch_dict['label']
-        loaded_input[0] = loaded_input[0].to_dense()
+        #loaded_input[0] = loaded_input[0]#.to_dense()
         lbl_ = []
         for l in lbl:
             lbl_.append(l)#.to_dense().detach().cpu())

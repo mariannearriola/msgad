@@ -1,5 +1,4 @@
-EXP: 'weibos-sc3-newanom'
-SCALES: 1
+EXP: 'weibo-allscs3-oneclust-fixedges-sc2-500e-dominant-nodesamp'
 DEVICE: 'cuda'
 
 DATASET:
@@ -10,15 +9,17 @@ DATASET:
     BATCH_TYPE: 'edge'
     K: 1
     LABEL_IDX: None
-    CLUST_IND: 3
+    SCALES: 3
   
 MODEL:
-    NAME: 'multi-scale-amnet'
+    NAME: 'dominant'
     RECONS: 'struct'
+    IND: 1
     CONTRASTIVE: True
-    D: 5
-    K: 5
-    EPOCH: 150
+    SCALES: 1
+    D: 3
+    K: 3
+    EPOCH: 500
     HIDDEN_DIM: 128
     LR: 1e-4
     DEBUG: True

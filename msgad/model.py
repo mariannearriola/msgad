@@ -51,10 +51,7 @@ class GraphReconstruction(nn.Module):
         super(GraphReconstruction, self).__init__()
         seed_everything()
         self.in_size = in_size
-        self.taus = [3,4,4]
-        self.scales = int(exp_params['SCALES'])
-        self.attn_weights = None
-        self.b = 1
+        self.scales = int(exp_params['MODEL']['SCALES'])
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
         self.norm = EdgeWeightNorm()
         self.d = int(exp_params['MODEL']['D'])
@@ -69,8 +66,6 @@ class GraphReconstruction(nn.Module):
         self.recons = exp_params['MODEL']['RECONS']
         self.hidden_dim = int(exp_params['MODEL']['HIDDEN_DIM'])
         self.vis_filters = exp_params['VIS']['VIS_FILTERS']
-
-        self.e_adj, self.U_adj = None,None
         dropout = 0
         self.embed_act = act
         self.decode_act = nn.Sigmoid()
@@ -134,7 +129,7 @@ class GraphReconstruction(nn.Module):
         #self.edge_clf = EdgeClassifier(self.hidden_dim*2)
 
         #self.attn = AttentionProjection(in_size,self.hidden_dim)
-        self.attn = nn.Parameter(data=torch.full((exp_params['SCALES'],8405),0.).to(torch.float64)).requires_grad_(True)
+        self.attn = nn.Parameter(data=torch.full((exp_params['MODEL']['SCALES'],8405),0.).to(torch.float64)).requires_grad_(True)
         #self.module_list = nn.ModuleList()
         #for i in range(self.scales):
         #    self.module_list.append(AttentionProjection(in_size,self.hidden_dim))
@@ -161,7 +156,7 @@ class GraphReconstruction(nn.Module):
             print(e)
         return pi
 
-    def forward(self,edges,feats,edge_ids,vis=False,vis_name="",clusts=None):
+    def forward(self,graph,edges,feats,edge_ids,vis=False,vis_name="",clusts=None):
         """
         Obtain learned embeddings and corresponding graph reconstructions from
         the input graph.
@@ -186,16 +181,15 @@ class GraphReconstruction(nn.Module):
         if self.model_str in ['dominant','amnet']: #x, e
             entropies = []
             for ind in range(self.scales):
-                continue
                 if ind == 0:
-                    res = self.conv(feats,edges)
-                    recons_a = self.decode_act(res)[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)
+                    res = self.conv(feats,edges[ind].T)
+                    recons_a = self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]].unsqueeze(0)
                 else:
-                    res = self.conv(feats,edges)
-                    recons_a = torch.cat((recons_a,self.decode_act(res)[0,edge_ids[0,0],edge_ids[0,1]].unsqueeze(0)),dim=0)
-                dist_mat = 1-self.decode_act(res[0]).detach().cpu()
-                dist_mat.fill_diagonal_(0)
-                entropies.append(sklearn.metrics.silhouette_samples(dist_mat,clusts[ind],metric="precomputed"))
+                    res = self.conv(feats,edges[ind].T)
+                    recons_a = torch.cat((recons_a,self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]].unsqueeze(0)),dim=0)
+                #dist_mat = 1-self.decode_act(res[0]).detach().cpu()
+                #dist_mat.fill_diagonal_(0)
+                #entropies.append(sklearn.metrics.silhouette_samples(dist_mat,clusts[ind],metric="precomputed"))
                 continue
                 entropies_sc = np.zeros(res.shape[1])
                 for clust in clusts[ind].unique():
@@ -213,7 +207,8 @@ class GraphReconstruction(nn.Module):
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
             recons = [self.conv(feats, edges, 0,dst_nodes)]
         elif self.model_str in ['gradate']: # adjacency matrix
-            loss, ano_score = self.conv(graph_, graph_.adjacency_matrix(), feats, False)
+            import ipdb ; ipdb.set_trace()
+            loss, ano_score = self.conv(graph[0], graph[0].adjacency_matrix(), clusts[0], feats, False)
         if self.model_str == 'bwgnn':
             recons_a = [self.conv(graph_,feats,dst_nodes)]
         if 'multi-scale' in self.model_str: # g
@@ -223,7 +218,7 @@ class GraphReconstruction(nn.Module):
             for ind in range(self.scales):
                 # pass input through filters
                 check_gpu_usage('before conv')
-                h = self.conv(feats,edges,None)[:,0,:]#,dst_nodes)
+                h = self.conv(feats,edges[ind],None)[:,0,:]#,dst_nodes)
                 check_gpu_usage('after conv')
                 if 'weibo' in self.dataset:
                     check_gpu_usage('model finished')
@@ -284,10 +279,10 @@ class GraphReconstruction(nn.Module):
                     recons_f = torch.cat((recons_f,recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)),dim=0)
             del recons; torch.cuda.empty_cache() ; gc.collect()
             check_gpu_usage('results collected')
-            recons_f = self.decode_act(recons_f)
+            recons_adj = self.decode_act(recons_f)
             check_gpu_usage('after sigmoid')
 
-            return recons_f,recons_f,hs,entropies
+            return recons_adj,recons_f,hs,entropies
             
         
         # feature and structure reconstruction models

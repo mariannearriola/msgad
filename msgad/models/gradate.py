@@ -505,6 +505,7 @@ class ANEMONE(BaseDetector):
         y : torch.Tensor
             Labels of nodes.
         """
+        import ipdb ; ipdb.set_trace()
         edge_index = G.edge_index
 
         adj = to_dense_adj(edge_index)[0].to(self.device)
@@ -624,8 +625,11 @@ class GRADATE(nn.Module):
         return ret1,ret2,c,h_mv
 
     # TODO: sampling
-    def forward(self, G, adj, x, sparse=False, samp_bias1=None,
+    def forward(self, G, adj, x, clusts, sparse=False, samp_bias1=None,
                 samp_bias2=None):
+
+        # collecting subgraphs...
+        import ipdb ; ipdb.set_trace()
         subgraph_size = 4 #TODO: manually set this for even subgraphs...
         self.batch_size = int(adj.shape[0]/subgraph_size)
         nb_nodes = G.number_of_nodes()

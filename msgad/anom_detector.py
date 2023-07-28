@@ -97,11 +97,11 @@ class anom_classifier():
 
     def plot_percentages(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
-        anom_single,anom_sc1,anom_sc2,anom_sc3=anoms
+        anom_groups = np.unique(anoms)
         fpath = f'vis/perc_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
         legend=[]
-        for i,anom in enumerate(anoms):
-            prec = self.plot_anom_perc(sorted_errors,anom_single,self.colors[i],self.anoms[i])
+        for i,anom in enumerate(anom_groups):
+            prec = self.plot_anom_perc(sorted_errors,anoms[np.where(anoms==anom)[0]],self.colors[i],self.anoms[i])
             legend_str = f'{self.anoms[i]}, auc' + str(round(prec,2))
             legend.append(f'{self.anoms[i]}, auc')
         plt.legend(legend)
