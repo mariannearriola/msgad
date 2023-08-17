@@ -26,7 +26,11 @@ def check_gpu_usage(tag):
     allocated_gb = allocated_bytes / 1e9
     cached_gb = cached_bytes / 1e9
     print(f"{tag} -> GPU Memory - Allocated: {allocated_gb:.2f} GB, Cached: {cached_gb:.2f} GB")
-
+def seed_everything(seed=1234):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 class DOMINANT(BaseDetector):
     """
@@ -117,6 +121,7 @@ class DOMINANT(BaseDetector):
         # other param
         self.verbose = verbose
         self.model = None
+        seed_everything()
 
     def forward(self, G, y_true=None):
         """

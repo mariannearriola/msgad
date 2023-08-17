@@ -4,7 +4,6 @@ import gc
 import os
 from dgl.nn import EdgeWeightNorm
 import torch_geometric
-from label_generation import LabelGenerator
 from torch_geometric.nn import MLP
 from utils import *
 from models.dominant import *
@@ -15,25 +14,9 @@ from models.msgad import *
 from models.bwgnn import *
 from models.amnet import *
 from models.amnet_ms import *
-from models.gcad import *
-from models.hogat import *
 import gc
 from models.gradate import *
 import sklearn
-
-class EdgeClassifier(nn.Module):
-    def __init__(self, input_dim):
-        super(EdgeClassifier, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.sigmoid(x)
-        x = self.fc2(x)
-        #x = self.sigmoid(x)
-        return x
 
 def generate_edge_pairs(embedding,edge_ids):
     num_nodes = embedding.shape[0]
@@ -49,7 +32,6 @@ def generate_edge_pairs(embedding,edge_ids):
 class GraphReconstruction(nn.Module):
     def __init__(self, in_size, exp_params, act = nn.LeakyReLU(), label_type='single'):
         super(GraphReconstruction, self).__init__()
-        seed_everything()
         self.in_size = in_size
         self.scales = int(exp_params['MODEL']['SCALES'])
         self.norm_adj = torch_geometric.nn.conv.gcn_conv.gcn_norm
@@ -86,20 +68,20 @@ class GraphReconstruction(nn.Module):
                 elif 'multi-scale-bwgnn' == self.model_str:
                     self.module_list.append(MSGAD(in_size,self.hidden_dim,d=10))
             '''
-        elif self.model_str == 'gradate': # NOTE: HAS A SPECIAL LOSS: OUTPUTS LOSS, NOT RECONS
-            self.conv = GRADATE(in_size,self.hidden_dim,'prelu',1,1,'avg',5)
         elif self.model_str == 'bwgnn':
             self.conv = BWGNN(in_size, self.hidden_dim, d=10)
         elif self.model_str in ['anomalydae','anomaly_dae']: # x, e, batch_size (0 for no batching)
             self.conv = AnomalyDAE_Base(in_size,self.batch_size,self.hidden_dim,self.hidden_dim,dropout=dropout,act=act)
         elif self.model_str == 'dominant':
             self.conv = DOMINANT_Base(in_size,self.hidden_dim,3,dropout,act)
+        elif self.model_str == 'multi-scale-dominant':
+            self.module_list = nn.ModuleList()
+            for i in range(3):
+                self.module_list.append(DOMINANT_Base(in_size,self.hidden_dim,3,dropout,act))
         elif self.model_str == 'mlpae': # x
             self.conv = MLP(in_channels=in_size,hidden_channels=self.hidden_dim,out_channels=self.batch_size,num_layers=3)
         elif self.model_str == 'amnet': # x, e
             self.conv = AMNet(in_size, self.hidden_dim, 2, 2, 2, vis_filters=self.vis_filters)
-        elif self.model_str == 'ho-gat':
-            self.conv = HOGAT(in_size, self.hidden_dim, dropout, alpha=0.1)
         else:
             raise('model not found')
 
@@ -125,8 +107,6 @@ class GraphReconstruction(nn.Module):
 
         self.linear_transform_in.apply(init_weights)
         self.linear_after.apply(init_weights)
-
-        #self.edge_clf = EdgeClassifier(self.hidden_dim*2)
 
         #self.attn = AttentionProjection(in_size,self.hidden_dim)
         self.attn = nn.Parameter(data=torch.full((exp_params['MODEL']['SCALES'],8405),0.).to(torch.float64)).requires_grad_(True)
@@ -178,9 +158,20 @@ class GraphReconstruction(nn.Module):
         #edges, feats, graph_ = self.process_graph(graph)
         check_gpu_usage('about to run')
         recons_x,recons_a=None,None
-        if self.model_str in ['dominant','amnet']: #x, e
-            entropies = []
+        if self.model_str=='multi-scale-dominant':
+            recons_a=[]
             for ind in range(self.scales):
+                res = self.module_list[ind](feats,edges[ind].T)
+                recons_a.append(self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]])#.unsqueeze(0))
+        elif self.model_str in ['dominant','amnet']: #x, e
+            entropies = []
+            recons_a=[]
+            res_a = []
+            for ind in range(self.scales):
+                res = self.conv(feats,edges[ind].T)
+                res_a.append(res)
+                recons_a.append(self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]])#.unsqueeze(0))
+                continue
                 if ind == 0:
                     res = self.conv(feats,edges[ind].T)
                     recons_a = self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]].unsqueeze(0)
@@ -211,7 +202,7 @@ class GraphReconstruction(nn.Module):
             loss, ano_score = self.conv(graph[0], graph[0].adjacency_matrix(), clusts[0], feats, False)
         if self.model_str == 'bwgnn':
             recons_a = [self.conv(graph_,feats,dst_nodes)]
-        if 'multi-scale' in self.model_str: # g
+        if 'multi-scale-amnet' in self.model_str or 'multi-scale-bwgnn' in self.model_str: # g
             recons_a,labels,res_a = [],[],[]
             feats = self.linear_transform_in(feats)
             check_gpu_usage('about to run model')
@@ -254,7 +245,6 @@ class GraphReconstruction(nn.Module):
             # collect entropies here
             
             recons_e = self.decode_act(recons)
-            entropies = []
             
             for sc in range(recons_e.shape[0]):
                 continue
@@ -274,15 +264,16 @@ class GraphReconstruction(nn.Module):
                 entropies.append(np.array(entropies_sc))
             for i in range(self.scales):
                 if i == 0:
-                    recons_f = recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)
+                    recons_f = [torch.sigmoid(recons[i,edge_ids[i][:,0],edge_ids[i][:,1]])]
                 else:
-                    recons_f = torch.cat((recons_f,recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)),dim=0)
+                    recons_f.append(torch.sigmoid(recons[i,edge_ids[i][:,0],edge_ids[i][:,1]]))
+                    #recons_f = torch.cat((recons_f,recons[i,edge_ids[i][:,0],edge_ids[i][:,1]].unsqueeze(0)),dim=0)
+            #import ipdb ; ipdb.set_trace()
             del recons; torch.cuda.empty_cache() ; gc.collect()
             check_gpu_usage('results collected')
-            recons_adj = self.decode_act(recons_f)
+            #recons_adj = self.decode_act(recons_f)
             check_gpu_usage('after sigmoid')
-
-            return recons_adj,recons_f,hs,entropies
+            return recons_f,recons_f,hs
             
         
         # feature and structure reconstruction models
@@ -290,12 +281,12 @@ class GraphReconstruction(nn.Module):
         torch.cuda.empty_cache()
         # SAMPLE baseline reconstruction: only include batched edge reconstruction
         #import ipdb ; ipdb.set_trace()
-        if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate','dominant']:
+        if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate','dominant','multi-scale-dominant']:
             recons_a = [recons[0]]
         elif self.model_str == 'gradate':
             recons = [loss,ano_score]
         if 'weibo' in self.dataset:
             check_gpu_usage('returning results')
-            
-        return recons_a,None,None,entropies
+        
+        return recons_a,None,res_a
         return recons_a,recons_x,res_a

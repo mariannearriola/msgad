@@ -5,57 +5,24 @@ import numpy as np
 import torch
 import os
 import matplotlib.pyplot as plt
-from utils import *
+#from utils import *
 from torcheval.metrics.functional.aggregation.auc import auc
+import pickle as pkl
 
 class anom_classifier():
     """Given node-wise or cluster-wise scores, perform binary anomaly classification"""
-    def __init__(self, exp_params, nu=0.5):
+    def __init__(self, exp_params, dataset=None, epoch=None, exp_name=None, model=None, recons=None, detection_type=None):
         super(anom_classifier, self).__init__()
-        self.clf = SGDOneClassSVM(nu=nu)
-        self.dataset = exp_params['DATASET']['NAME']
-        self.batch_type = exp_params['DATASET']['BATCH_TYPE']
-        self.batch_size = exp_params['DATASET']['BATCH_SIZE']
-        self.epoch = exp_params['MODEL']['EPOCH']
-        self.device = exp_params['DEVICE']
-        self.datadir = exp_params['DATASET']['DATADIR']
-        self.dataload = exp_params['DATASET']['DATALOAD']
-        self.datasave = exp_params['DATASET']['DATASAVE']
-        self.exp_name = exp_params['EXP']
-        self.label_type = exp_params['DATASET']['LABEL_TYPE']
-        self.model = exp_params['MODEL']['NAME']
-        self.recons = exp_params['MODEL']['RECONS']
-        self.detection_type = exp_params['DETECTION']['TYPE']
+        self.dataset = exp_params['DATASET']['NAME'] if exp_params is not None else dataset
+        self.epoch = exp_params['MODEL']['EPOCH'] if exp_params is not None else epoch
+        self.exp_name = exp_params['EXP'] if exp_params is not None else exp_name
+        self.model = exp_params['MODEL']['NAME'] if exp_params is not None else model
+        self.recons = exp_params['MODEL']['RECONS'] if exp_params is not None else recons
+        self.detection_type = exp_params['DETECTION']['TYPE'] if exp_params is not None else detection_type
         self.title = ""
         #self.auc = AUC()
         self.colors = ['cyan','red','blue','purple']
         self.anoms=['single','scale1','scale2','scale3']
-
-    def classify(self, scores, labels, clust_nodes=None):
-        # TODO: REDO as GNN
-        X = np.expand_dims(scores,1)
-        fit_clf = self.clf.fit(X)
-
-        # get indices of anom label
-        anom_preds = np.where(fit_clf.predict(X)==-1)[0]
-        
-        accs = []
-        if clust_nodes is not None:
-            for label in labels:
-                sc_accs = []
-                # for each cluster, check how many anomalies it contained. if it contains
-                # at least > 90% labeled anomalies, and classifier classifies it as anomalous,
-                # consider it to have 100% acc.
-                for anom_clust_idx in anom_preds:
-                    if np.intersect1d(clust_nodes[anom_clust_idx],label).shape[0]/clust_nodes[anom_clust_idx].shape[0] >= 0.9:
-                        sc_accs.append(1)
-                    else:
-                        sc_accs.append(0)
-                accs.append(np.mean(np.array(sc_accs)))
-        else:
-            for label in labels:
-                accs.append(np.intersect1d(label,anom_preds).shape[0]/anom_preds.shape[0])
-        return accs, anom_preds.shape[0]
 
     def plot_anom_sc(self,sorted_errors,anom,ms_anoms_num,color,scale_name):
         rankings_sc = np.zeros(sorted_errors.shape[0])
@@ -98,7 +65,7 @@ class anom_classifier():
     def plot_percentages(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
         plt.figure()
         anom_groups = np.unique(anoms)
-        fpath = f'vis/perc_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+        fpath = f'vis/perc_at_k/{self.dataset}/{self.model}/{self.epoch}/{self.exp_name}'
         legend=[]
         for i,anom in enumerate(anom_groups):
             prec = self.plot_anom_perc(sorted_errors,anoms[np.where(anoms==anom)[0]],self.colors[i],self.anoms[i])
@@ -114,6 +81,9 @@ class anom_classifier():
         plt.savefig(f'{fpath}/sc{sc}_perc_at_k_{self.title}.png')
 
     def hit_at_k(self,hit_rankings,sorted_errors,anoms,ms_anoms_num,sc):
+        """
+
+        """
         plt.figure()
         legend,aucs = [],[]
         for ind,scale in enumerate(anoms):
@@ -124,7 +94,7 @@ class anom_classifier():
             legend.append(ind)
             aucs.append(perc_auc)
         plt.legend(legend)
-        fpath = f'vis/hit_at_k/{self.dataset}/{self.model}/{self.label_type}/{self.epoch}/{self.exp_name}'
+        fpath = f'vis/hit_at_k/{self.dataset}/{self.model}/{self.epoch}/{self.exp_name}'
         if not os.path.exists(fpath):
             os.makedirs(fpath)
         plt.legend(aucs)
@@ -157,12 +127,13 @@ class anom_classifier():
         all_sc_anom_found.append(sc_anom_found)
         self.plot_percentages(tot_score*clust_loss, np.argsort(-tot_score*clust_loss),anoms_all,None,lbl)
         return all_sc_anom_found
+
     def flatten_label(self,anoms):
         anom_flat = anoms[0]#[0]
         for i in anoms[1:]:
             anom_flat=np.concatenate((anom_flat,i))#[0]))
         return anom_flat
-    def detect_anom(self,sorted_errors, sc_label, label, top_nodes_perc):
+    def detect_anom(self,errors,sorted_errors, sc_label, label, top_nodes_perc, verbose=True):
         '''
         Input:
             sorted_errors: normalized adjacency matrix
@@ -172,15 +143,27 @@ class anom_classifier():
             all_costs: total loss for backpropagation
             all_struct_error: structure errors for each scale
         '''
-        all_anom = self.flatten_label(sc_label)
+        anom_groups = np.unique(sc_label)
+        #all_anom = self.flatten_label(sc_label)
         full_anom = np.where(label==1)[0]
-        all_corrs = []
-        for ind,anom in enumerate(sc_label):
+        all_corrs,all_precs,all_rocs = [],[],[]
+        for ind,anom_id in enumerate(anom_groups):
+            anom  = full_anom[(sc_label==anom_id).nonzero()]
+            anom_lbl = np.zeros(label.shape) ; anom_lbl[anom] = 1
             all_corrs.append(np.intersect1d(anom,sorted_errors[:int(full_anom.shape[0]*top_nodes_perc)]))
-            print(f'scale {ind}',all_corrs[-1].shape[0],all_corrs[-1].shape[0]/anom.shape[0])
+            all_precs.append(all_corrs[-1].shape[0]/anom.shape[0])
+            all_rocs.append(roc_auc_score(anom_lbl,errors))
+            if verbose:
+                print(f'scale {ind} precision',all_corrs[-1].shape[0],all_corrs[-1].shape[0]/anom.shape[0])
+                print(f'scale {ind} roc',all_rocs[-1])
+            
         true_anoms = np.intersect1d(full_anom,sorted_errors[:int(full_anom.shape[0]*top_nodes_perc)])
-        print('full precision',true_anoms.shape[0],true_anoms.shape[0]/full_anom.shape[0])
-        return true_anoms, all_corrs
+        all_precs.append(true_anoms.shape[0]/full_anom.shape[0])
+        all_rocs.append(roc_auc_score(label,errors))
+        if verbose:
+            print('full precision',true_anoms.shape[0],true_anoms.shape[0]/full_anom.shape[0])
+            print('full roc',all_rocs[-1])
+        return true_anoms, all_corrs, all_precs, all_rocs
 
     def get_node_score(self,score):
         if 'mean' in self.detection_type:
@@ -230,7 +213,7 @@ class anom_classifier():
 
 
     # clust = nonclust if one null
-    def calc_clust_prec(self, graph, clust_scores, nonclust_scores, lbl, anoms_found_prev, norms, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+    def calc_clust_prec(self, graph, clust_scores, nonclust_scores, lbl, anoms_found_prev, anoms,norms, sc_label, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
         '''
         Input:
             scores: anomaly scores for all scales []
@@ -238,9 +221,10 @@ class anom_classifier():
             sc_label: array containing scale-wise anomaly node ids
             dataset: dataset string
         '''
+        import ipdb ; ipdb.set_trace()
         # anom_clf = MessagePassing(aggr='max')
         if len(sc_label[0]) > 0:
-            anom_sc1,anom_sc2,anom_sc3,anom_single = flatten_label(sc_label)
+            anom_single,anom_sc1,anom_sc2,anom_sc3 = anoms[sc_label==0],anoms[sc_label==1],anoms[sc_label==2],anoms[sc_label==3]
         else:
             anom_sc1,anom_sc2,anom_sc3=[],[],[]
         color_names=[np.full(norms.shape,'green'),np.full(anom_sc1.shape,'red'),np.full(anom_sc2.shape,'blue'),np.full(anom_sc3.shape,'purple'),np.full(anom_single.shape,'cyan'),]
@@ -248,19 +232,20 @@ class anom_classifier():
         color_names = np.concatenate(color_names)
         anoms = np.concatenate(anoms)
 
-        all_clust_scores = self.get_scores(graph,clust_scores,clusts[0])[0]
-        all_nonclust_scores = self.get_scores(graph,nonclust_scores,clusts[1])[0]
-        clust_score_norm,nonclust_score_norm = all_clust_scores/all_clust_scores.max(),all_nonclust_scores/all_nonclust_scores.max()
-        clust_score_norm[torch.where(torch.isnan(clust_score_norm))] = 0. ; nonclust_score_norm[torch.where(torch.isnan(nonclust_score_norm))] = 0.
+        #all_clust_scores = self.get_scores(graph,clust_scores,clusts[0])[0]
+        #all_nonclust_scores = self.get_scores(graph,nonclust_scores,clusts[1])[0]
+        #clust_score_norm,nonclust_score_norm = all_clust_scores/all_clust_scores.max(),all_nonclust_scores/all_nonclust_scores.max()
+        #clust_score_norm[torch.where(torch.isnan(clust_score_norm))] = 0. ; nonclust_score_norm[torch.where(torch.isnan(nonclust_score_norm))] = 0.
 
-        cum_score = clust_score_norm+nonclust_score_norm
-        self.anom_histogram(clust_score_norm,color_names,f'clustscore-anom',lbl)
-        self.anom_histogram(nonclust_score_norm,color_names,f'nonclustscore-anom',lbl)
+        #cum_score = clust_score_norm+nonclust_score_norm
+        cum_score = torch.scatter_add(attns,clusts)
+        #self.anom_histogram(clust_score_norm,color_names,f'clustscore-anom',lbl)
+        #self.anom_histogram(nonclust_score_norm,color_names,f'nonclustscore-anom',lbl)
         self.anom_histogram(cum_score,color_names,f'cumscore-anom',lbl)
 
 
-        self.anom_histogram(clust_score_norm,clusts[0],f'clustscore-clust',lbl)
-        self.anom_histogram(nonclust_score_norm,clusts[1],f'nonclustscore-clust',lbl)
+        #self.anom_histogram(clust_score_norm,clusts[0],f'clustscore-clust',lbl)
+        #self.anom_histogram(nonclust_score_norm,clusts[1],f'nonclustscore-clust',lbl)
         if not np.array_equal(clusts[0],clusts[1]):
             self.anom_histogram(cum_score,clusts,f'cumscore-clust',lbl)
 
@@ -281,13 +266,12 @@ class anom_classifier():
     #            f.write("%s\n" % label[index])
     
 
-    def calc_prec(self, graph, scores, label, all_anom, attns, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None):
+    def calc_prec(self, scores, label, all_anom, clusts, cluster=False, input_scores=False, clust_anom_mats=None, clust_inds=None,verbose=True):
         '''
         Input:
             scores: anomaly scores for all scales []
             label: node-wise anomaly label []
             sc_label: array containing scale-wise anomaly node ids
-            dataset: dataset string
         '''
    
         for sc,sc_score in enumerate(scores):
@@ -315,8 +299,6 @@ class anom_classifier():
                 all_scores = torch.tensor(node_scores).unsqueeze(0)
             else:
                 all_scores = torch.cat((all_scores,torch.tensor(node_scores).unsqueeze(0)),dim=0)
-            if attns is not None:
-                node_scores *= attns[sc]
             sorted_errors = np.argsort(-node_scores)
             rev_sorted_errors = np.argsort(node_scores)
             rankings = label[sorted_errors]
@@ -325,21 +307,23 @@ class anom_classifier():
             ms_anoms_num = full_anoms.shape[0]
             
             hit_rankings = rankings.nonzero()[0]
-            self.hit_at_k(hit_rankings,sorted_errors,all_anom,ms_anoms_num,sc)
+            #self.hit_at_k(hit_rankings,sorted_errors,all_anom,ms_anoms_num,sc)
             
-            self.plot_percentages(hit_rankings,sorted_errors,all_anom,ms_anoms_num,sc)
+            #self.plot_percentages(hit_rankings,sorted_errors,all_anom,ms_anoms_num,sc)
 
             #import ipdb ; ipdb.set_trace()
             # add plots for scale-specific anomalies
-   
-            print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
+            if verbose:
+                print(f'SCALE {sc+1} loss',np.sum(node_scores),np.mean(node_scores))
 
-            self.detect_anom(sorted_errors, all_anom, label, 1)
-            print('scores reverse sorted')
-            self.detect_anom(rev_sorted_errors, all_anom, label, 1)
-            print('')
+            _,_,prec,rocs=self.detect_anom(node_scores,sorted_errors, all_anom, label, 1,verbose)
+            if verbose:
+                print('scores reverse sorted')
+            _,_,revprec,revrocs=self.detect_anom(-node_scores,rev_sorted_errors, all_anom, label, 1,verbose)
+            if verbose:
+                print('')
 
-            all_anom_cat =self.flatten_label(all_anom)
+            #all_anom_cat =self.flatten_label(all_anom)
 
             # get clusters
             '''
@@ -355,9 +339,9 @@ class anom_classifier():
             print('\nnode scores')
             print(anom_accs)
             '''
-        cutoff_label = 2 ; stds = 3
-        all_sc_anom_found = self.detect_anom_sampled(all_scores,clusts,all_anom,cutoff_label,stds)
-        return all_scores,all_sc_anom_found
+        #cutoff_label = 2 ; stds = 3
+        #all_sc_anom_found = self.detect_anom_sampled(all_scores,clusts,all_anom,cutoff_label,stds)
+        return all_scores,prec,rocs
     #    with open('output/{}-ranking_{}.txt'.format(self.dataset, sc), 'w+') as f:
     #        for index in sorted_errors:
     #            f.write("%s\n" % label[index])

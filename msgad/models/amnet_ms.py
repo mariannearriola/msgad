@@ -180,7 +180,7 @@ class BernConv(MessagePassing):
     
     @staticmethod
     def get_bern_coeff(degree):
-        '''
+        
         def Bernstein(de, i):
             coefficients = [0, ] * i + [math.comb(de, i)]
             first_term = polynomial.polynomial.Polynomial(coefficients)
@@ -208,6 +208,7 @@ class BernConv(MessagePassing):
         del coeff
         del f
         torch.cuda.empty_cache()
+        '''
         return thetas
         
         
