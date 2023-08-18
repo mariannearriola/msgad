@@ -34,9 +34,9 @@ class DataLoading:
         truth = data_mat['Label'].flatten()
         return adj, edge_idx, feats, truth
 
-    def fetch_dataloader(self, adj, pos_edges_full):
+    def fetch_dataloader(self, adj, pos_edges_full,ind):
         """
-        Prepare DGL dataloader given DGL graph
+        Prepare DGL dataloaders given DGL graph
 
         Input:
             adj : {DGL graph}
@@ -60,15 +60,14 @@ class DataLoading:
             transform = dgl.transforms.AddSelfLoop() ; adj_loop = transform(adj)
             #if self.device == 'cuda':
             if True:
-                #import ipdb ; ipdb.set_trace()
-                
                 dgl.distributed.initialize('graph-name')
                 
-                part_g=dgl.distributed.partition_graph(adj.to('cpu'), 'graph_name', 1, num_hops=1, part_method='metis',out_path='output/')
-                dist_g = dgl.distributed.DistGraph('graph_name', part_config='output/graph_name.json')
+                part_g=dgl.distributed.partition_graph(adj.to('cpu'), f'graph_{ind}', 1, num_hops=1, part_method='metis',out_path='output/')
+                dist_g = dgl.distributed.DistGraph(f'graph_{ind}', part_config=f'output/graph_{ind}.json')
                 neg_sampler = dgl.dataloading.negative_sampler.Uniform(10)
                 def sample_(seeds):
                     seeds = torch.LongTensor(np.asarray(seeds))
+                    #frontier = dgl.sampling.sample_neighbors(adj, adj_nodes, 10, exclude_edges=adj.edges('eid')[:adj.number_of_edges()//2])
                     frontier = dgl.distributed.sample_neighbors(dist_g, adj_nodes, 10)
                     block = dgl.to_block(frontier, seeds)
                     pos_edges_samp = torch.stack(block.edges()).T
@@ -94,7 +93,7 @@ class DataLoading:
                     # Find the indices of the subsampled edge list in the original edge list
                     
                     return block, pos_edges_samp, neg_edges_samp
-             
+                # TODO: change
                 dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=adj.number_of_nodes(),collate_fn=sample_, shuffle=False)
                 
                 #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, device=self.device)

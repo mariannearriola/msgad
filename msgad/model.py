@@ -171,6 +171,7 @@ class GraphReconstruction(nn.Module):
                 res = self.conv(feats,edges[ind].T)
                 res_a.append(res)
                 recons_a.append(self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]])#.unsqueeze(0))
+                del res ;  torch.cuda.empty_cache()
                 continue
                 if ind == 0:
                     res = self.conv(feats,edges[ind].T)
@@ -194,7 +195,7 @@ class GraphReconstruction(nn.Module):
                     entropies_sc[idx]=scipy.stats.entropy(clust_recons.detach().cpu())
                     del clust_recons,idx ; torch.cuda.empty_cache()
                 entropies.append(np.array(entropies_sc))
-                del res ; torch.cuda.empty_cache()
+               
         elif self.model_str in ['anomaly_dae','anomalydae']: #x, e, batch_size
             recons = [self.conv(feats, edges, 0,dst_nodes)]
         elif self.model_str in ['gradate']: # adjacency matrix
@@ -273,7 +274,7 @@ class GraphReconstruction(nn.Module):
             check_gpu_usage('results collected')
             #recons_adj = self.decode_act(recons_f)
             check_gpu_usage('after sigmoid')
-            return recons_f,recons_f,hs
+            return recons_f,hs
             
         
         # feature and structure reconstruction models
@@ -288,5 +289,5 @@ class GraphReconstruction(nn.Module):
         if 'weibo' in self.dataset:
             check_gpu_usage('returning results')
         
-        return recons_a,None,res_a
+        return recons_a,res_a
         return recons_a,recons_x,res_a

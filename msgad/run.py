@@ -48,13 +48,15 @@ def graph_anomaly_detection(exp_params):
 
     g = adj.to('cpu')
     g_nx = dgl_to_nx(g)[0]
-    og_lbls = [adj,adj,adj]
+    
     
     nx.set_node_attributes(g_nx,feats,'feats')
 
     #sc_label_new,clusts=la.run_dend(g_nx,scales+1,return_all=True)
     dataset_scales, model_scales = exp_params['DATASET']['SCALES'], exp_params['MODEL']['SCALES']
-    sc_label_new,clusts=la.run_dend(g_nx,scales+1,return_all=True)
+    sc_label_new,clusts=la.run_dend(g_nx,scales,return_all=True)
+
+    og_lbls = [adj for i in range(model_scales)]
 
     # sample an even number of intra-cluster & inter-cluster edges for each node
     if not os.path.exists(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat'):
@@ -78,12 +80,13 @@ def graph_anomaly_detection(exp_params):
             assert(torch.where(clust[pos_edges[:,0]]==clust[pos_edges[:,1]])[0].shape[0]==pos_edges.shape[0])
             #assert(torch.where(clust[neg_edges[:,0]]==clust[neg_edges[:,1]])[0].shape[0]==0)
 
-            lbl_adj = dgl.graph((pos_edges[:,0],pos_edges[:,1])).to(exp_params['DEVICE'])
+            lbl_adj = dgl.graph((pos_edges[:,0],pos_edges[:,1]),num_nodes=adj.number_of_nodes()).to(exp_params['DEVICE'])
             lbl_adj.ndata['feature'] = feats.to(lbl_adj.device)
             lbl_adj.edata['w'] = torch.ones(pos_edges.shape[0]).to(lbl_adj.device)
-            
+            #lbls.append(lbl_adj)
             lbls.append(transform(lbl_adj))
-            pos_edges_full.append(pos_edges)
+            pos_edges_full.append(torch.vstack((pos_edges,pos_edges.flip(1))))
+            #pos_edges_full.append(pos_edges)
             #neg_edges_full.append(neg_edges)
             
         save_mat = {'lbls':[i for i in lbls],'pos_edges':[i.to_sparse() for i in pos_edges_full]}#,'neg_edges':[i.to_sparse() for i in neg_edges_full]}
@@ -97,7 +100,7 @@ def graph_anomaly_detection(exp_params):
     if 'tfinance' in exp_params['DATASET']['NAME'] and exp_params['VIS']['VIS_FILTERS'] == True:
         dataloader = None
     else:
-        dataloader = [dataloading.fetch_dataloader(lbls[i],pos_edges_full[i]) for i in range(len(clusts))]
+        dataloader = [dataloading.fetch_dataloader(lbls[i],pos_edges_full[i],i) for i in range(len(clusts))]
 
     struct_model,feat_model=None,None
     struct_model,params,model_loaded = init_model(feats.size(1),exp_params,args)
@@ -124,7 +127,7 @@ def graph_anomaly_detection(exp_params):
 
     attract_edges_sel,repel_edges_sel = None,None
     LossFunc = loss_func(adj,adj.ndata['feature'],exp_params,sample=True, recons='struct', alpha=None, clusts=None, regularize=True)
-    
+    seconds = time.time()
     for epoch in range(int(exp_params['MODEL']['EPOCH'])):
         epoch_l,iter = 0,0
         #edge_anom_mats,node_anom_mats,recons_a,res_a_all = init_recons_agg(adj.number_of_nodes(),adj.ndata['feature'].shape[1],exp_params)
@@ -134,7 +137,10 @@ def graph_anomaly_detection(exp_params):
         # unpack each of the dataloaders
         for batch,data_inds in enumerate(zip(*dataloader)):
             if load_data:
-                loaded_input,recons_label=dataloading.load_batch(batch,'train')
+                try:
+                    loaded_input,recons_label=dataloading.load_batch(batch,'train')
+                except Exception as e:
+                    print('err',batch)
             else:
                 loaded_input = data_inds
             g_batch,pos_edges,neg_edges = zip(*loaded_input)
@@ -160,11 +166,7 @@ def graph_anomaly_detection(exp_params):
                 print(e)
                 import ipdb ; ipdb.set_trace()
             
-            if 'cora' not in exp_params['DATASET']['NAME']: print('size of batch',g_batch[0].num_dst_nodes(),'nodes')
-            #vis = True if (epoch == 0 and iter == 0 and exp_params['VIS']['VIS_FILTERS'] == True) else False
-
-            #edges, feats = process_graph(lbls)
-            
+            print('size of batch',g_batch[0].num_dst_nodes(),'nodes')
             if exp_params['DATASET']['DATASAVE']:
                 dataloading.save_batch(loaded_input,recons_label,iter,'train')
                 continue
@@ -172,72 +174,25 @@ def graph_anomaly_detection(exp_params):
                 optimizer.zero_grad()
             for i in loaded_input: del i
             torch.cuda.empty_cache() ; gc.collect()
-            #if exp_params['VIS']['VIS_CONCENTRATION'] == True and 'madan' in exp_params['MODEL']['NAME']:
-            #    madan_analysis(adj,lbl,sc_label,anoms,exp_params)
+
             check_gpu_usage('running model')
             if exp_params['MODEL']['IND'] == 'None':
-                #A_hat,X_hat,res_a,entropies = struct_model(lbls,pos_edges,feats,edge_ids,vis=False,vis_name='epoch1',clusts=clusts)
-                #import ipdb ; ipdb.set_trace()
                 pos_edges_og = [edge_ids[ind][og_lbls[ind].has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]] for ind in range(len(og_lbls))]
-                A_hat,X_hat,res_a = struct_model(og_lbls,pos_edges_og,feats,edge_ids,vis=False,vis_name='epoch1',clusts=clusts)
+
+                A_hat,res_a = struct_model(og_lbls,pos_edges_og,feats,edge_ids,vis=False,vis_name='epoch1',clusts=clusts)
             else:
-                A_hat,X_hat,res_a = struct_model(og_lbls,[pos_edges[exp_params['MODEL']['IND']]],feats,[edge_ids[exp_params['MODEL']['IND']]],vis=False,vis_name='epoch1',clusts=clusts)
+                A_hat,res_a = struct_model(og_lbls,[pos_edges[exp_params['MODEL']['IND']]],feats,[edge_ids[exp_params['MODEL']['IND']]],vis=False,vis_name='epoch1',clusts=clusts)
+            
             torch.cuda.empty_cache() ; gc.collect()
-            if A_hat is None:
-                print('result is none?')
-                import ipdb ; ipdb.set_trace()
             check_gpu_usage('recons label collected, starting loss')
-            #batch_clusts = torch.gather(clusts.to(in_nodes.device),1,in_nodes)
-            loss, struct_loss,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside = LossFunc.calc_loss(og_lbls, A_hat, edge_ids, clusts)
-
-            
-            # NOTE: ADDED.
-            fracs = [pos_edges[i].shape[0]/edge_ids[i].shape[0] for i in range(3)]
-            #cl1,cl2,cl3=clustloss[0]*(fracs[0]),clustloss[1]*(fracs[1]),clustloss[2]*(fracs[2])
-            #l1_clust=torch.scatter_reduce(cl1.detach().cpu(), 0, clusts[0], reduce="mean") ; cl1 = l1_clust[clusts[0]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            #l2_clust=torch.scatter_reduce(cl2.detach().cpu(), 0, clusts[1], reduce="mean") ; cl2 = l2_clust[clusts[1]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            #l3_clust=torch.scatter_reduce(cl3.detach().cpu(), 0, clusts[2], reduce="mean") ; cl3 = l3_clust[clusts[2]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            """"
-            l1_clust = torch_scatter.scatter_mean(cl1,clusts[0].to(cl1.device)) ; l2_clust = torch_scatter.scatter_mean(cl2,clusts[1].to(cl1.device)) ; l3_clust = torch_scatter.scatter_mean(cl3,clusts[2].to(cl1.device))
-            cl1,cl2,cl3=l1_clust,l2_clust,l3_clust
-            nc1,nc2,nc3=nonclustloss[0]*(1-fracs[0]),nonclustloss[1]*(1-fracs[1]),nonclustloss[2]*(1-fracs[2])
-            cl1 = (cl1-torch.minimum(cl1.min(),nc2.min()))/(torch.maximum(cl1.max(),nc1.max())-torch.minimum(cl1.min(),nc1.min()))
-            cl2 = (cl2-torch.minimum(cl2.min(),nc2.min()))/(torch.maximum(cl2.max(),nc2.max())-torch.minimum(cl2.min(),nc2.min()))
-            cl3 = (cl3-torch.minimum(cl3.min(),nc2.min()))/(torch.maximum(cl3.max(),nc3.max())-torch.minimum(cl3.min(),nc3.min()))
-            nc1 = (nc1-torch.minimum(cl1.min(),nc2.min()))/(torch.maximum(cl1.max(),nc1.max())-torch.minimum(cl1.min(),nc1.min()))
-            nc2 = (nc2-torch.minimum(cl2.min(),nc2.min()))/(torch.maximum(cl2.max(),nc2.max())-torch.minimum(cl2.min(),nc2.min()))
-            nc3 = (nc3-torch.minimum(cl3.min(),nc2.min()))/(torch.maximum(cl3.max(),nc3.max())-torch.minimum(cl3.min(),nc3.min()))
-            
-            cl_all = torch.vstack((torch.vstack((cl1,cl2)),cl3)).softmax(0)
-            nc_all = torch.vstack((torch.vstack((nc1,nc2)),nc3)).softmax(0)
-            
-
-
-            #l = torch.sum(l_all)
-            #sc1_loss=torch.vstack((cl1,nc1)).softmax(0) ; sc2_loss=torch.vstack((cl2,nc2)).softmax(0) ; sc3_loss=torch.vstack((cl3,nc3)).softmax(0) ; 
-            cl_reg = (1-torch.max(cl_all,0).values-torch.min(cl_all,0).values) ; nc_reg = (1-torch.max(nc_all,0).values-torch.min(nc_all,0).values)
             #import ipdb ; ipdb.set_trace()
-            for ind,prec in enumerate(np.unique(sc_label_new)):
-                anom = anoms[(np.array(sc_label_new)==prec).nonzero()]
-                tb.add_scalar(f'Cl_amax/anom{ind}', torch.max(cl_all,0).indices[anom].to(torch.float).mean(), epoch)
-                tb.add_scalar(f'Nc_amax/anom{ind}', torch.max(nc_all,0).indices[anom].to(torch.float).mean(), epoch)
-                tb.add_scalar(f'Cl_amin/anom{ind}', torch.min(cl_all,0).indices[anom].to(torch.float).mean(), epoch)
-                tb.add_scalar(f'Nc_amin/anom{ind}', torch.min(nc_all,0).indices[anom].to(torch.float).mean(), epoch)
-                tb.add_scalar(f'Cl_reg/anom{ind}', cl_reg[anom].mean(), epoch)
-                tb.add_scalar(f'Nc_reg/anom{ind}', nc_reg[anom].mean(), epoch)
-            #import ipdb ; ipdb.set_trace()
-            #cl_mean = torch_scatter.scatter_mean(cl_all,clusts.to(cl1.device) ; cl_mean = 
-            #torch_scatter.scatter_std(cl_all,clusts.to(cl1.device),out=cl_all) ; torch_scatter.scatter_std(nc_all,clusts.to(cl1.device),out=nc_all)
-            #cluster_reg,noncluster_reg = (cl_all-torch_scatter.scatter_mean(cl_all,clusts.to(cl1.device)).abs()*torch.tensor([0.,0.5,1.0]).unsqueeze(0).T.to(cl1.device)).sum(),(nc_all-torch_scatter.scatter_std(nc_all,clusts.to(cl1.device)).abs()*torch.tensor([0.,0.5,1.0]).unsqueeze(0).T.flip(0).to(cl1.device)).sum()
-            #cluster_reg,noncluster_reg = (cl_all-torch_scatter.scatter_mean(cl_all,clusts.to(cl1.device))).sum(),(nc_all-torch_scatter.scatter_mean(nc_all,clusts.to(cl1.device))).sum()
-            check_gpu_usage('loss collected')
-            if exp_params['MODEL']['NAME'] == 'gradate': loss = A_hat[0]
-            """
-            # NOTE: REMOVED
+            loss,struct_loss,regloss,clustloss,nonclustloss = LossFunc.calc_loss(og_lbls, A_hat, edge_ids, clusts)
+            
+            # TODO: map clustloss scores to nodes in batch
+            batch_scores_sc = torch.stack([gather_clust_info(clustloss[i].detach().cpu(),clusts[i],'std') for i in range(len(clustloss))])
+            batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
+
             l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
-            #l += 5*(cl_reg.sum() + nc_reg.sum()) + 700*(cluster_reg+noncluster_reg) # choose a loss
-            #l += 5*(cl_all.sum()+nc_all.sum())
-            #l += 700*(cluster_reg+noncluster_reg) # make sure choice is consistent with cluster
             epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
             if exp_params['MODEL']['DEBUG']:
                 if iter % 100 == 0:
@@ -247,44 +202,22 @@ def graph_anomaly_detection(exp_params):
             if 'cora' not in exp_params['DATASET']['NAME']: print('iter',iter)
             
             check_gpu_usage('about to backward')
-            cl1,cl2,cl3=clustloss ; nc1,nc2,nc3=nonclustloss
-            intragrad32,intragrad21,intergrad12,intergrad23=cl3-cl2,cl2-cl1,nc1-nc2,nc2-nc3
-            eps = 1e-8
-
-            l_all,(cl1,cl2,cl3),(nc1,nc2,nc3)=score_multiscale_anoms(clustloss,nonclustloss, clusts,A_hat[0],edge_ids,res_a)
-            
-            reg_var = torch.var(l_all,0) # NOTE: IF USED, THIS SHOULD BE USED FOR ANOM DETECTION / differentiate from norms
-
-            #l += reg_var.mean()*50
             l.backward()
             optimizer.step()
-            '''
-            if exp_params['VIS']['VIS_LOSS']:
-                visualizer.sc_label = batch_sc_label
-                #edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
-                edge_ids_ = edge_ids
-                node_ids_ = g_batch.nodes()
-
-                node_anom_mats,edge_anom_mats,recons_a,res_a_all = agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params)
-            '''
             #del pos_edges, neg_edges, l, res_a,X_hat#,A_hat
             torch.cuda.empty_cache() ; gc.collect()
             
-        '''
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
-        if exp_params['MODEL']['NAME'] != 'madan' and 'multi-scale' in exp_params['MODEL']['NAME']:
-            print("Epoch:", '%04d' % (epoch), "train_loss=", round(torch.sum(loss),3), "losses=",torch.round(loss,decimals=4).detach().cpu())
-        else:
-             print("Epoch:", '%04d' % (epoch), "train_loss=", round(epoch_l.item(),3))
-        #print('avg loss',torch.mean(epoch_l/dataloader.__len__()))
-        '''
+        print("Epoch:", '%04d' % (epoch), "train_loss=", torch.round(torch.sum(loss),decimals=3).detach().cpu().item(), "losses=",torch.round(loss,decimals=4).detach().cpu())
+    
+        batch_scores /= len(dataloader)
         if exp_params['DATASET']['DATASAVE']: continue 
                 
         print('epoch done',epoch,loss.detach().cpu())
         if True:
             if epoch == 0 and iter == 1:
-                tb_writers = TBWriter(tb, edge_ids, attract_edges_sel, repel_edges_sel, truth, sc_label_new,clusts,anoms,norms,exp_params)
+                tb_writers = TBWriter(tb, truth, sc_label_new,clusts,anoms,norms,exp_params)
             labels = []
             mean_intras_tot,mean_inters_tot=[],[]
             fracs = [pos_edges[i].shape[0]/edge_ids[i].shape[0] for i in range(3)]
@@ -297,7 +230,7 @@ def graph_anomaly_detection(exp_params):
                 
                 model_ind = sc if exp_params['MODEL']['IND']=='None' else exp_params['MODEL']['IND']
                 #mean_intras,mean_inters,anom_scores=tb_writers.tb_write_anom(tb,g_batch,sc_label_new,edge_ids[model_ind],A_hat[sc], struct_loss[sc], sc,epoch, regloss[sc],clustloss,nonclustloss,clusts,sc_idx_inside,sc_idx_outside,entropies,anom_wise=True,fracs=fracs)
-                mean_intras_cl,mean_inters_cl,anom_scores=tb_writers.tb_write_anom(tb,adj,sc_label_new,edge_ids,A_hat[sc],res_a, struct_loss, sc,epoch, regloss[sc],clustloss,nonclustloss,clusts,sc_idx_inside,sc_idx_outside,anom_wise=False,fracs=fracs)
+                mean_intras_cl,mean_inters_cl,anom_scores=tb_writers.tb_write_anom(adj,sc_label_new,edge_ids,A_hat[sc],res_a, struct_loss, sc,epoch, regloss[sc],clustloss,nonclustloss,clusts,anom_wise=False,fracs=fracs)
                 anom_scores_all.append(anom_scores)
                 mean_intras,mean_inters=mean_intras_cl,mean_inters_cl
                 #labels.append(label)
@@ -313,30 +246,7 @@ def graph_anomaly_detection(exp_params):
                     except Exception as e:
                         print(e)
                         import ipdb ; ipdb.set_trace()
-                '''
-                import ipdb ; ipdb.set_trace()
-                #e,U = get_spectrum(torch.tensor(label).to(torch.float64).to(adj.device).to_sparse(),n_eig=64)
-                #e = e.to(adj.device) ; U = U.to(adj.device)
-                py_g = pygsp_.graph.MultiScale(label)
-                py_g.compute_fourier_basis(128)
-                visualizer.plot_spectral_gap(py_g.e.cpu(),f'test{sc}')
-                plt.figure()
-                x_labelvis,y_labelvis=visualizer.plot_spectrum(e,U,feats.to(U.dtype))
-                plt.savefig(f'test{sc}.png')
-                '''
-            # intra -> 1-s
-            # inter -> s-0
-            # plot adapted persistence diagrams
             sc_labels = np.unique(sc_label_new)
-            '''
-            for ind,i in enumerate(sc_labels):
-                plt.figure()
-                import ipdb ; ipdb.set_trace()
-                plt.scatter(mean_intras_tot[:,i],mean_inters_tot[:,i])
-                plt.plot(0,np.maximum(mean_intras_tot[:,i].max(),mean_inters_tot[:,i].max())+.5)
-                plt.savefig(f'persistence_{exp_name}_sc{i}.png')
-
-            '''
             for sc,l in enumerate(loss):
                 if sc == 0: continue
                 else:
@@ -348,29 +258,30 @@ def graph_anomaly_detection(exp_params):
                         tb.add_scalar(f'Inter_grad_{sc-1}:{sc}/Anom{anom_sc}', mean_inter_grad, epoch)
                         #tb.add_scalar(f'Inter_grad_{(scales-(sc))}:{(scales-(sc+1))}Anom{anom_sc}',  mean_inter_grad, epoch)
             #import ipdb ; ipdb.set_trace()
-            l1,l2,l3 = [anom_scores_all[ind][ind] for ind in range(len(anom_scores_all))]
-            l1_clust=torch.scatter_reduce(l1.detach().cpu(), 0, clusts[0], reduce="mean") ; l1_clust = l1_clust[clusts[0]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            l2_clust=torch.scatter_reduce(l2.detach().cpu(), 0, clusts[1], reduce="mean") ; l2_clust = l2_clust[clusts[1]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            l3_clust=torch.scatter_reduce(l3.detach().cpu(), 0, clusts[2], reduce="mean") ; l3_clust = l3_clust[clusts[2]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
-            s1,s2,s3=l1,l2,l3
-            #anoms_found,percentages,scores=tb_writers.get_anom([l1_clust,l2_clust,l3_clust],anoms)
-            #s1,s2,s3=l1_clust,l2_clust,l3_clust
-            #gr_dict = self.update_dict(gr_dict,f'Percent_anom1',p1) ; gr_dict = self.update_dict(gr_dict,f'Percent_anom2',p2) ; gr_dict = self.update_dict(gr_dict,f'Percent_anom3',p3)
-            # NOTE: want to minimize
-            #gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected1',len(anoms_found[0])) ; gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected2',len(anoms_found[1])) ; gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected3',len(anoms_found[2])) 
-            _,prec1,ra1=tb_writers.a_clf.calc_prec(s1[np.newaxis,...],truth,sc_label_new,clusts[0],input_scores=True,verbose=False)
-            _,prec2,ra2=tb_writers.a_clf.calc_prec(s2[np.newaxis,...],truth,sc_label_new,clusts[1],input_scores=True,verbose=False)
-            _,prec3,ra3=tb_writers.a_clf.calc_prec(s3[np.newaxis,...],truth,sc_label_new,clusts[2],input_scores=True,verbose=False)
 
-            for anom,prec in enumerate(prec1):
-                tb.add_scalar(f'Precsc1/anom{anom}', prec1[anom], epoch)
-                tb.add_scalar(f'ROC1/anom{anom}', ra1[anom], epoch)
-            for anom,prec in enumerate(prec1):
-                tb.add_scalar(f'Precsc2/anom{anom}', prec2[anom], epoch)
-                tb.add_scalar(f'ROC2/anom{anom}', ra2[anom], epoch)
-            for anom,prec in enumerate(prec3):
-                tb.add_scalar(f'Precsc3/anom{anom}', prec3[anom], epoch)
-                tb.add_scalar(f'ROC3/anom{anom}', ra3[anom], epoch)
+            for ind,score in enumerate(anom_scores_all):
+                #l_clust=torch.scatter_reduce(anom_scores_all[ind][ind].detach().cpu(), 0, clusts[ind], reduce="mean") ; l_clust = l_clust[clusts[ind]]#.to(edge_ids[0].device)#.mean()#/cl.shape[0]
+                
+                #anoms_found,percentages,scores=tb_writers.get_anom([l1_clust,l2_clust,l3_clust],anoms)
+                #s1,s2,s3=l1_clust,l2_clust,l3_clust
+                #gr_dict = self.update_dict(gr_dict,f'Percent_anom1',p1) ; gr_dict = self.update_dict(gr_dict,f'Percent_anom2',p2) ; gr_dict = self.update_dict(gr_dict,f'Percent_anom3',p3)
+                # NOTE: want to minimize
+                #gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected1',len(anoms_found[0])) ; gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected2',len(anoms_found[1])) ; gr_dict = self.update_dict(gr_dict,f'Num_anoms_detected3',len(anoms_found[2])) 
+                _,prec1,ra1=tb_writers.a_clf.calc_prec(anom_scores_all[ind][ind].detach().cpu()[np.newaxis,...],truth,sc_label_new,verbose=False)
+                #_,prec2,ra2=tb_writers.a_clf.calc_prec(s2[np.newaxis,...],truth,sc_label_new,clusts[1],input_scores=True,verbose=False)
+                #_,prec3,ra3=tb_writers.a_clf.calc_prec(s3[np.newaxis,...],truth,sc_label_new,clusts[2],input_scores=True,verbose=False)
+    
+                for anom,prec in enumerate(prec1[0]):
+                    tb.add_scalar(f'Precsc{ind+1}/anom{anom}', prec, epoch)
+                    tb.add_scalar(f'ROC{ind+1}/anom{anom}', ra1[0][anom], epoch)
+                '''
+                for anom,prec in enumerate(prec1):
+                    tb.add_scalar(f'Precsc2/anom{anom}', prec2[anom], epoch)
+                    tb.add_scalar(f'ROC2/anom{anom}', ra2[anom], epoch)
+                for anom,prec in enumerate(prec3):
+                    tb.add_scalar(f'Precsc3/anom{anom}', prec3[anom], epoch)
+                    tb.add_scalar(f'ROC3/anom{anom}', ra3[anom], epoch)
+                '''
         #del loss,struct_loss,A_hat
 
         if epoch == 0:
@@ -459,7 +370,7 @@ def graph_anomaly_detection(exp_params):
         pass
         #random.shuffle(dataloader)
     else:
-        dataloader = [dataloading.fetch_dataloader(x,y,z) for x,y,z in zip(lbls,pos_edges_full)]#,neg_edges_full)]
+        dataloader = [dataloading.fetch_dataloader(x,y) for x,y in zip(lbls,pos_edges_full)]#,neg_edges_full)]
     recons_label,pos_edges,neg_edges=None,None,None
     # unpack each of the dataloaders
     for batch,data_inds in enumerate(zip(*dataloader)):
@@ -493,7 +404,7 @@ def graph_anomaly_detection(exp_params):
         #edges, feats = process_graph(lbls)
         # run evaluation
         # TODO: CHANGED FIRST ARG TO EDGE IDS
-        A_hat,X_hat,res_a = struct_model(lbls,edge_ids,feats,edge_ids,vis=vis,vis_name='test',clusts=clusts)
+        A_hat,res_a = struct_model(lbls,edge_ids,feats,edge_ids,vis=vis,vis_name='test',clusts=clusts)
 
         # collect anomaly scores
         #edge_ids = torch.cat((pos_edges,neg_edges),axis=2).to(pos_edges.device)[:scales]
@@ -502,7 +413,7 @@ def graph_anomaly_detection(exp_params):
         edge_ids_ = edge_ids
         node_ids_ = g_batch.nodes()
 
-        loss, struct_loss, feat_cost,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside = LossFunc.calc_loss(recons_label,A_hat, None, None, edge_ids, attract_edges_sel, repel_edges_sel,clusts)
+        loss, struct_loss, feat_cost,regloss,clustloss,nonclustloss = LossFunc.calc_loss(recons_label,A_hat, None, None, edge_ids, attract_edges_sel, repel_edges_sel,clusts)
         #loss, struct_loss, feat_cost = loss_func(recons_label, g_batch.ndata['feature'], A_hat, X_hat, res_a.detach().cpu(), edge_ids, sample=exp_params['MODEL']['SAMPLE_TEST'], recons=exp_params['MODEL']['RECONS'],alpha=exp_params['MODEL']['ALPHA'],clusts=clusts)
         if exp_params['MODEL']['NAME'] == 'gradate':
             loss = A_hat[0]
@@ -529,16 +440,16 @@ def graph_anomaly_detection(exp_params):
     if exp_params['MODEL']['RECONS'] == 'both':
         print('struct scores')
         a_clf = anom_classifier(exp_params)
-        a_clf.calc_prec(None, [np.mean(edge_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, [np.mean(edge_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w)
         print('feat scores')
-        a_clf.calc_prec(None, [np.mean(node_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, [np.mean(node_anom_mats[0],axis=1)], truth, sc_label_new, train_attn_w)
         print('combined scores')
-        a_clf.calc_prec(None, loss.detach().cpu().numpy(), truth, sc_label_new, train_attn_w, cluster=False, input_scores=True)
+        a_clf.calc_prec(None, loss.detach().cpu().numpy(), truth, sc_label_new, train_attn_w)
     else:
         if exp_params['DATASET']['BATCH_TYPE'] == 'node':
             if -1 in node_anom_mats[0]:
                 raise('node not sampled')
-            a_clf.calc_prec(None,node_anom_mats, truth, sc_label_new, cluster=False, input_scores=True)
+            a_clf.calc_prec(None,node_anom_mats, truth, sc_label_new)
         else:
             if 'multi-scale' in exp_params['MODEL']['NAME']:
                 #attns = F.softmax(train_attn_w[-1],1).numpy()
@@ -547,10 +458,10 @@ def graph_anomaly_detection(exp_params):
                 attns = None
             
             if not exp_params['MODEL']['SAMPLE_TEST']:
-                a_clf.calc_prec(struct_loss.detach().cpu().numpy(), truth, sc_label_new, cluster=False, input_scores=True)
+                a_clf.calc_prec(struct_loss.detach().cpu().numpy(), truth, sc_label_new)
             else:
                 a_clf.title = 'loss'
-                a_clf.calc_prec(edge_anom_mats, truth, sc_label_new, clusts, cluster=False)
+                a_clf.calc_prec(edge_anom_mats, truth, sc_label_new, clusts)
                 
 
                 a_clf.title = 'regloss' ; a_clf.stds = 5
