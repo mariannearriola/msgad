@@ -135,9 +135,10 @@ class MultiScale(Graph):
         if 'Edge-index' in data.keys():
             A = to_dense_adj(torch.tensor(data['Edge-index']))[0]
         else:
-            A = data['Network'].todense()
+            A = data['Network']#.todense()
         #A = np.maximum(A,A.T)
-        X = data['Attributes']
+        #X = data['Attributes']
+        X = None
         if 'cora' in fl:
             X = X.todense()
         self.data = data

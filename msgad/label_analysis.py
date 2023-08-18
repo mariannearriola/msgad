@@ -21,7 +21,7 @@ import functools
 class LabelAnalysis:
     def __init__(self,dataset,all_anoms,norms,exp):
         self.exp=exp
-        self.visualize=True if dataset not in ['weibo','yelpchi'] else False
+        self.visualize=True if dataset not in ['weibo','yelpchi'] else True
         self.thresh = 0.8
         self.dataset = dataset
         self.anoms_combo = all_anoms
@@ -143,7 +143,7 @@ class LabelAnalysis:
             rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]
             #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = 1 if np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]>0.8 else 0
             # size
-            rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += (np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0])/max_clust
+            #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += (np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0])/max_clust
             rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] *=  (clust_ind+1)/(self.scales+1)
 
             # threshold on min anoms and min % of anoms
@@ -364,11 +364,11 @@ class LabelAnalysis:
 
     def run_dend(self,graph,scales,return_clusts=False,return_all=False,load=False):
         """Partition the graph into multi-scale cluster & """
-        if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
-            with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
-                mat = pkl.load(fin)
-            sc_all,clusts = mat['labels'],mat['clusts']
-            return list(sc_all),torch.tensor(clusts) 
+        #if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
+        #    with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
+        #        mat = pkl.load(fin)
+        #    sc_all,clusts = mat['labels'],mat['clusts']
+        #    return list(sc_all),torch.tensor(clusts) 
         self.graph = graph
         anom = self.anoms_combo
 

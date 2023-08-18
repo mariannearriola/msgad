@@ -47,7 +47,7 @@ class GraphReconstruction(nn.Module):
         self.model_str = exp_params['MODEL']['NAME']
         self.recons = exp_params['MODEL']['RECONS']
         self.hidden_dim = int(exp_params['MODEL']['HIDDEN_DIM'])
-        self.vis_filters = exp_params['VIS']['VIS_FILTERS']
+        self.vis_filters = False
         dropout = 0
         self.embed_act = act
         self.decode_act = nn.Sigmoid()

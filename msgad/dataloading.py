@@ -45,70 +45,43 @@ class DataLoading:
         if self.dataload:
             return np.arange(len(os.listdir(f'{self.datadir}/{self.exp_name}/{self.dataset}/train')))
         if self.batch_type == 'edge':
-            if True:
-                num_neighbors = 10 # NUM CONTRASTIVE PAIRS ?!
-                sampler = dgl.dataloading.NeighborSampler([num_neighbors])
-                #sampler = dgl.dataloading.NeighborSampler([num_neighbors,num_neighbors,num_neighbors])
-            else:
-                sampler = dgl.dataloading.MultiLayerFullNeighborSampler(3)
-
             neg_sampler = dgl.dataloading.negative_sampler.GlobalUniform(1,exclude_self_loops=True)
-            #reverse_eids = torch.cat([torch.arange(int(adj.number_of_edges()/2),  int(adj.number_of_edges())), torch.arange(0, int(adj.number_of_edges()/2))]).to(adj.device)
-            #sampler = dgl.dataloading.as_edge_prediction_sampler(sampler,negative_sampler=neg_sampler)#,exclude='reverse_id',reverse_eids=reverse_eids)
             edges=adj.edges('eid') ; edge_weights = adj.edata['w'].detach().cpu() ; adj_nodes = adj.nodes().detach().cpu() ; adj = adj.cpu()
-            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes()*num_neighbors)#int(adj.number_of_edges())
             transform = dgl.transforms.AddSelfLoop() ; adj_loop = transform(adj)
-            #if self.device == 'cuda':
-            if True:
-                dgl.distributed.initialize('graph-name')
-                
-                part_g=dgl.distributed.partition_graph(adj.to('cpu'), f'graph_{ind}', 1, num_hops=1, part_method='metis',out_path='output/')
-                dist_g = dgl.distributed.DistGraph(f'graph_{ind}', part_config=f'output/graph_{ind}.json')
-                neg_sampler = dgl.dataloading.negative_sampler.Uniform(10)
-                def sample_(seeds):
-                    seeds = torch.LongTensor(np.asarray(seeds))
-                    #frontier = dgl.sampling.sample_neighbors(adj, adj_nodes, 10, exclude_edges=adj.edges('eid')[:adj.number_of_edges()//2])
-                    frontier = dgl.distributed.sample_neighbors(dist_g, adj_nodes, 10)
-                    block = dgl.to_block(frontier, seeds)
-                    pos_edges_samp = torch.stack(block.edges()).T
-                    # NOTE: number of edges/non edges does not need to be equal
-                    neg_edges_samp = torch.stack(neg_sampler(adj_loop, adj_nodes)).T
-                    neg_edges_samp = neg_edges_samp[(adj_loop.has_edges_between(neg_edges_samp[:,0],neg_edges_samp[:,1])==0).nonzero()[:,0]]
-                    neg_graph = dgl.graph((neg_edges_samp[:,0],neg_edges_samp[:,1]),num_nodes=adj_nodes.shape[0])
-                    neg_edges_samp = torch.stack(dgl.sampling.sample_neighbors(neg_graph,adj_nodes,10).edges()).T
+            dgl.distributed.initialize('graph-name')
+            part_g=dgl.distributed.partition_graph(adj.to('cpu'), f'graph_{ind}', 1, num_hops=1, part_method='metis',out_path='output/')
+            dist_g = dgl.distributed.DistGraph(f'graph_{ind}', part_config=f'output/graph_{ind}.json')
+            neg_sampler = dgl.dataloading.negative_sampler.Uniform(10)
+            def sample_(seeds):
+                seeds = torch.LongTensor(np.asarray(seeds))
+                #frontier = dgl.sampling.sample_neighbors(adj, adj_nodes, 10, exclude_edges=adj.edges('eid')[:adj.number_of_edges()//2])
+                frontier = dgl.distributed.sample_neighbors(dist_g, adj_nodes, 10)
+                block = dgl.to_block(frontier, seeds)
+                pos_edges_samp = torch.stack(block.edges()).T
 
-                    assert(torch.where(neg_edges_samp[:,0]==neg_edges_samp[:,1])[0].shape[0]==0)
+                # NOTE: number of edges/non edges does not need to be equal
+                neg_edges_samp = torch.stack(neg_sampler(adj_loop, adj_nodes)).T
+                neg_edges_samp = neg_edges_samp[(adj_loop.has_edges_between(neg_edges_samp[:,0],neg_edges_samp[:,1])==0).nonzero()[:,0]]
+                neg_graph = dgl.graph((neg_edges_samp[:,0],neg_edges_samp[:,1]),num_nodes=adj_nodes.shape[0])
+                neg_edges_samp = torch.stack(dgl.sampling.sample_neighbors(neg_graph,adj_nodes,10).edges()).T
 
-                    # Create boolean masks for both edge lists
-                    subsampled_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
-                    subsampled_indices = torch.arange(len(pos_edges_samp))
-                    subsampled_mask[subsampled_indices] = 1
-                    full_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
-                    full_indices = torch.arange(len(pos_edges_samp))
-                    full_mask[full_indices] = 1
-                    indices_in_full = torch.nonzero(subsampled_mask & full_mask).squeeze()
-                    #neg_edges_samp = neg_edges_full[indices_in_full]
-                    block.edata['w'] = edge_weights[indices_in_full]
+                assert(torch.where(neg_edges_samp[:,0]==neg_edges_samp[:,1])[0].shape[0]==0)
 
-                    # Find the indices of the subsampled edge list in the original edge list
-                    
-                    return block, pos_edges_samp, neg_edges_samp
-                # TODO: change
-                dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=adj.number_of_nodes(),collate_fn=sample_, shuffle=False)
-                
-                #dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0, device=self.device)
-            else:
-                dataloader = dgl.dataloading.DataLoader(adj, edges, sampler, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=6, device=self.device)
-        elif self.batch_type == 'node':
-            batch_size = self.batch_size if self.batch_size > 0 else int(adj.number_of_nodes())
-            #sampler = dgl.dataloading.SAINTSampler(mode='walk',budget=[int(batch_size/3),batch_size])
-            sampler = dgl.dataloading.ShaDowKHopSampler([4])
-            if self.device == 'cuda':
-                num_workers = 0
-            else:
-                num_workers = 4
-            dataloader = dgl.dataloading.DataLoader(adj, adj.nodes(), sampler, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=num_workers, device=self.device)
+                # Create boolean masks for both edge lists
+                subsampled_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
+                subsampled_indices = torch.arange(len(pos_edges_samp))
+                subsampled_mask[subsampled_indices] = 1
+                full_mask = torch.zeros(len(pos_edges_full), dtype=torch.bool)
+                full_indices = torch.arange(len(pos_edges_samp))
+                full_mask[full_indices] = 1
+                indices_in_full = torch.nonzero(subsampled_mask & full_mask).squeeze()
+                #neg_edges_samp = neg_edges_full[indices_in_full]
+                block.edata['w'] = edge_weights[indices_in_full]
 
+                # Find the indices of the subsampled edge list in the original edge list
+                return block, pos_edges_samp, neg_edges_samp
+            # TODO: change for batching
+            dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=adj.number_of_nodes(),collate_fn=sample_, shuffle=False)
         return dataloader
 
     def get_edge_batch(self,loaded_input,sc_label):

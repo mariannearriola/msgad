@@ -11,13 +11,14 @@ import pickle as pkl
 
 class anom_classifier():
     """Given node-wise anomaly scores and known labels, evaluate anomaly detection accuracy"""
-    def __init__(self, exp_params, scales, dataset=None, epoch=None, exp_name=None, model=None):
+    def __init__(self, exp_params, scales, out_path, dataset=None, epoch=None, exp_name=None, model=None):
         super(anom_classifier, self).__init__()
         self.dataset = exp_params['DATASET']['NAME'] if exp_params is not None else dataset
         self.epoch = exp_params['MODEL']['EPOCH'] if exp_params is not None else epoch
         self.exp_name = exp_params['EXP'] if exp_params is not None else exp_name
         self.title = ""
         self.scales = scales
+        self.out_path = out_path
 
     def plot_anom_sc(self,sorted_errors,anom,ms_anoms_num,color,scale_name):
         rankings_sc = np.zeros(sorted_errors.shape[0])
@@ -148,7 +149,7 @@ class anom_classifier():
         plt.savefig(fname)
 
 
-    def calc_prec(self, scores, label, all_anom,verbose=True,log=False):
+    def calc_prec(self, scores, label, all_anom,verbose=True,log=True):
         """
         Input:
             scores: anomaly scores for all scales []
@@ -157,7 +158,7 @@ class anom_classifier():
             input_scores: 
         """
         if log:
-            if not os.path.exists(f'output/{self.dataset}'): os.makedirs('output/rocs')
+            if not os.path.exists(f'{self.out_path}/{self.dataset}'): os.makedirs('{self.out_path}/{self.dataset}')
 
         all_precs,all_rocs,all_hits=[],[],[]
         for sc,sc_score in enumerate(scores):
@@ -185,13 +186,13 @@ class anom_classifier():
             all_rocs.append(np.array(rocs)) ; all_precs.append(np.array(precs)) ; all_hits.append(np.array(hits))
                 
             if log and 'multiscale' not in self.exp_name:
-                with open(f'output/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
+                with open(f'{self.out_path}/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
                     pkl.dump({'rocs':rocs,'precs':precs,'hits':hits},fout)
 
         all_rocs,all_precs = np.stack(all_rocs),np.stack(all_precs)
         if 'multiscale' in self.exp_name: all_rocs = np.diagonal(all_rocs) ; all_precs = np.diagonal(all_precs) ; all_hits = np.diagonal(all_hits)
         if log and 'multiscale' in self.exp_name:
-            with open(f'output/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
+            with open(f'{self.out_path}/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
                 pkl.dump({'rocs':all_rocs,'precs':all_precs,'hits':all_hits},fout)
     
         return all_scores,all_precs,all_rocs

@@ -160,31 +160,13 @@ def generate_adjacency_matrix(cluster_ids):
 
 class TBWriter:
     def __init__(self,tb, label, sc_label,clust,anoms,norms,exp_params):
-        '''
-        # edges connected to any anomaly
-        self.sc_idx_all,self.sc_idx_all,self.sc_idx_inside,self.sc_idx_outside,self.cl_all={},{},{},{},{}
-        #self.opt_entropies,self.avg_opt_entropies=[],[]
-        for ind,i in enumerate(sc_label):
-            a,b = np.intersect1d(edge_ids[0].detach().cpu(),i,return_indices=True)[-2],np.intersect1d(edge_ids[1].detach().cpu(),i,return_indices=True)[-2]
-            self.sc_idx_all[ind]=np.unique(np.concatenate((a,b)).flatten())
-            self.cl_all[ind] = edge_ids[:,self.sc_idx_all[ind]][0].detach().cpu()
-        self.sc_labels = sc_label
-        # only select edges inside cluster
-        #self.sc_idx_inside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] == clust[edge_ids.detach().cpu().numpy()][1])[0]
-        self.sc_idx_inside = attract_edges_sel
-        # only select edges outside cluster
-        #self.sc_idx_outside[lbl] = np.where(clust[edge_ids.detach().cpu().numpy()][0] != clust[edge_ids.detach().cpu().numpy()][1])[0]
-        self.sc_idx_outside = repel_edges_sel
-        '''
         self.tb = tb
-        
         self.clust = clust
         self.sc_labels = sc_label
         self.anoms = anoms
         self.norms = norms
-        #self.anoms_cuda = torch.tensor(anoms).cuda()
         self.model_ind = exp_params['MODEL']['IND']
-        self.a_clf = anom_classifier(exp_params,exp_params['DATASET']['SCALES'])
+        self.a_clf = anom_classifier(exp_params,'../output',exp_params['DATASET']['SCALES'])
         self.truth = label
         self.score_clf=IsolationForest(n_estimators=2, warm_start=True)
 
@@ -323,6 +305,7 @@ class TBWriter:
         # Concatenate the sampled indices together
         sampled_indices = sampled_ones_indices + sampled_zeros_indices
         return sampled_indices
+    
     def get_anom(self,scores,anom):
         """
         Filtering mechanism using multi-sccale scoring. Prioritize scores from higher scales
@@ -378,14 +361,7 @@ class TBWriter:
         
         for ind,i in enumerate(sc_labels):
             anom = torch.tensor(self.anoms[np.where(np.array(sc_label)==i)]) if i != -1 else torch.tensor(self.norms)
-            #anom = anom[clusts[(i-1)][anom]==clusts[(i-1)][anom].unique()[0]]
-            #if i > 0: import ipdb ; ipdb.set_trace()
             sc_truth = np.zeros(clust.shape).astype(float) ; sc_truth[anom] = 1.
-            #sc_label_i = np.zeros(clust.shape).astype(float) ; sc_label_i[(np.array(sc_label)==i).nonzero()] = 1.
-            #import ipdb; ipdb.set_trace()
-            #anom_neighbors=torch.stack(adj.out_edges(anom)).T
-            #anom_neighbors=anom_neighbors[(~torch.isin(clust[anom_neighbors].unique(),clust[anom])).nonzero()]
-
             # gets all edges related to a group
             gr_dict = {}
             gr_dict = self.update_dict(gr_dict,f'Pred_fraction',(pred>=.5).nonzero().shape[0]/pred.shape[0])
@@ -400,7 +376,6 @@ class TBWriter:
                 print(e)
                 import ipdb ; ipdb.set_trace()
             gr_dict = self.update_dict(gr_dict,f'Loss',gather_clust_info(loss[sc].detach().cpu(),clusts[sc])[anom])
-            #mean_intra = gather_clust_info(clustloss[sc].detach().cpu(),clusts[sc])[anom]
             mean_intra = clustloss[sc].detach().cpu()[anom]
             gr_dict = self.update_dict(gr_dict,f'Loss_inclust',mean_intra)
             gr_dict = self.update_dict(gr_dict,f'Loss_inclust_mean',gather_clust_info(clustloss[sc][anom].detach().cpu(),clusts[sc][anom],'mean'))
@@ -415,13 +390,7 @@ class TBWriter:
                 raise('counted more than sampled')
             gr_dict = self.update_dict(gr_dict,f'Loss_outclust',mean_inter)
             gr_dict = self.update_dict(gr_dict,f'Loss_outclust_mean',gather_clust_info(nonclustloss[sc][anom].detach().cpu(),clusts[sc][anom],'mean'))
-            #gr_dict = self.update_dict(gr_dict,f'Loss_outclust_mean',mean_inter.mean())
-            #gr_dict = self.update_dict(gr_dict,f'Loss_outclust_std',mean_inter.std())
             gr_dict = self.update_dict(gr_dict,f'Loss_outclust_std',gather_clust_info(nonclustloss[sc][anom].detach().cpu(),clusts[sc][anom],'std'))
-            #inter_res = res[sc][0][anom][:,anom].sigmoid().detach().cpu()
-            #gr_dict = self.update_dict(gr_dict,f'Outclust_consistency_og1',get_clust_score(inter_res,anom,clusts,0,sc))
-            #gr_dict = self.update_dict(gr_dict,f'Outclust_consistency_og2',get_clust_score(inter_res,anom,clusts,1,sc))
-            #gr_dict = self.update_dict(gr_dict,f'Outclust_consistency_og3',get_clust_score(inter_res,anom,clusts,2,sc))
 
             for k,v in gr_dict.items():
                 kname = k + f'_{sc}/Anom{anom_sc}_mean'
@@ -518,25 +487,8 @@ def process_graph(graph):
     """Obtain graph information from input TODO: MOVE?"""
     feats = graph[0].ndata['feature']
     return [torch.vstack((i.edges()[0],i.edges()[1])) for i in graph], feats
-    mat_sparse=graph.adjacency_matrix()
-    #L = torch_geometric.utils.get_laplacian(mat_sparse.coalesce().indices(),normalization='sym')
-    L = get_spectrum(mat_sparse,lapl=None,tag='',load=False,get_lapl=True,save_spectrum=True)
-    '''
-    row,col = L[0]
-    values = L[1]
-    shape = mat_sparse.size()
-    adj_matrix = sp.coo_matrix((values, (row, col)), shape=shape)
-    graph = dgl.from_scipy(adj_matrix,eweight_name='w').to(graph.device)
-    '''
-    graph = dgl.from_scipy(L,eweight_name='w').to(graph.device)
-    edges = torch.vstack((graph.edges()[0],graph.edges()[1]))
-    graph.ndata['feature'] = feats
-    #if 'edge' == self.batch_type:
-    #    feats = feats['_N']
-    return edges, feats, graph
 
 def check_gpu_usage(tag):
-    
     allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
     cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
 
@@ -553,46 +505,6 @@ def prep_args(args):
     yaml_list['DATASET']['DATASAVE'] = args.datasave ; yaml_list['DATASET']['DATALOAD'] = args.dataload
     return yaml_list
 
-def init_recons_agg(n,nfeats,exp_params):
-    """A"""
-    edge_anom_mats,node_anom_mats,recons_a,res_a_all = [],[],[],[]
-    scales = exp_params['MODEL']['SCALES']
-    for i in range(scales):
-        am = np.zeros((n,n))
-        #am = np.zeros((n,nfeats))
-        edge_anom_mats.append(am)
-        node_anom_mats.append(np.full((n,nfeats),-1.))
-        recons_a.append(am)
-        res_a_all.append(np.full((n,exp_params['MODEL']['HIDDEN_DIM']),-1.))
-        #res_a_all.append(np.full((n,n),-1.))
-    return edge_anom_mats,node_anom_mats,recons_a,res_a_all
-
-def agg_recons(A_hat,res_a,struct_loss,feat_cost,node_ids_,edge_ids,edge_ids_,node_anom_mats,edge_anom_mats,recons_a,res_a_all,exp_params):
-    """Collect batched reconstruction into graph-level reconstrution for anomaly detection"""
-    edge_ids_ = edge_ids_.to('cpu').numpy()
-
-    for sc in range(struct_loss.shape[0]):
-        if exp_params['MODEL']['SAMPLE_TEST']:
-            if exp_params['DATASET']['BATCH_TYPE'] == 'node' or exp_params['MODEL']['NAME'] in ['gcad']:
-                node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
-                edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
-            else:
-                #edge_anom_mats[sc] = struct_loss[sc].detach().cpu().numpy()
-                edge_anom_mats[sc][tuple(edge_ids_[sc,:,:])] = struct_loss[sc].detach().cpu().numpy()
-                edge_anom_mats[sc] = np.maximum(edge_anom_mats[sc],edge_anom_mats[sc].T)
-
-                #recons_a[sc] = A_hat[sc].detach().cpu().numpy()
-                recons_a[sc][tuple(edge_ids_[sc,:,:])] = A_hat[sc].detach().cpu().numpy()#[edge_ids[:,0],edge_ids[:,1]].detach().cpu().numpy()
-                recons_a[sc] = np.maximum(recons_a[sc],recons_a[sc].T)
-                #if res_a is not None:
-                #    res_a_all[sc][node_ids_.detach().cpu().numpy()] = res_a[sc].detach().cpu().numpy()
-        else:
-            if exp_params['DATASET']['BATCH_TYPE'] == 'node':
-                node_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = feat_cost[sc].detach().cpu().numpy()
-                if struct_loss is not None:
-                    edge_anom_mats[sc][node_ids_.detach().cpu().numpy()[:feat_cost[sc].shape[0]]] = struct_loss[sc].detach().cpu().numpy()
-    return node_anom_mats,edge_anom_mats,recons_a,res_a_all
-
 def dgl_to_nx(g):
     """Convert DGL graph to NetworkX graph"""
     nx_graph = nx.to_undirected(dgl.to_networkx(g.cpu(),edge_attrs='w'))
@@ -605,7 +517,6 @@ def collect_recons_label(lbl,device):
         lbl_.append(l.to(device))
         del l ; torch.cuda.empty_cache()
     return lbl_
-
 
 def seed_everything(seed=1234):
     """Set random seeds for run"""
@@ -641,48 +552,6 @@ def init_model(feat_size,exp_params,args):
         pass
 
     return struct_model,params,loaded
-
-def getScaleClusts(dend,thresh):
-    clust_labels = postprocess.cut_straight(dend,threshold=thresh)
-    return clust_labels
-
-def flatten_label(anoms):
-    flattened_anoms = []
-    for anom_sc in anoms:
-        for ind,i in enumerate(anom_sc):
-            if ind == 0: ret_anom = np.expand_dims(i.flatten(),0)
-            else: ret_anom = np.hstack((ret_anom,np.expand_dims(i.flatten(),0)))
-        flattened_anoms.append(ret_anom[0])
-    return flattened_anoms
-    
-def getClustScores(clust,scores):
-    clust_keys = np.unique(clust)
-    clust_dict, score_dict = {}, {}
-    #anom_count,node_count = [],[]
-    for key in clust_keys:
-        clust_dict[key] = np.where(clust==key)[0]
-        #anom_count.append(np.intersect1d(anom_sc_label,clust_dict[key]).shape[0])
-        #node_count.append(clust_dict[key].shape[0])
-        cum_clust_score = np.max(scores[clust_dict[key]])
-        score_dict[key] = cum_clust_score
-    return clust_dict, score_dict
-
-def getHierClusterScores(graph,scores):
-    """For 3 graph scales, get scale-wise anomaly predictions"""
-    paris = LouvainIteration() 
-    dend = paris.fit_predict(graph)
-
-    clust1 = getScaleClusts(dend,1)
-    clust2 = getScaleClusts(dend,2)
-    clust3 = getScaleClusts(dend,3)
-
-    clust_dict1,score_dict1 = getClustScores(clust1, scores)
-    clust_dict2,score_dict2 = getClustScores(clust2, scores)
-    clust_dict3,score_dict3 = getClustScores(clust3, scores)
-
-    clust_dicts,score_dicts=[clust_dict1,clust_dict2,clust_dict3],[score_dict1,score_dict2,score_dict3]
-
-    return clust_dicts, score_dicts
                 
 def sparse_matrix_to_tensor(coo,feat):
     coo = scipy.sparse.coo_matrix(coo)
