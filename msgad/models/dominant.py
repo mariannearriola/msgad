@@ -121,7 +121,7 @@ class DOMINANT(BaseDetector):
         # other param
         self.verbose = verbose
         self.model = None
-        seed_everything()
+        seed_everything(82)
 
     def forward(self, G, y_true=None):
         """

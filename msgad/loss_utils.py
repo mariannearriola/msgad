@@ -1,3 +1,4 @@
+
 import torch
 import numpy as np
 import dgl
@@ -15,14 +16,11 @@ class loss_func:
         self.alpha = alpha
         self.clusts = clusts
         self.regularize=regularize
-        self.model_ind= exp_params['MODEL']['IND']
         
-    def calc_loss(self,lbl,A_hat,edge_ids,clusts):
+    def calc_loss(self,lbl,A_hat,edge_ids,clusts, batch_nodes):
         """
         Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction
         label.
-
-        
         """
         if not self.alpha: self.alpha = 1 if self.recons=='struct' else 0
 
@@ -30,15 +28,13 @@ class loss_func:
 
         clusts = torch.tensor(clusts)
         for ind, sc_pred in enumerate(A_hat):
-            samp_ind = self.model_ind if self.model_ind != 'None' else ind
             sampled_pred = sc_pred
             lbl_edges = torch.zeros(sampled_pred.shape).to(sampled_pred.device).to(torch.float64)
             check_gpu_usage('before edge idx')
-            edge_idx=lbl[samp_ind].has_edges_between(edge_ids[samp_ind][:,0],edge_ids[samp_ind][:,1]).nonzero().T[0]
+            edge_idx=lbl.has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]
 
-            lbl_edges[edge_idx] = lbl[samp_ind].edata['w'][lbl[samp_ind].edge_ids(edge_ids[samp_ind][:,0][edge_idx],edge_ids[samp_ind][:,1][edge_idx])].to(torch.float64)
-
-            total_struct_error, edge_struct_errors,regloss,clustloss,nonclustloss,sc_idx_inside,sc_idx_outside = self.get_sampled_losses(lbl[samp_ind],sampled_pred,edge_ids[samp_ind],lbl_edges,ind,clusts[samp_ind])
+            lbl_edges[edge_idx] = lbl.edata['w'][lbl.edge_ids(edge_ids[ind][:,0][edge_idx],edge_ids[ind][:,1][edge_idx])].to(torch.float64)
+            total_struct_error, edge_struct_errors,regloss,clustloss,nonclustloss = self.get_sampled_losses(lbl,sampled_pred,edge_ids[ind],lbl_edges,ind,clusts[ind])
             
             del sampled_pred, lbl_edges, edge_idx
             torch.cuda.empty_cache()
@@ -110,6 +106,9 @@ class loss_func:
         neg_losses_tot[torch.arange(neg_losses.shape[0])] = neg_losses
         # NOTE: if there are more edges in the graph, assign a lower weight for backprop
         #import ipdb ; ipdb.set_trace()
+        #tot_error = torch.zeros(clusts.shape[0]).to(float).to(pred.device) 
+        #tot_error[torch.arange(edges[torch.cat((pos,neg)).T[0]][:,1].max()+1)] = edge_errors_nodewise
         tot_error = edge_errors_nodewise
+
         attract_edges = pos ; repel_edges = neg
-        return tot_error.mean(),tot_error, tot_error,pos_losses_tot,neg_losses_tot,attract_edges,repel_edges
+        return tot_error.mean(),tot_error, tot_error,pos_losses_tot,neg_losses_tot

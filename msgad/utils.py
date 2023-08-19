@@ -1,11 +1,9 @@
-from sknetwork.hierarchy import Paris, postprocess, LouvainHierarchy, LouvainIteration
-from torch_geometric.nn import MessagePassing
+
 import numpy as np
 import scipy.sparse as sp
 import torch
 import torch_scatter
 import scipy
-import scipy.io as sio
 import random
 import networkx as nx
 from igraph import Graph
@@ -14,161 +12,165 @@ import copy
 import matplotlib.ticker as mtick
 import pickle as pkl
 import model
-#from models import *
-#from models.gcad import *
 import matplotlib.pyplot as plt
 import os
 import yaml
 import torch
-import torch_geometric
-import gc
 from pygspcopy import *
-import sklearn
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
-from collections import Counter
-from itertools import chain
 from anom_detector import *
 from sklearn.ensemble import IsolationForest
+from itertools import combinations
 
-def get_counts(pred,clust,edge_ids):
-    pred_opt = torch.zeros(pred.shape)
-    a1 = torch.where(clust[edge_ids[:,0]]==clust[edge_ids[:,1]])[0]
-    pred_opt[a1] = 1.
-    pos_nodes = edge_ids[:,1][a1].unique().detach().cpu() ; neg_nodes = edge_ids[:,1][torch.where(clust[edge_ids[:,0]]!=clust[edge_ids[:,1]])[0]].unique().detach().cpu()
-    unique_elements, counts = torch.unique(edge_ids[:,1][a1], return_counts=True)
-    #pos_clust_counts = torch.zeros(clust.shape[0],dtype=int).scatter_add_(0,counts.detach().cpu(),unique_elements.detach().cpu())# ; pos_clust_counts = pos_clust_counts[clust]
+def check_batch(pos_edges,neg_edges,clusts):
+    """Ensure that intra-cluster & inter-cluster edges selected align with cluster assignments"""
+    try:
+        for i in range(len(pos_edges)):
+            attract_e=torch.where(clusts[i][pos_edges[i]][:,0]==clusts[i][pos_edges[i][:,1]])[0]
+            
+            assert(attract_e.shape[0]==pos_edges[i].shape[0])
+            repel_e=torch.where(clusts[i][pos_edges[i]][:,0]!=clusts[i][pos_edges[i][:,1]])[0]
+            attract_e_neg=torch.where(clusts[i][neg_edges[i]][:,0]==clusts[i][neg_edges[i][:,1]])[0]
+            assert(attract_e_neg.shape[0]==0)
+            assert(repel_e.shape[0]==0)
+            del attract_e,repel_e,attract_e_neg
+    except Exception as e:
+        import ipdb ; ipdb.set_trace()
+        raise "batching incorrect"
+
+def get_labels(adj,feats,clusts,exp_params):
+    """
+    Prepare intra-cluster edge labels according to cluster assignments to pass into dataloader
+    
+    Input:
+        adj: {DGL graph}
+            Input graph.
+        feats: {array-like}, shape=[n, f]
+            Feature matrix.
+        clusts: {array-like}, shape=[k, n]
+            Scale-wise cluster assignments.
+        exp_params: {dictionary}
+            Experiment parameters.
+    Output:
+        lbls: {array-like}, shape=[k, ]
+            Array of DGL graphs corresponding to unique scale-specific clusterings
+        pos_edges_full: {array-like}, shape=[k, n, 2]
+            Array of edge lists ccorresponding to unique scale-specific clusterings
+    """
+    dataset = exp_params['DATASET']['NAME']
+    dataset_scales, model_scales = exp_params['DATASET']['SCALES'], exp_params['MODEL']['SCALES']
+    transform = dgl.AddReverse(copy_edata=True)
+    # sample an even number of intra-cluster & inter-cluster edges for each node
+    if not os.path.exists(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat'):
+        lbls,neg_lbls,pos_edges_full,neg_edges_full = [],[],[],[]
+        for clust_ind,clust in enumerate(clusts):
+            print(clust_ind)
+            clusters = {}
+            for node, cluster_id in enumerate(clust,0):
+                clusters.setdefault(cluster_id.item(), []).append(node)
+            pos_edges= torch.tensor([(x, y) for nodes in clusters.values() for x, y in combinations(nodes, 2)])
+            # for each positive edge, replace connection with a negative edge. during dataloading, index both simultaneously
+            assert(torch.where(clust[pos_edges[:,0]]==clust[pos_edges[:,1]])[0].shape[0]==pos_edges.shape[0])
+            
+            pos_clusts = clust[pos_edges[:,1]]
+            clust_offset=np.random.randint(1,(clust.max()),pos_clusts.shape[0])
+            if torch.where(pos_clusts==pos_clusts+clust_offset)[0].shape[0] != 0:
+                raise "wrong offset"
+            pos_clusts += clust_offset ; opp_clusts = pos_clusts % (clust.max()+1)
+            
+            neg_edges = copy.deepcopy(pos_edges)
+            largest_clust_size = np.unique(clust,return_counts=True)[-1][0]
+            el_offset = torch.randint(0,largest_clust_size,neg_edges[:,0].shape)
+            
+            neg_edges[:,1] = torch.tensor([clusters[i.item()][el_offset[ind]%len(clusters[i.item()])] for ind,i in enumerate(opp_clusts)])
+            assert(torch.where(clust[neg_edges[:,0]]==clust[neg_edges[:,1]])[0].shape[0]==0)
+
+            lbl_adj = dgl.graph((pos_edges[:,0],pos_edges[:,1]),num_nodes=adj.number_of_nodes()).to(exp_params['DEVICE'])
+            lbl_adj.ndata['feature'] = feats.to(lbl_adj.device)
+            lbl_adj.edata['w'] = torch.ones(pos_edges.shape[0]).to(lbl_adj.device)
+            
+            neg_adj = dgl.graph((neg_edges[:,0],neg_edges[:,1]),num_nodes=adj.number_of_nodes()).to(exp_params['DEVICE'])
+            neg_lbls.append(transform(neg_adj))
+
+            lbls.append(transform(lbl_adj))
+            pos_edges_full.append(torch.vstack((pos_edges,pos_edges.flip(1))))
+            neg_edges_full.append(torch.vstack((neg_edges,neg_edges.flip(1))))
+            
+        save_mat = {'lbls':[i for i in lbls],'neg_lbls':[i for i in neg_lbls],'pos_edges':[i.to_sparse() for i in pos_edges_full]}#,'neg_edges':[i.to_sparse() for i in neg_edges_full]}
+        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat','wb') as fout:
+            pkl.dump(save_mat,fout)
+    else:
+        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat','rb') as fin:
+            mat =pkl.load(fin)
+        lbls,neg_lbls,pos_edges_full = mat['lbls'],mat['neg_lbls'],[i.to_dense() for i in mat['pos_edges']]#,[i.to_dense() for i in mat['neg_edges']]
+    return lbls, neg_lbls, pos_edges_full
+
+def get_counts(clust,edge_ids):
+    """
+    ...
+
+    Input:
+        clust: array-like, shape=[k, n]
+            Scale-wise cluster assignments
+        edge_ids: array-like, shape=[n, 2]
+            Edge IDs used for sampling
+    Output:
+        intra_edges: array-like, shape=[e]
+            Indices of edge IDs corresponding to intra-cluster edges
+        pos_counts: dict
+            Dictionary mapping cluster IDs to the number of intra-cluster edges sampled
+        neg_counts: dict
+            Dictionary mapping cluster IDs to the number of inter-cluster edges sampled
+        pos_clust_counts: dict
+            ...
+        neg_clust_counts: dict
+            ...
+    """
+    intra_edges = torch.where(clust[edge_ids[:,0]]==clust[edge_ids[:,1]])[0]
+
+    unique_elements, counts = torch.unique(edge_ids[:,1][intra_edges], return_counts=True)
     pos_clust_counts = torch.zeros(clust.shape[0]) ; pos_clust_counts[unique_elements.detach().cpu()] = counts.to(torch.float32).detach().cpu()
-    # Create a dictionary to store the counts of unique elements
     pos_counts = dict(zip(unique_elements.tolist(), counts.tolist()))
+    
     unique_elements, counts = torch.unique(edge_ids[:,1][torch.where(clust[edge_ids[:,0]]!=clust[edge_ids[:,1]])[0]], return_counts=True)
-    # Create a dictionary to store the counts of unique elements
     neg_counts = dict(zip(unique_elements.tolist(), counts.tolist()))
-    #neg_clust_counts = torch.zeros(clust.shape[0],dtype=int).scatter_add_(0,counts.detach().cpu(),unique_elements.detach().cpu())# ; neg_clust_counts = neg_clust_counts[clust]
     neg_clust_counts = torch.zeros(clust.shape[0]) ; neg_clust_counts[unique_elements.detach().cpu()] = counts.to(torch.float32).detach().cpu()
 
-    return a1, pred_opt, pos_nodes, pos_counts, neg_nodes, neg_counts,pos_clust_counts,neg_clust_counts
+    return intra_edges, pos_counts, neg_counts, pos_clust_counts, neg_clust_counts
 
-def score_multiscale_anoms(clustloss,nonclustloss, clusts, pred, edge_ids, res):
+def score_multiscale_anoms(clustloss,nonclustloss, clusts, res):
+    """
+    Assign node-wise scores based on intra-cluster residuals
+
+    Input:
+        clustloss: {array-like}, shape=[k, n]
+            Scale-wise intra-cluster losses.
+        nonclustloss: {array-like}, shape=[k, n]
+            Scale-wise inter-cluster losses.
+        clusts: {array-like}, shape=[k, n]
+            Scale-wise cluster assignments. 
+        res: {array-like}, shape=[k, n]
+            Scale-wise model embeddings.
+    Output:
+        scores_all: {array-like}, shape=[k, n]
+            Computed scale-wise anomaly scores.
+    """
 
     for sc,sc_clustloss in enumerate(clustloss):
-        #cl1,cl2,cl3=clustloss ; cl1 = cl1.detach().cpu() ; cl2 = cl2.detach().cpu() ; cl3 = cl3.detach().cpu()
-        #nc1,nc2,nc3=nonclustloss ; nc1 = nc1.detach().cpu() ; nc2 = nc2.detach().cpu(); nc3 = nc3.detach().cpu()
-        
-        #cl1,cl2,cl3=gather_clust_info(cl1,clusts[0],'std'),gather_clust_info(cl2,clusts[1],'std'),gather_clust_info(cl3,clusts[2],'std')
-        #nc1,nc2,nc3=gather_clust_info(nc1,clusts[0],'mean'),gather_clust_info(nc2,clusts[1],'mean'),gather_clust_info(nc3,clusts[2],'mean')
-        
         score = gather_clust_info(sc_clustloss.detach().cpu(),clusts[sc],'std')
         scores_all = score if sc == 0 else torch.vstack((scores_all,score))
-        #l1 = cl1
-        #l2 = cl2
-        #l3 = cl3
-
-        #inter_res = res[0][0].sigmoid().detach().cpu()
-        #l1 = torch.tensor(get_clust_score(res[0][0].sigmoid().detach().cpu(),np.arange(res[1][0].shape[0]),clusts,1,0))#cl1
-        #l2 = torch.tensor(get_clust_score(res[1][0].sigmoid().detach().cpu(),np.arange(res[0][0].shape[0]),clusts,2,1))#nc2*(nc1-nc2)#cl2
-        #l3 = torch.tensor(get_clust_score(res[0][0].sigmoid().detach().cpu(),np.arange(res[0][0].shape[0]),clusts,2,0))#nc3*(nc2-nc3)#cl3
-
-        #l1,l2,l3=gather_clust_info(l1,clusts[0],'mean'),gather_clust_info(l2,clusts[1],'mean'),gather_clust_info(l3,clusts[2],'mean')
-    #l_all = torch.vstack((torch.vstack((l1,l2)),l3))#.softmax(0)
-    return scores_all, clustloss, nonclustloss
-
-def torch_overlap(a,b):
-    return a[(a.view(1, -1) == b.view(-1, 1)).any(dim=0)]
-
-def replace_node_ids_with_probabilities(probability_array, node_ids):
-    unique_node_ids, node_id_counts = np.unique(node_ids, return_counts=True)
-    total_nodes = len(node_ids)
-    node_id_probabilities = node_id_counts / total_nodes
-    probability_dict = dict(zip(unique_node_ids, node_id_probabilities))
-    replace_func = np.vectorize(lambda x: probability_dict.get(x, 0))
-    replaced_array = replace_func(node_ids)
-    
-    # Normalize the probabilities to sum to 1
-    replaced_array /= np.sum(replaced_array)
-    
-    return replaced_array
-
-
-def weighted_selection(edge_idx,clusts,num_edges):
-    counts=(np.unique(edge_idx,return_counts=True)[1])/edge_idx.shape[0]
-    # Calculate weights based on cluster sizes
-    edge_probs = replace_node_ids_with_probabilities(counts,edge_idx)
-
-    # Select nodes based on weights
-    selected_edges = np.random.choice(np.arange(edge_idx.shape[0]), size=num_edges, replace=False, p=edge_probs)
-    return selected_edges
-
-def ensure_unique_pairs(tensor):
-    # Sort each row of the tensor
-    sorted_tensor, _ = torch.sort(tensor, dim=0)
-
-    # Find unique rows using torch.unique
-    unique_tensor = torch.unique(sorted_tensor, dim=0)
-
-    return unique_tensor
-
-def get_different_cluster_indices(cluster_2d, same_cluster_indices):
-    different_cluster_indices = []
-    for index in same_cluster_indices:
-        cluster_id0,cluster_id1 = torch.where(cluster_2d==index)
-        cluster_id = cluster_2d[:,cluster_id1]
-        diff_idxs = cluster_id1[torch.where(cluster_id0[0]!=cluster_id1)]
-        idx_picked= random.choice(diff_idxs)
-        while idx_picked in different_cluster_indices:
-            print('next',idx_picked)
-            idx_picked= random.choice(diff_idxs)
-        different_cluster_indices.append(idx_picked)
-    return different_cluster_indices
-
-def generate_cluster_colors(cluster_ids):
-    
-    unique_clusters = np.unique(cluster_ids)
-    num_clusters = len(unique_clusters)
-    color_palette = ['#%06x' % random.randint(0, 0xFFFFFF) for _ in range(num_clusters)]
-    cluster_colors = {}
-
-    for idx, cluster_id in enumerate(unique_clusters):
-        cluster_colors[cluster_id] = color_palette[idx]
-
-    color_list = [cluster_colors[cluster_id] for cluster_id in cluster_ids]
-    return color_list
-
-def generate_adjacency_matrix(cluster_ids):
-    mask = cluster_ids.unsqueeze(0) == cluster_ids.unsqueeze(1)
-    clust_edges = mask.nonzero().T
-    gr = dgl.graph((clust_edges[0],clust_edges[1]))
-    nonclust_edges = torch.stack(dgl.sampling.global_uniform_negative_sampling(gr,clust_edges.shape[-1]))
-    return torch.cat((clust_edges,nonclust_edges),dim=1)
-    unique_clusters = (cluster_ids).unique()
-    num_clusters = len(unique_clusters)
-    num_nodes = len(cluster_ids)
-
-    # Create an empty adjacency matrix
-    adjacency_matrix = torch.zeros((num_nodes, num_nodes))
-
-    # Create a dictionary to map cluster IDs to node indices
-    cluster_indices = {cluster: torch.where(cluster_ids == cluster)[0] for cluster in unique_clusters}
-
-    # Iterate over each cluster and connect nodes within the same cluster
-    for cluster in unique_clusters:
-        nodes_in_cluster = cluster_indices[cluster]
-        adjacency_matrix[nodes_in_cluster[:, None], nodes_in_cluster] = 1
-
-    return adjacency_matrix
-
+        
+    return scores_all
 
 class TBWriter:
-    def __init__(self,tb, label, sc_label,clust,anoms,norms,exp_params):
+    def __init__(self,tb, sc_label,clust,anoms,norms,exp_params):
         self.tb = tb
         self.clust = clust
         self.sc_labels = sc_label
         self.anoms = anoms
         self.norms = norms
-        self.model_ind = exp_params['MODEL']['IND']
         self.a_clf = anom_classifier(exp_params,'../output',exp_params['DATASET']['SCALES'])
-        self.truth = label
-        self.score_clf=IsolationForest(n_estimators=2, warm_start=True)
 
     def collect_clust_loss(self,edge_ids,sc_idx,loss):
         """Get average loss for each cluster, and assign back to edge-wise losses"""
@@ -187,245 +189,72 @@ class TBWriter:
             anom_clusts = clust[i].unique()
             return dgl_g.in_edges(np.intersect1d(clust,anom_clusts,return_indices=True)[-2],form='eid')
 
-    def plot_sep_scores(self,scores,avg_score,cluster_labels,anom_sc):
-        """https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html#sphx-glr-auto-examples-cluster-plot-kmeans-silhouette-analysis-py"""
-        n_clusters = cluster_labels.unique().shape[0]
-        fig, ax1= plt.subplots(1, 1)
-        fig.set_size_inches(18, 7)
-
-        # The 1st subplot is the silhouette plot
-        # The silhouette coefficient can range from -1, 1 but in this example all
-        # lie within [-0.1, 1]
-        ax1.set_xlim([-0.1, 1])
-        # The (n_clusters+1)*10 is for inserting blank space between silhouette
-        # plots of individual clusters, to demarcate them clearly.
-        ax1.set_ylim([0, len(scores) + (n_clusters + 1) * 10])
-
-        
-        y_lower = 10
-        for i in range(n_clusters):
-            # Aggregate the silhouette scores for samples belonging to
-            # cluster i, and sort them
-            ith_cluster_silhouette_values = scores[cluster_labels == i]
-
-            ith_cluster_silhouette_values.sort()
-
-            size_cluster_i = ith_cluster_silhouette_values.shape[0]
-            y_upper = y_lower + size_cluster_i
-
-            color = cm.nipy_spectral(float(i) / n_clusters)
-            ax1.fill_betweenx(
-                np.arange(y_lower, y_upper),
-                0,
-                ith_cluster_silhouette_values,
-                facecolor=color,
-                edgecolor=color,
-                alpha=0.7,
-            )
-
-            # Label the silhouette plots with their cluster numbers at the middle
-            ax1.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
-
-            # Compute the new y_lower for next plot
-            y_lower = y_upper + 10  # 10 for the 0 samples
-        ax1.set_title("The silhouette plot for the various clusters.")
-        ax1.set_xlabel("The silhouette coefficient values")
-        ax1.set_ylabel("Cluster label")
-
-        # The vertical line for average silhouette score of all the values
-        ax1.axvline(x=avg_score, color="red", linestyle="--")
-
-        ax1.set_yticks([])  # Clear the yaxis labels / ticks
-        ax1.set_xticks([-0.1, 0, 0.2, 0.4, 0.6, 0.8, 1])
-
-        plt.savefig(f'clust_figs/clusts_{anom_sc}.png')
-
-    def plot_sep_scores_group(self,scores,avg_score,anom_group,anom_sc):
-        """https://scikit-learn.org/stable/auto_examples/cluster/plot_kmeans_silhouette_analysis.html#sphx-glr-auto-examples-cluster-plot-kmeans-silhouette-analysis-py"""
-        fig, ax1= plt.subplots(1, 1)
-        fig.set_size_inches(18, 7)
-
-        # The 1st subplot is the silhouette plot
-        # The silhouette coefficient can range from -1, 1 but in this example all
-        # lie within [-0.1, 1]
-        ax1.set_xlim([-0.1, 1])
-        # The (n_clusters+1)*10 is for inserting blank space between silhouette
-        # plots of individual clusters, to demarcate them clearly.
-        ax1.set_ylim([0, len(anom_group) + (len(anom_group) + 1) * 10])
-
-        
-        y_lower = 10
-        for i in range(len(scores)):
-            # Aggregate the silhouette scores for samples belonging to
-            # cluster i, and sort them
-            ith_cluster_silhouette_values = scores[i][anom_group]
-
-            ith_cluster_silhouette_values.sort()
-
-            size_cluster_i = ith_cluster_silhouette_values.shape[0]
-            y_upper = y_lower + size_cluster_i
-
-            color = cm.nipy_spectral(float(i) / len(scores))
-            ax1.fill_betweenx(
-                np.arange(y_lower, y_upper),
-                0,
-                ith_cluster_silhouette_values,
-                facecolor=color,
-                edgecolor=color,
-                alpha=0.7,
-            )
-
-            # Label the silhouette plots with their cluster numbers at the middle
-            ax1.text(-0.05, y_lower + 0.5 * size_cluster_i, str(i))
-
-            # Compute the new y_lower for next plot
-            y_lower = y_upper + 10  # 10 for the 0 samples
-        ax1.set_title("The silhouette plot for the various clusters.")
-        ax1.set_xlabel("The silhouette coefficient values")
-        ax1.set_ylabel("Cluster label")
-
-        # The vertical line for average silhouette score of all the values
-        #ax1.axvline(x=np.array(avg_score).mean(), color="red", linestyle="--")
-
-        ax1.set_yticks([])  # Clear the yaxis labels / ticks
-        ax1.set_xticks([-0.1, 0, 0.2, 0.4, 0.6, 0.8, 1])
-
-        plt.savefig(f'clust_figs/clusts_{anom_sc}.png')
-
-    def sampled_edges(self,tensor):
-        """For sampling an even number of in-clust/out-clust edges"""
-        ones_indices = torch.nonzero(tensor == 1).flatten()
-        zeros_indices = torch.nonzero(tensor == 0).flatten()
-
-        # Randomly sample an equal number of indices from each group
-        num_samples = min(len(ones_indices), len(zeros_indices))
-        sampled_ones_indices = random.sample(ones_indices.tolist(), num_samples)
-        sampled_zeros_indices = random.sample(zeros_indices.tolist(), num_samples)
-
-        # Concatenate the sampled indices together
-        sampled_indices = sampled_ones_indices + sampled_zeros_indices
-        return sampled_indices
-    
-    def get_anom(self,scores,anom):
-        """
-        Filtering mechanism using multi-sccale scoring. Prioritize scores from higher scales
-        """
-        scores_left = np.arange(scores[0].shape[0]).tolist()
-        anoms_found,ps,final_scores=[],[],[np.zeros(scores[0].shape[0]) for i in scores]
-        #import ipdb ; ipdb.set_trace()
-        for sc,score in enumerate(reversed(scores)):
-            #centroids1,_ = scipy.cluster.vq.kmeans(score[np.array(scores_left)],2)
-            #groups1, _ = scipy.cluster.vq.vq(l1, centroids1)
-            #anoms_found.append(np.array(scores_left)[(groups1 == 0).nonzero()])
-            preds = self.score_clf.fit_predict(score[np.array(scores_left)].reshape(-1,1))
-            anoms_found.append(np.array(scores_left)[((preds==-1).nonzero()[0])].tolist())
-            ps.append(np.intersect1d(anoms_found[-1],anom).shape[0]/anom.shape[0])
-            scores_left = list(set(scores_left) - set(anoms_found[-1]))
-            final_scores[sc][np.array(anoms_found[-1])] = 1
-        anoms_found.reverse() ; ps.reverse()
-        return anoms_found,ps,final_scores
-    
     def update_dict(self,gr_dict,k,v):
+        """Updates logging dictionary for a node group."""
         if k not in gr_dict.keys():
             gr_dict[k] = [v]
         else:
             gr_dict[k].append(v)
         return gr_dict
 
-    def tb_write_anom(self,adj,sc_label,edge_ids,pred,res,loss,sc,epoch,regloss,clustloss,nonclustloss,clusts,anom_wise=True,fracs=None):
+    def tb_write_anom(self,sc_label,edge_ids,pred,scores_all,loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=True,scores_only=False):
         """Log loss evolution for anomaly group"""
-        # sc idx all: contains all edge idx associated with each anomaly
-        # removing edges if there is no cluster between them, does not add edges
-        if self.model_ind != 'None':
-            clust = clusts[self.model_ind]
-        else:
-            clust = clusts[sc]
-        a1, pred_opt, pos_nodes, pos_counts_dict, neg_nodes, neg_counts_dict,_,_ = get_counts(pred,clust,edge_ids[sc])
-    
 
-        anom_clusts = copy.deepcopy(clust)
-        it = clust.max()+1
-        mean_intras,mean_inters=[],[]
-        all_dicts = []
+        #self.tb.add_scalar(f'Loss_{sc}', loss, epoch)
+        self.tb.add_scalar(f'ClustLoss_{sc}', clustloss[sc].sum(), epoch)
+        self.tb.add_scalar(f'NonClustLoss_{sc}', nonclustloss[sc].sum(), epoch)
+        clust = clusts[sc]
+        intra_edges, pos_counts_dict, neg_counts_dict, _, _ = get_counts(clust,edge_ids[sc])
+    
         sc_labels = np.unique(sc_label) ; sc_labels = np.append(sc_labels,-1)
 
-        scores_all,clustloss,nonclustloss=score_multiscale_anoms(clustloss,nonclustloss, clusts, pred, edge_ids, res)
-        
         self.tb.add_histogram(f'Loss_inclust_{sc}',clustloss[sc].detach().cpu().mean(), epoch)
         self.tb.add_histogram(f'Loss_outclust_{sc}',nonclustloss[sc].detach().cpu().mean(), epoch)
+
         for ind,(nc,cl) in enumerate(zip(nonclustloss,clustloss)):
-            _, _, _, _, _, _, pos_counts,neg_counts = get_counts(pred,clusts[ind],edge_ids[ind])
+            _, _, _, pos_counts,neg_counts = get_counts(clusts[ind],edge_ids[ind])
             sil = torch.nan_to_num((1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0)-(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0)))/torch.max(1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0),(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0))),posinf=0,neginf=0)
             self.tb.add_histogram(f'Sil{ind+1}',sil.mean(), epoch)
             sils = sil if ind == 0 else torch.vstack((sils,sil))
         
         for ind,i in enumerate(sc_labels):
-            anom = torch.tensor(self.anoms[np.where(np.array(sc_label)==i)]) if i != -1 else torch.tensor(self.norms)
-            sc_truth = np.zeros(clust.shape).astype(float) ; sc_truth[anom] = 1.
+            
+            group = torch.tensor(self.anoms[np.where(np.array(sc_label)==i)]) if i != -1 else torch.tensor(self.norms)
+            sc_truth = np.zeros(clust.shape).astype(float) ; sc_truth[group] = 1.
             # gets all edges related to a group
             gr_dict = {}
             gr_dict = self.update_dict(gr_dict,f'Pred_fraction',(pred>=.5).nonzero().shape[0]/pred.shape[0])
-            gr_dict = self.update_dict(gr_dict,f'True_fraction',a1.shape[0]/pred.shape[0])     
-            for ind,score in enumerate(scores_all):       
-                gr_dict = self.update_dict(gr_dict,f'L{ind+1}_{anom_wise}',(score[anom].detach().cpu()))
+            gr_dict = self.update_dict(gr_dict,f'True_fraction',intra_edges.shape[0]/pred.shape[0])     
+            for l_ind,score in enumerate(scores_all):       
+                gr_dict = self.update_dict(gr_dict,f'L{l_ind+1}_{anom_wise}',(score[group].detach().cpu()))
             anom_sc = ind if ind != len(self.sc_labels)-1 else 'norm'
-            try:
-                anom_pos_counts = np.array([pos_counts_dict[uid] if uid in pos_counts_dict.keys() else 1 for uid in anom])
-                anom_neg_counts = np.array([neg_counts_dict[uid] if uid in neg_counts_dict.keys() else 1 for uid in anom])
-            except Exception as e:
-                print(e)
-                import ipdb ; ipdb.set_trace()
-            gr_dict = self.update_dict(gr_dict,f'Loss',gather_clust_info(loss[sc].detach().cpu(),clusts[sc])[anom])
-            mean_intra = clustloss[sc].detach().cpu()[anom]
-            gr_dict = self.update_dict(gr_dict,f'Loss_inclust',mean_intra)
-            gr_dict = self.update_dict(gr_dict,f'Loss_inclust_mean',gather_clust_info(clustloss[sc][anom].detach().cpu(),clusts[sc][anom],'mean'))
+            
+            gr_clusts = clusts[sc][group] ; gr_intra = clustloss[sc][group].detach().cpu() ; gr_inter = nonclustloss[sc][group].detach().cpu()
+            gr_dict = self.update_dict(gr_dict,f'Loss',gather_clust_info(loss[sc].detach().cpu(),clusts[sc])[group])
+            gr_dict = self.update_dict(gr_dict,f'Loss_inclust',gr_intra)
+            gr_dict = self.update_dict(gr_dict,f'Loss_inclust_mean',gather_clust_info(gr_intra,gr_clusts,'mean'))
 
-            gr_dict = self.update_dict(gr_dict,f'Loss_inclust_std',gather_clust_info(clustloss[sc][anom].detach().cpu(),clusts[sc][anom],'std'))
-            for ind,sil in enumerate(sils):
-                gr_dict = self.update_dict(gr_dict,f'Sil{ind+1}',gather_clust_info(sil,clusts[sc])[anom])
-            mean_inter = nonclustloss[sc][anom].detach().cpu()
-            #mean_inter = gather_clust_info(nonclustloss[sc].detach().cpu(),clusts[sc])[anom]
-            #mean_inter = (nonclustloss[gr_anom].detach().cpu()/anom_neg_counts).mean()
-            if (anom_neg_counts > 10).nonzero()[0].shape[0] > 0 or (anom_pos_counts > 10).nonzero()[0].shape[0] > 0:
+            gr_dict = self.update_dict(gr_dict,f'Loss_inclust_std',gather_clust_info(gr_intra,gr_clusts,'std'))
+            for sil_ind,sil in enumerate(sils):
+                gr_dict = self.update_dict(gr_dict,f'Sil{sil_ind+1}',gather_clust_info(sil,clusts[sc])[group])
+            
+            group_pos_counts = np.array([pos_counts_dict[uid] if uid in pos_counts_dict.keys() else 1 for uid in group])
+            group_neg_counts = np.array([neg_counts_dict[uid] if uid in neg_counts_dict.keys() else 1 for uid in group])
+            if (group_neg_counts > 10).nonzero()[0].shape[0] > 0 or (group_pos_counts > 10).nonzero()[0].shape[0] > 0:
                 raise('counted more than sampled')
-            gr_dict = self.update_dict(gr_dict,f'Loss_outclust',mean_inter)
-            gr_dict = self.update_dict(gr_dict,f'Loss_outclust_mean',gather_clust_info(nonclustloss[sc][anom].detach().cpu(),clusts[sc][anom],'mean'))
-            gr_dict = self.update_dict(gr_dict,f'Loss_outclust_std',gather_clust_info(nonclustloss[sc][anom].detach().cpu(),clusts[sc][anom],'std'))
-
+            gr_dict = self.update_dict(gr_dict,f'Loss_outclust',gr_inter)
+            gr_dict = self.update_dict(gr_dict,f'Loss_outclust_mean',gather_clust_info(gr_inter,gr_clusts,'mean'))
+            gr_dict = self.update_dict(gr_dict,f'Loss_outclust_std',gather_clust_info(gr_inter,gr_clusts,'std'))
+            
             for k,v in gr_dict.items():
                 kname = k + f'_{sc}/Anom{anom_sc}_mean'
                 self.tb.add_scalar(kname,np.array(v[0]).mean(), epoch)
                 
                 kname = k + f'_{sc}/Anom{anom_sc}_hist'
                 self.tb.add_histogram(kname,np.array(v[0])[~np.isnan(np.array(v[0]))], epoch)
-            mean_intras.append(gr_dict[f'Loss_inclust'][0].mean())
-            mean_inters.append(gr_dict[f'Loss_outclust'][0].mean())
-        print('done')
-        return torch.tensor(mean_intras),torch.tensor(mean_inters),scores_all
-
-def get_clust_score(inter_res,anom,clusts,clust_sc,sc):
-    """
-    Look at each clusters in sc that are disconnected in clust_sc. Get the avg embedding similarity for each node
-    High: bad
-    """
-    
-    idx = torch.triu(torch.minimum(clusts[sc][anom][...,np.newaxis]!=clusts[sc][anom],clusts[clust_sc][anom][...,np.newaxis]==clusts[clust_sc][anom])).nonzero()
-    if idx.shape[0] == 0: return np.zeros(anom.shape)
-    all_clusts = np.zeros(anom.shape)
-    all_clusts[idx[:,0].unique()] += np.unique(idx[:,0],return_counts=True)[-1]
-    all_clusts[idx[:,1].unique()] += np.unique(idx[:,1],return_counts=True)[-1]
-    try:
-        sum_scores = np.zeros(anom.shape)
-        sum_scores[idx[:,0].unique()] += torch_scatter.scatter_add(inter_res[idx[:,0],idx[:,1]],idx[:,0])[idx[:,0].unique()].numpy()
-        sum_scores[idx[:,1].unique()] += torch_scatter.scatter_add(inter_res[idx[:,0],idx[:,1]],idx[:,1])[idx[:,1].unique()].numpy()
-        inter_res_val=(sum_scores/all_clusts)
-    except Exception as e:
-        import ipdb ; ipdb.set_trace()
-        print(e)
-    
-    return np.nan_to_num(inter_res_val)
 
 def gather_clust_info(mat,clust,reduce="mean"):
+    """Aggregate scores by cluster assignments according to reduction scheme"""
     if reduce=='std':
         mat = torch_scatter.scatter_std(mat,clust.to(mat.device))
     else:
@@ -438,57 +267,13 @@ def dgl_to_mat(g,device='cpu'):
     block_adj = torch.sparse_coo_tensor(torch.stack((src,dst)),g.edata['w'].squeeze(-1),size=(g.number_of_nodes(),g.number_of_nodes()))
     return block_adj
 
-def get_spectrum(mat,lapl=None,tag='',load=False,get_lapl=False,save_spectrum=True,n_eig=None):
-    """Eigendecompose matrix for visualization"""
-    device = mat.device
-    if tag != '' and get_lapl is False and save_spectrum is False:
-        #fpath = self.generate_fpath('spectrum')
-        try:
-            e,U = np.array(sio.loadmat(f'{tag}.mat')['e'].todense())[0],sio.loadmat(f'{tag}.mat')['U'].todense()
-            e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
-            return e,U
-        except Exception as e:
-            print(e)
-            pass
-    
-    if tag != '' and get_lapl is True:
-        try:
-            L = sio.loadmat(f'{tag}.mat')['L'].to_dense()
-            L = torch.tensor(L).to(device).to_sparse()
-            return L
-        except Exception as e:
-            print(e)
-            pass
-    
-    try:
-        mat = mat.to_dense().detach().cpu().numpy()
-    except Exception as e:
-        print(e)
-        pass
-    if lapl is None:
-        py_g = graphs.MultiScale(mat)
-        py_g.compute_laplacian('normalized')
-        if get_lapl is True:
-            sio.savemat(f'{tag}.mat',{'L':scipy.sparse.csr_matrix(py_g.L)})
-            return py_g.L
-
-
-    
-        py_g.compute_fourier_basis(n_eigenvectors=n_eig)
-        sio.savemat(f'{tag}.mat',{'e':scipy.sparse.csr_matrix(py_g.e),'U':scipy.sparse.csr_matrix(py_g.U)})
-        U,e = torch.tensor(py_g.U).to(device),torch.tensor(py_g.e).to(device)
-    else:
-        e,U = scipy.linalg.eigh(np.array(lapl.to_dense(),order='F'),overwrite_a=True)
-        e,U = torch.tensor(e).to(device),torch.tensor(U).to(device)
-        
-    return e, U
-
 def process_graph(graph):
-    """Obtain graph information from input TODO: MOVE?"""
+    """Obtain graph information from input"""
     feats = graph[0].ndata['feature']
     return [torch.vstack((i.edges()[0],i.edges()[1])) for i in graph], feats
 
 def check_gpu_usage(tag):
+    """Logging GPU usage for debugging"""
     allocated_bytes = torch.cuda.memory_allocated(torch.device('cuda'))
     cached_bytes = torch.cuda.memory_cached(torch.device('cuda'))
 
@@ -510,13 +295,6 @@ def dgl_to_nx(g):
     nx_graph = nx.to_undirected(dgl.to_networkx(g.cpu(),edge_attrs='w'))
     node_ids = np.arange(g.num_nodes())
     return nx_graph,node_ids
-
-def collect_recons_label(lbl,device):
-    lbl_ = []
-    for l in lbl:
-        lbl_.append(l.to(device))
-        del l ; torch.cuda.empty_cache()
-    return lbl_
 
 def seed_everything(seed=1234):
     """Set random seeds for run"""
@@ -552,8 +330,9 @@ def init_model(feat_size,exp_params,args):
         pass
 
     return struct_model,params,loaded
-                
-def sparse_matrix_to_tensor(coo,feat):
+
+def sparse_matrix_to_dgl(coo,feat):
+    """Converts sparse adjacency/feature information to DGL graph"""
     coo = scipy.sparse.coo_matrix(coo)
     v = torch.DoubleTensor(coo.data)
     i = torch.LongTensor(np.vstack((coo.row, coo.col)))

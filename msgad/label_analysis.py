@@ -1,19 +1,14 @@
 import sknetwork
 from sknetwork.hierarchy import postprocess, LouvainIteration
-from sknetwork.visualization import svg_dendrogram
-from IPython.display import SVG
 import numpy as np
 import torch
 from utils import *
 import dgl
 import networkx as nx
-from itertools import chain
 import sklearn
 import os
 import matplotlib.pyplot as plt
-from cairosvg import svg2png
 from scipy.cluster import hierarchy
-from scipy.interpolate import make_interp_spline
 from scipy.interpolate import pchip
 import scipy.io as sio
 import functools
@@ -21,7 +16,7 @@ import functools
 class LabelAnalysis:
     def __init__(self,dataset,all_anoms,norms,exp):
         self.exp=exp
-        self.visualize=True if dataset not in ['weibo','yelpchi'] else True
+        self.visualize=True if dataset not in ['weibo','yelpchi','elliptic'] else False
         self.thresh = 0.8
         self.dataset = dataset
         self.anoms_combo = all_anoms
@@ -153,7 +148,7 @@ class LabelAnalysis:
         return rankings
 
     def postprocess_anoms(self,clusts):
-        '''Remove overlap from detected anomalies in a top-down manner (prioritize LARGER SCALE anomalies)'''
+        """Remove overlap from detected anomalies in a top-down manner (prioritize LARGER SCALE anomalies)"""
         sc_label,all_rankings = self.remove_anom_overlap(clusts)
         return sc_label,all_rankings
 
@@ -323,7 +318,7 @@ class LabelAnalysis:
 
     def sil_samples(self,X,labels,metric,**kwds):
         X, labels = sklearn.utils.check_X_y(X, labels, accept_sparse=["csr"])
-        '''
+        """
         # Check for non-zero diagonal entries in precomputed distance matrix
         if metric == "precomputed":
             error_msg = ValueError(
@@ -336,7 +331,7 @@ class LabelAnalysis:
                     raise error_msg
             elif np.any(X.diagonal() != 0):  # integral dtype
                 raise error_msg
-        '''
+        """
         le = sklearn.preprocessing.LabelEncoder()
         labels = le.fit_transform(labels)
         n_samples = len(labels)
@@ -364,45 +359,43 @@ class LabelAnalysis:
 
     def run_dend(self,graph,scales,return_clusts=False,return_all=False,load=False):
         """Partition the graph into multi-scale cluster & """
-        #if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
-        #    with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
-        #        mat = pkl.load(fin)
-        #    sc_all,clusts = mat['labels'],mat['clusts']
-        #    return list(sc_all),torch.tensor(clusts) 
         self.graph = graph
-        anom = self.anoms_combo
-
         self.scales = scales
-        
-        clusts,dend = self.get_clusts(graph,self.scales+1)
-        clusts_ = clusts[1:-1]
-        check_gpu_usage('about to make dist')
-        dist = nx.adjacency_matrix(graph,weight='weight').astype(np.float).todense() ; dist = 1-dist
-        np.fill_diagonal(dist,0)
+        dend = None
+        if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
+            with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
+                mat = pkl.load(fin)
+            sc_all,clusts = mat['labels'],mat['clusts']
+            
+        else:
+            clusts,dend = self.get_clusts(graph,self.scales+1)
+            clusts_ = clusts[1:-1]
+            check_gpu_usage('about to make dist')
+            dist = nx.adjacency_matrix(graph,weight='weight').astype(np.float).todense() ; dist = 1-dist
+            np.fill_diagonal(dist,0)
 
-        check_gpu_usage('calculating silhouette samples')        
-        self.sil_samps = [self.sil_samples(dist,clust,metric='precomputed') for clust in clusts_]
-        sc_all,all_rankings = self.postprocess_anoms(clusts_)
-        
-        # prints connectivity info of every anomaly and all clusters associated with it across scales
-        for clust_ind,clust in enumerate(clusts_):
-            for ind,sc in enumerate(np.unique(sc_all)):
-                anom_clusts = clust[self.anoms_combo[np.where(sc_all==sc)]]
-                if len(anom_clusts) == 0: continue
-                group_clusts = np.unique(anom_clusts)
-                
-                all_ = []
-                for gc in group_clusts:
-                    all_.append(round(np.where(anom_clusts==gc)[0].shape[0]/np.where(clust==gc)[0].shape[0],3))
-                print('clust',clust_ind,'anom',ind,all_)
-        
-        print('anomalous clusters found',[np.unique((clusts_[i-1][self.anoms_combo[np.where(sc_all==i)]])).shape[0] for i in range(np.unique(sc_all).shape[0])])
-        clusts = clusts[2:]
-        if True:
-            # plot dendrogram
+            check_gpu_usage('calculating silhouette samples')        
+            self.sil_samps = [self.sil_samples(dist,clust,metric='precomputed') for clust in clusts_]
+            sc_all,all_rankings = self.postprocess_anoms(clusts_)
+            """
+            # prints connectivity info of every anomaly and all clusters associated with it across scales
+            for clust_ind,clust in enumerate(clusts_):
+                for ind,sc in enumerate(np.unique(sc_all)):
+                    anom_clusts = clust[self.anoms_combo[np.where(sc_all==sc)]]
+                    if len(anom_clusts) == 0: continue
+                    group_clusts = np.unique(anom_clusts)
+                    
+                    all_ = []
+                    for gc in group_clusts:
+                        all_.append(round(np.where(anom_clusts==gc)[0].shape[0]/np.where(clust==gc)[0].shape[0],3))
+                    print('clust',clust_ind,'anom',ind,all_)
+            """
+            print('anomalous clusters found',[np.unique((clusts_[i-1][self.anoms_combo[np.where(sc_all==i)]])).shape[0] for i in range(np.unique(sc_all).shape[0])])
+            clusts = clusts[2:]
+
+        if self.visualize:
             sc_all_unique = np.unique(sc_all)
-
-            if self.visualize:
+            if dend is not None:
                 colors = np.full(int(dend.max()+2),'tab:gray',dtype='object')
                 sc_colors=['tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']
                 for i in sc_all_unique:
@@ -411,44 +404,43 @@ class LabelAnalysis:
                         colors[node_ids.astype(int)] = sc_colors[i]
 
                 self.plot_dend(dend,colors,sc_colors)
-                # add opacity based on silhouette score/overral ranking
-                sc_colors=['tab:gray','tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']
-                # plot spectrum
-                #self.plot_spectrum()
-                legend_arr = ['No anom. signal','Single node anom.']
-                for i in range(1,len(sc_all_unique)):
-                    legend_arr.append(f'Anom. scale {i}')
-                plt.figure()
-                self.plot_spectrum_graph(graph,[],'norm',graph.nodes[0]['feats'],legend_arr,color=sc_colors[0])
-                for ind,i in enumerate(sc_all_unique):
-                    group = self.anoms_combo[(sc_all==i).nonzero()]
-                    self.plot_spectrum_graph(graph,group,i,graph.nodes[0]['feats'],legend_arr,color=sc_colors[ind+1])
-    
-                clust_dicts = []
-                sc_all_clusts = []
-                for j in np.unique(sc_all):
-                    sc_all_clusts.append(self.anoms_combo[np.where(sc_all==j)])
-                sc_all_clusts.append(self.norms)
-                #import ipdb ; ipdb.set_trace()
-                for i in range(len(clusts)):
-                    print('scale',i)
-                    clust_dicts.append({})
-                    norm_clusts,norm_clust_counts = np.unique(clusts[i][sc_all_clusts[-1]],return_counts=True)
-                    for jind,j in enumerate(sc_all_clusts):
-                        if jind-1 != i and jind != len(sc_all_clusts)-1: continue
+            # add opacity based on silhouette score/overral ranking
+            sc_colors=['tab:gray','tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']
+            # plot spectrum
+            #self.plot_spectrum()
+            legend_arr = ['No anom. signal','Single node anom.']
+            for i in range(1,len(sc_all_unique)):
+                legend_arr.append(f'Anom. scale {i}')
+            plt.figure()
+            self.plot_spectrum_graph(graph,[],'norm',graph.nodes[0]['feats'],legend_arr,color=sc_colors[0])
+            for ind,i in enumerate(sc_all_unique):
+                group = self.anoms_combo[(sc_all==i).nonzero()]
+                self.plot_spectrum_graph(graph,group,i,graph.nodes[0]['feats'],legend_arr,color=sc_colors[ind+1])
 
-                        if jind == len(sc_all_clusts)-1:
-                            gr_dict = self.get_group_stats(graph,clusts[i],sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],j,i,norm=True)
-                        gr_dict = self.get_group_stats(graph,clusts[i],j,sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],i)
-                        
-                        print('group',jind,gr_dict)
-                        if jind == 0:
-                            clust_dicts[i] = gr_dict
-        #sio.savemat(f'{self.fname}/{self.dataset}_labels.mat',{'labels':sc_all,'clusts':clusts})
+            clust_dicts = []
+            sc_all_clusts = []
+            for j in np.unique(sc_all):
+                sc_all_clusts.append(self.anoms_combo[np.where(sc_all==j)])
+            sc_all_clusts.append(self.norms)
+            #import ipdb ; ipdb.set_trace()
+            for i in range(len(clusts)):
+                print('scale',i)
+                clust_dicts.append({})
+                norm_clusts,norm_clust_counts = np.unique(clusts[i][sc_all_clusts[-1]],return_counts=True)
+                for jind,j in enumerate(sc_all_clusts):
+                    if jind-1 != i and jind != len(sc_all_clusts)-1: continue
 
+                    if jind == len(sc_all_clusts)-1:
+                        gr_dict = self.get_group_stats(graph,clusts[i],sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],j,i,norm=True)
+                    gr_dict = self.get_group_stats(graph,clusts[i],j,sc_all_clusts[-1][np.where(np.in1d(clusts[i][sc_all_clusts[-1]],np.random.choice(norm_clusts[np.where(norm_clust_counts>self.min_anom_size)],size=np.unique(clusts[i][np.array(j)]).shape[0])))[0]],i)
+                    
+                    print('group',jind,gr_dict)
+                    if jind == 0:
+                        clust_dicts[i] = gr_dict
+            sc_all = list(sc_all)
         with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','wb') as fout:
             pkl.dump({'labels':sc_all,'clusts':clusts},fout)
-        return sc_all,torch.tensor(clusts)
+        return list(sc_all),torch.tensor(clusts)
 
     def plot_spectrum(self,e,U,signal,color=None):
         c = U.T@signal
@@ -460,9 +452,6 @@ class LabelAnalysis:
         M[torch.where(torch.isnan(M))]=0
         y = torch.mean(M,axis=1)*100
         x = np.arange(y.shape[0])
-        #if 'weibo' in self.dataset:
-        #    x = x[15:25] ; y = y[15:25]
-        
         spline = pchip(x, y)
         X_ = np.linspace(x.min(), x.max(), 801)
         Y_ = spline(X_)
@@ -500,11 +489,11 @@ class LabelAnalysis:
         signal[anoms]=(np.random.randn(U.shape[0])*400*self.anoms_combo.shape[0]/len(anoms))+1#*anom_tot/anom.shape[0])+1# NOTE: tried 10#*(anom_tot/anom.shape[0]))
         x,y=self.plot_spectrum(e,U,signal,color)
         plt.legend(legend_arr,fontsize='x-small')
-        plt.xticks(x[np.arange(0,y.shape[0],step=5)*20],np.round(np.arange(y.shape[0],step=5)*0.05,2))
+        plt.xticks(np.arange(0,y.shape[0],step=5),np.round(np.arange(y.shape[0],step=5)*0.05,2))
         plt.gca().yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
         plt.xlabel(r'$\lambda$')
         d_name = self.dataset.split("_")[0].capitalize()
-        plt.title(f'Spectral energy distribution of {d_name}')#, label {img_lbl}')
+        plt.title(f'Spectral energy distribution of {d_name.capitalize()}')#, label {img_lbl}')
         fpath = self.generate_fpath(f'preprocess_vis/{self.dataset}/{self.exp}')
         plt.savefig(f'{fpath}/spectra.png')
 
