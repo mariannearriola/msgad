@@ -1,0 +1,1 @@
+from ..msgad.msgad import anom_detector
