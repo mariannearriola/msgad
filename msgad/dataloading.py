@@ -67,6 +67,7 @@ class DataLoading:
                 neg_frontier = dgl.distributed.sample_neighbors(neg_g, seeds, 10)
                 neg_block = dgl.to_block(neg_frontier, seeds)
                 neg_edges_samp = torch.stack(neg_block.edges()).T
+                neg_batch_nodes = neg_block.ndata['_ID']['_N']
                 assert(torch.where(neg_edges_samp[:,0]==neg_edges_samp[:,1])[0].shape[0]==0)
 
                 # Create boolean masks for both edge lists
@@ -81,7 +82,7 @@ class DataLoading:
                 block.edata['w'] = edge_weights[indices_in_full]
             
                 # Find the indices of the subsampled edge list in the original edge list
-                return block, batch_nodes[pos_edges_samp], batch_nodes[neg_edges_samp], batch_nodes
+                return block, batch_nodes[pos_edges_samp], neg_batch_nodes[neg_edges_samp], batch_nodes
             
             batch_size = adj.number_of_nodes() if self.batch_size == 0 else int(adj.number_of_nodes()/self.batch_size)
             dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=batch_size,collate_fn=sample_, shuffle=False)

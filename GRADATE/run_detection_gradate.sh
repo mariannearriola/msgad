@@ -1,6 +1,6 @@
-ALPHAS=(0.3 0.5 0.9)
-BETAS=(0.3 0.5 0.9)
-SUBGRAPH_SIZES=(2 3 4)
+ALPHAS=(0.5)
+BETAS=(0.3)
+SUBGRAPH_SIZES=(2)
 
 
 for alpha in "${ALPHAS[@]}"; do

@@ -12,6 +12,9 @@ from scipy.cluster import hierarchy
 from scipy.interpolate import pchip
 import scipy.io as sio
 import functools
+import matplotlib.patches as mpatches
+import sys
+
 
 class LabelAnalysis:
     def __init__(self,dataset,all_anoms,norms,exp):
@@ -136,7 +139,6 @@ class LabelAnalysis:
             rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = sil_samps_norm[np.where(cluster[self.anoms_combo] == anom_clust)[0]].mean()
             # percentage of anoms in cluster
             rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]
-            #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] = 1 if np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0]/np.where(cluster == anom_clust)[0].shape[0]>0.8 else 0
             # size
             #rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] += (np.where(cluster[self.anoms_combo] == anom_clust)[0].shape[0])/max_clust
             rankings[np.where(cluster[self.anoms_combo] == anom_clust)[0]] *=  (clust_ind+1)/(self.scales+1)
@@ -153,15 +155,23 @@ class LabelAnalysis:
         return sc_label,all_rankings
 
     def plot_dend(self,dend,colors,legend_colors,**kwargs):
-        ax = plt.figure(figsize=(20, 15))
+        ax = plt.figure(figsize=(15, 10))
         ax.set_facecolor('white')
         dname = self.dataset.capitalize()
-        plt.title(f'Hierarchical clustering for {dname}')
+        plt.title(f'Hierarchical clustering for {dname}',fontsize='xx-large')
         with plt.rc_context({'lines.linewidth': 0.5}):
             rdict = hierarchy.dendrogram(dend,link_color_func=lambda k: colors[k],no_labels=True)
-        plt.legend([f'Scale {i}' for i,col in enumerate(legend_colors)])
-        fpath = self.generate_fpath(f'preprocess_vis/{self.dataset}/{self.exp}')
         
+        legend_patches = []
+        for i,col in enumerate(np.array(legend_colors[:(np.unique(colors).shape[0]-1)])):
+            if i == 0: legend_patches.append(mpatches.Patch(color=col, label=f'Single node anom.'))
+            else: legend_patches.append(mpatches.Patch(color=col, label=f'Scale {i} anom.'))
+
+        plt.legend(handles=legend_patches,fontsize='x-large')
+        
+        #plt.legend([f'Scale {i}' for i,col in enumerate(np.flip(np.array(legend_colors[:(np.unique(colors).shape[0]-1)])))],fontsize='x-large')
+        fpath = self.generate_fpath(f'preprocess_vis/{self.dataset}/{self.exp}')
+        import ipdb ; ipdb.set_trace()
         plt.savefig(f'{fpath}/dend.png')
         
     def get_clusts(self,graph,scales):
@@ -359,10 +369,11 @@ class LabelAnalysis:
 
     def run_dend(self,graph,scales,return_clusts=False,return_all=False,load=False):
         """Partition the graph into multi-scale cluster & """
+        sys.setrecursionlimit(1000000) 
         self.graph = graph
         self.scales = scales
         dend = None
-        if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
+        if False:#load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
             with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
                 mat = pkl.load(fin)
             sc_all,clusts = mat['labels'],mat['clusts']
@@ -395,6 +406,7 @@ class LabelAnalysis:
 
         if self.visualize:
             sc_all_unique = np.unique(sc_all)
+            #clusts,dend = self.get_clusts(graph,self.scales+1)
             if dend is not None:
                 colors = np.full(int(dend.max()+2),'tab:gray',dtype='object')
                 sc_colors=['tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']

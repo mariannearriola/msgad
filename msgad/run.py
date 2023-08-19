@@ -99,9 +99,10 @@ def graph_anomaly_detection(exp_params):
             check_gpu_usage('recons label collected, starting loss')
             loss,struct_loss,regloss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, edge_ids, clusts, batch_nodes)
             
-            # TODO: map clustloss scores to nodes in batch
-            #batch_scores_sc = torch.stack([gather_clust_info(clustloss[i][batch_nodes].detach().cpu(),clusts[i],'std') for i in range(len(clustloss))])
-            #batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
+            
+            pos_counts = np.stack([get_counts(clusts[ind],edge_ids[ind])[-2] for ind in range(len(clusts))])
+            batch_scores_sc = torch.stack([gather_clust_info(torch.nan_to_num(clustloss[i].detach().cpu()/pos_counts[i]),clusts[i],'std') for i in range(len(clustloss))])
+            batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
 
             l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
             epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
@@ -133,8 +134,10 @@ def graph_anomaly_detection(exp_params):
         for sc,l in enumerate(loss):       
             tb_writers.tb_write_anom(sc_label_new,edge_ids,A_hat[sc], anom_scores_all, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,scores_only=False)
         log = True if epoch == int(exp_params['MODEL']['EPOCH'])-1 else False
-        _,prec1,ra1=tb_writers.a_clf.calc_prec(anom_scores_all.detach().cpu(),truth,sc_label_new,verbose=False,log=log)
-        #_,prec1,ra1=tb_writers.a_clf.calc_prec(batch_scores[ind].detach().cpu()[np.newaxis,...],truth,sc_label_new,verbose=False,log=False)
+        if exp_params['DATASET']['BATCH_SIZE'] > 0:
+            _,prec1,ra1=tb_writers.a_clf.calc_prec(batch_scores.detach().cpu(),truth,sc_label_new,verbose=False,log=False)
+        else:
+            _,prec1,ra1=tb_writers.a_clf.calc_prec(anom_scores_all.detach().cpu(),truth,sc_label_new,verbose=False,log=log)
         for sc in range(len(prec1)):
             for anom,prec in enumerate(prec1[sc]):
                 tb.add_scalar(f'Precsc{sc+1}/anom{anom+1}', prec, epoch)

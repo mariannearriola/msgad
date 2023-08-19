@@ -72,11 +72,8 @@ model.fit(data)  # input data is a PyG data object
 score = model.decision_score_
 print('roc_auc_score:%.3f'%(roc_auc_score(anomaly_flag, score.numpy())))
 # predict labels and scores on the testing data (inductive setting)
-
-'''
-pred, score = model.predict(data, return_score=True)
-a_clf = anom_classifier(None,args.scales,'../output',args.msgad_name,args.epochs,'pygod','pygod','struct','')
-mat = sio.loadmat(f'../msgad/batch_data/labels/{args.msgad_name}_labels.mat')
-sc_all,clusts = mat['labels'][0],mat['clusts']
-a_clf.calc_prec(score[np.newaxis,...].numpy(),anomaly_flag,sc_all,clusts,cluster=False,input_scores=True)
-'''
+a_clf = anom_classifier(None,args.scales,'../msgad/output',args.dataset,args.num_epoch,args.model,args.model)
+with open(f'../msgad/batch_data/labels/{args.dataset}_labels_{args.scales}.mat','rb') as fin:
+    mat = pkl.load(fin)
+sc_all,clusts = mat['labels'],mat['clusts']
+a_clf.calc_prec(score[np.newaxis,...].numpy(),anomaly_flag,sc_all,clusts)

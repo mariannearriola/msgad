@@ -210,9 +210,10 @@ class TBWriter:
 
         self.tb.add_histogram(f'Loss_inclust_{sc}',clustloss[sc].detach().cpu().mean(), epoch)
         self.tb.add_histogram(f'Loss_outclust_{sc}',nonclustloss[sc].detach().cpu().mean(), epoch)
-
+        pos_counts_all,neg_counts_all = [],[]
         for ind,(nc,cl) in enumerate(zip(nonclustloss,clustloss)):
             _, _, _, pos_counts,neg_counts = get_counts(clusts[ind],edge_ids[ind])
+            pos_counts_all.append(pos_counts) ; neg_counts_all.append(neg_counts)
             sil = torch.nan_to_num((1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0)-(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0)))/torch.max(1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0),(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0))),posinf=0,neginf=0)
             self.tb.add_histogram(f'Sil{ind+1}',sil.mean(), epoch)
             sils = sil if ind == 0 else torch.vstack((sils,sil))
@@ -252,6 +253,7 @@ class TBWriter:
                 
                 kname = k + f'_{sc}/Anom{anom_sc}_hist'
                 self.tb.add_histogram(kname,np.array(v[0])[~np.isnan(np.array(v[0]))], epoch)
+        return np.stack(pos_counts_all),np.stack(neg_counts_all)
 
 def gather_clust_info(mat,clust,reduce="mean"):
     """Aggregate scores by cluster assignments according to reduction scheme"""

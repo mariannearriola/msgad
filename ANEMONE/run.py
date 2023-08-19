@@ -239,12 +239,12 @@ if __name__ == '__main__':
                 multi_round_ano_score[round, idx] = ano_score
 
         ano_score_final = np.mean(multi_round_ano_score, axis=0) + np.std(multi_round_ano_score, axis=0)
-        '''
-        a_clf = anom_classifier(None,args.scales,args.dataset,args.num_epoch,'anemone','anemone','struct','')
-        mat = sio.loadmat(f'../msgad/batch_data/labels/{args.dataset}_labels.mat')
-        sc_all,clusts = mat['labels'][0],mat['clusts']
-        a_clf.calc_prec(ano_score_final[np.newaxis,...],ano_label,sc_all,clusts,cluster=False,input_scores=True)
-        '''
+        a_clf = anom_classifier(None,args.scales,'../msgad/output',args.dataset,args.num_epoch,'anemone','anemone')
+        with open(f'../msgad/batch_data/labels/{args.dataset}_labels_{args.scales}.mat','rb') as fin:
+            mat = pkl.load(fin)
+        sc_all,clusts = mat['labels'],mat['clusts']
+        a_clf.calc_prec(ano_score_final[np.newaxis,...],ano_label,sc_all,clusts)
+    
         
         auc = roc_auc_score(ano_label, ano_score_final)
         all_auc.append(auc)
