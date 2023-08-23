@@ -39,115 +39,89 @@ def graph_anomaly_detection(exp_params):
     la = LabelAnalysis(exp_params['DATASET']['NAME'],anoms,norms,exp_name)
 
     g = adj.to('cpu')
-    g_nx = dgl_to_nx(g)[0]
-    
-    nx.set_node_attributes(g_nx,feats,'feats')
+    g_nx = dgl_to_nx(g)[0] ; nx.set_node_attributes(g_nx,feats,'feats')
 
-    sc_label_new,clusts=la.run_dend(g_nx,scales,return_all=True)
+    sc_label,clusts=la.run_dend(g_nx,scales,return_all=True)
 
     lbls,neg_lbls,pos_edges_full = get_labels(adj,feats,clusts,exp_params)
     dataloader = [dataloading.fetch_dataloader(lbls[i],neg_lbls[i],pos_edges_full[i],i) for i in range(len(clusts))]
-    #dataloader = [dataloading.fetch_dataloader(lbls[i],pos_edges_full[i]) for i in range(len(clusts))]
 
     struct_model=None,None
     struct_model,params,model_loaded = init_model(feats.size(1),exp_params,args)
 
-    tb = SummaryWriter(log_dir=f'runs/{exp_name}')
+    tb = SummaryWriter(log_dir=f'runs/{exp_name}_loaded{model_loaded}')
         
     optimizer = torch.optim.Adam(struct_model.parameters(), lr = float(exp_params['MODEL']['LR']))
+    a_clf = anom_classifier(exp_params,exp_params['DATASET']['SCALES'],'output',dataset=exp_params['DATASET']['NAME'],exp_name=exp_params['EXP'],model='msgad')
 
     # begin model training
     print(dataloader.__len__(),'batches')
     
-    LossFunc = loss_func(adj,adj.ndata['feature'],exp_params,sample=True, recons='struct', alpha=None, clusts=None, regularize=True)
+    LossFunc = loss_func(adj,adj.ndata['feature'],exp_params,sample=True, recons='struct', clusts=None, regularize=True)
     seconds = time.time()
     for epoch in range(int(exp_params['MODEL']['EPOCH'])):
         epoch_l,iter = 0,0
-        if model_loaded: break
+        if model_loaded and epoch > 0:
+            import ipdb ; ipdb.set_trace()
+            pass
+            #break
         edge_ids=[]
-
         # unpack each of the dataloaders
         for batch,data_inds in enumerate(zip(*dataloader)):
-            if load_data:
-                try:
-                    loaded_input=dataloading.load_batch(batch,'train')
-                except:
-                    raise 'error loading batch'
-            else:
-                loaded_input = data_inds
+            loaded_input=dataloading.load_batch(batch,'train') if load_data else data_inds
             g_batch,pos_edges,neg_edges,batch_nodes = zip(*loaded_input)
             if load_data: pos_edges = [i.to(device) for i in pos_edges] ; neg_edges = [i.to(device) for i in neg_edges] ; lbls = [i.to(device) for i in lbls]
-
             edge_ids = [torch.cat((pos_edges[i],neg_edges[i]),axis=0) for i in range(len(pos_edges))]
             
             check_batch(pos_edges,neg_edges,clusts)
             
-            print('size of batch',g_batch[0].num_dst_nodes(),'nodes')
             if exp_params['DATASET']['DATASAVE']:
                 dataloading.save_batch(loaded_input,iter,'train') ; continue
-            if struct_model:
-                optimizer.zero_grad()
+            optimizer.zero_grad()
             for i in loaded_input: del i
             torch.cuda.empty_cache() ; gc.collect()
 
-            check_gpu_usage('running model')
-            
             pos_edges_og = [edge_ids[ind][adj.has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]] for ind in range(len(edge_ids))]
-            A_hat,res_a = struct_model(adj,pos_edges_og,feats,edge_ids)
+            A_hat,res_a = struct_model(pos_edges_og,feats,edge_ids)
             
             torch.cuda.empty_cache() ; gc.collect()
-            check_gpu_usage('recons label collected, starting loss')
-            loss,struct_loss,regloss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, edge_ids, clusts, batch_nodes)
+            loss,struct_loss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, edge_ids, clusts, batch_nodes)
             
-            
-            pos_counts = np.stack([get_counts(clusts[ind],edge_ids[ind])[-2] for ind in range(len(clusts))])
-            batch_scores_sc = torch.stack([gather_clust_info(torch.nan_to_num(clustloss[i].detach().cpu()/pos_counts[i]),clusts[i],'std') for i in range(len(clustloss))])
+            batch_scores_sc = torch.stack([gather_clust_info(torch.nan_to_num(clustloss[i].detach().cpu()),clusts[i],'std') for i in range(len(clustloss))])
             batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
-
             l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
             epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
             if exp_params['MODEL']['DEBUG'] and iter % 100 == 0:
                 print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
-            print('iter',iter)
             
-            check_gpu_usage('about to backward')
             l.backward()
             optimizer.step()
-            #del pos_edges, neg_edges, l, res_a,X_hat#,A_hat
+            #del pos_edges, neg_edges, l
             torch.cuda.empty_cache() ; gc.collect()
             
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
         print("Epoch:", '%04d' % (epoch), "train_loss=", torch.round(torch.sum(loss),decimals=3).detach().cpu().item(), "losses=",torch.round(loss,decimals=4).detach().cpu())
         
-        #import ipdb ; ipdb.set_trace()
         #batch_scores /= len(dataloader)
         if exp_params['DATASET']['DATASAVE']: continue 
                 
         print('epoch done',epoch,loss.detach().cpu())
 
-        if epoch == 0 and iter == 1: tb_writers = TBWriter(tb,sc_label_new,clusts,anoms,norms,exp_params)
+        if epoch == 0 and iter == 1 and exp_params['MODEL']['DEBUG'] is True: tb_writers = TBWriter(tb,sc_label,truth,clusts,exp_params)
 
+        # anomaly scores
         anom_scores_all = score_multiscale_anoms(clustloss,nonclustloss, clusts, res_a)
-        for sc,l in enumerate(loss):       
-            tb_writers.tb_write_anom(sc_label_new,edge_ids,A_hat[sc], anom_scores_all, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,scores_only=False)
+        
+        # logging detection results (at final training epoch)
         log = True if epoch == int(exp_params['MODEL']['EPOCH'])-1 else False
-        if exp_params['DATASET']['BATCH_SIZE'] > 0:
-            _,prec1,ra1=tb_writers.a_clf.calc_prec(batch_scores.detach().cpu(),truth,sc_label_new,verbose=False,log=False)
-        else:
-            _,prec1,ra1=tb_writers.a_clf.calc_prec(anom_scores_all.detach().cpu(),truth,sc_label_new,verbose=False,log=log)
-        for sc in range(len(prec1)):
-            for anom,prec in enumerate(prec1[sc]):
-                tb.add_scalar(f'Precsc{sc+1}/anom{anom+1}', prec, epoch)
-                tb.add_scalar(f'ROC{sc+1}/anom{anom+1}', ra1[sc][anom], epoch)
-        del loss,struct_loss,A_hat,res_a,clustloss,nonclustloss,edge_ids ; torch.cuda.empty_cache()
-
-        if epoch == 0:
-            tot_loss = epoch_l.sum(0).unsqueeze(0)
-        else:
-            tot_loss = torch.cat((tot_loss,epoch_l.sum(0).unsqueeze(0)),dim=0)
+        if log is True:
+            a_clf.calc_anom_stats(anom_scores_all.detach().cpu(),truth,sc_label,verbose=log,log=log)
+        if exp_params['MODEL']['DEBUG'] is True:
+            for sc,l in enumerate(loss):       
+                tb_writers.tb_write_anom(sc_label,edge_ids,A_hat[sc], anom_scores_all, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,log=log)
         epoch_l = torch.sum(epoch_l)
         for name, param in struct_model.named_parameters():
             tb.add_histogram(name, param.flatten(), epoch)

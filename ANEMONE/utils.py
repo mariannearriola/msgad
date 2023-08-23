@@ -249,7 +249,8 @@ def load_mat(dataset, train_rate=0.3, val_rate=0.1):
         adj,edge_idx=None,None
         if 'Edge-index' in data_mat.keys():
             edge_idx = data_mat['Edge-index']
-            # TODO!!!
+            adj = dgl.graph((edge_idx[0],edge_idx[1]),num_nodes=feat.shape[0])
+            adj = sp.csr_matrix(adj.adjacency_matrix().to_dense())
         elif 'Network' in data_mat.keys():
             #adj = data_mat['Network']
             #edge_idx = torch.tensor(np.stack(adj.nonzero()))

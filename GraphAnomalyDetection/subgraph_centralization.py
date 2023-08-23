@@ -22,6 +22,7 @@ def generate_hadj(adj, h):
 
 # Generate h_nodes and their height
 def generate_h_nodes_n_dict(adj, h):
+    #import ipdb ; ipdb.set_trace()
     adj_h = sp.eye(adj.shape[0])
     M = [{i: 0} for i in range(adj.shape[0])]
     h_index = [[i] for i in range(adj.shape[0])]

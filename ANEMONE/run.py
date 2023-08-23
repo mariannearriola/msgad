@@ -49,7 +49,18 @@ if __name__ == '__main__':
     idx_test, ano_label, str_ano_label, attr_ano_label = load_mat(args.dataset)
 
     features, _ = preprocess_features(features)
+    
     dgl_graph = adj_to_dgl_graph(adj)
+    nx_nodes = None
+    if 'elliptic' in args.dataset:
+        nx_graph = nx.to_undirected(dgl.to_networkx(dgl_graph))
+        nx_nodes = np.array(list(max(nx.connected_components(nx_graph), key=len)))
+        nx_graph = nx.subgraph(nx_graph,nx_nodes)
+        dgl_graph = adj_to_dgl_graph(nx.adjacency_matrix(nx_graph))
+        #nx_edges = np.stack(nx_graph.edges())
+        #dgl_graph = dgl.to_homo(dgl.graph((nx_edges[:,0],nx_edges[:,1])))
+        adj = adj[nx_nodes][:,nx_nodes]
+        features = features[nx_nodes]
 
     nb_nodes = features.shape[0]
     ft_size = features.shape[1]
@@ -58,12 +69,12 @@ if __name__ == '__main__':
     adj = normalize_adj(adj)
     adj = (adj + sp.eye(adj.shape[0])).todense()
 
-    features = torch.FloatTensor(features[np.newaxis]).to(device)
-    adj = torch.FloatTensor(adj[np.newaxis]).to(device)
-    labels = torch.FloatTensor(labels[np.newaxis]).to(device)
-    idx_train = torch.LongTensor(idx_train).to(device)
-    idx_val = torch.LongTensor(idx_val).to(device)
-    idx_test = torch.LongTensor(idx_test).to(device)
+    features = torch.FloatTensor(features[np.newaxis])#.to(device)
+    adj = torch.FloatTensor(adj[np.newaxis])#.to(device)
+    labels = torch.FloatTensor(labels[np.newaxis])#.to(device)
+    idx_train = torch.LongTensor(idx_train)#.to(device)
+    idx_val = torch.LongTensor(idx_val)#.to(device)
+    idx_test = torch.LongTensor(idx_test)#.to(device)
 
     all_auc = []
     for run in range(args.runs):
@@ -78,12 +89,12 @@ if __name__ == '__main__':
         os.environ['PYTHONHASHSEED'] = str(seed)
 
         model = Model(ft_size, args.embedding_dim, 'prelu', args.negsamp_ratio_patch, args.negsamp_ratio_context,
-                      args.readout).to(device)
+                      args.readout)#.to(device)
         optimiser = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         b_xent_patch = nn.BCEWithLogitsLoss(reduction='none',
-                                            pos_weight=torch.tensor([args.negsamp_ratio_patch]).to(device))
+                                            pos_weight=torch.tensor([args.negsamp_ratio_patch]))#.to(device))
         b_xent_context = nn.BCEWithLogitsLoss(reduction='none',
-                                            pos_weight=torch.tensor([args.negsamp_ratio_context]).to(device))
+                                            pos_weight=torch.tensor([args.negsamp_ratio_context]))#.to(device))
 
         cnt_wait = 0
         best = 1e9
@@ -113,17 +124,17 @@ if __name__ == '__main__':
                 cur_batch_size = len(idx)
 
                 lbl_patch = torch.unsqueeze(torch.cat(
-                    (torch.ones(cur_batch_size), torch.zeros(cur_batch_size * args.negsamp_ratio_patch))), 1).to(device)
+                    (torch.ones(cur_batch_size), torch.zeros(cur_batch_size * args.negsamp_ratio_patch))), 1)#.to(device)
 
                 lbl_context = torch.unsqueeze(torch.cat(
-                    (torch.ones(cur_batch_size), torch.zeros(cur_batch_size * args.negsamp_ratio_context))), 1).to(device)
+                    (torch.ones(cur_batch_size), torch.zeros(cur_batch_size * args.negsamp_ratio_context))), 1)#.to(device)
 
                 ba = []
                 bf = []
-                added_adj_zero_row = torch.zeros((cur_batch_size, 1, subgraph_size)).to(device)
-                added_adj_zero_col = torch.zeros((cur_batch_size, subgraph_size + 1, 1)).to(device)
+                added_adj_zero_row = torch.zeros((cur_batch_size, 1, subgraph_size))#.to(device)
+                added_adj_zero_col = torch.zeros((cur_batch_size, subgraph_size + 1, 1))#.to(device)
                 added_adj_zero_col[:, -1, :] = 1.
-                added_feat_zero_row = torch.zeros((cur_batch_size, 1, ft_size)).to(device)
+                added_feat_zero_row = torch.zeros((cur_batch_size, 1, ft_size))#.to(device)
 
                 for i in idx:
                     cur_adj = adj[:, subgraphs[i], :][:, :, subgraphs[i]]
@@ -192,10 +203,10 @@ if __name__ == '__main__':
                 cur_batch_size = len(idx)
                 ba = []
                 bf = []
-                added_adj_zero_row = torch.zeros((cur_batch_size, 1, subgraph_size)).to(device)
-                added_adj_zero_col = torch.zeros((cur_batch_size, subgraph_size + 1, 1)).to(device)
+                added_adj_zero_row = torch.zeros((cur_batch_size, 1, subgraph_size))#.to(device)
+                added_adj_zero_col = torch.zeros((cur_batch_size, subgraph_size + 1, 1))#.to(device)
                 added_adj_zero_col[:, -1, :] = 1.
-                added_feat_zero_row = torch.zeros((cur_batch_size, 1, ft_size)).to(device)
+                added_feat_zero_row = torch.zeros((cur_batch_size, 1, ft_size))#.to(device)
                 for i in idx:
                     cur_adj = adj[:, subgraphs[i], :][:, :, subgraphs[i]]
                     cur_feat = features[:, subgraphs[i], :]
@@ -237,13 +248,17 @@ if __name__ == '__main__':
                                 cur_batch_size, args.negsamp_ratio_patch), dim=1)).cpu().numpy()  # patch
 
                 multi_round_ano_score[round, idx] = ano_score
-
-        ano_score_final = np.mean(multi_round_ano_score, axis=0) + np.std(multi_round_ano_score, axis=0)
+        import ipdb ; ipdb.set_trace()
+        ano_score_final = np.zeros(ano_label.shape)
+        if nx_nodes is not None:
+            ano_score_final[nx_nodes] = np.mean(multi_round_ano_score, axis=0) + np.std(multi_round_ano_score, axis=0)
+        else:
+            ano_score_final = np.mean(multi_round_ano_score, axis=0) + np.std(multi_round_ano_score, axis=0)
         a_clf = anom_classifier(None,args.scales,'../msgad/output',args.dataset,args.num_epoch,'anemone','anemone')
         with open(f'../msgad/batch_data/labels/{args.dataset}_labels_{args.scales}.mat','rb') as fin:
             mat = pkl.load(fin)
         sc_all,clusts = mat['labels'],mat['clusts']
-        a_clf.calc_prec(ano_score_final[np.newaxis,...],ano_label,sc_all,clusts)
+        a_clf.calc_anom_stats(ano_score_final[np.newaxis,...],ano_label,sc_all,clusts)
     
         
         auc = roc_auc_score(ano_label, ano_score_final)

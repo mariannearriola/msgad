@@ -19,48 +19,15 @@ import sys
 class LabelAnalysis:
     def __init__(self,dataset,all_anoms,norms,exp):
         self.exp=exp
-        self.visualize=True if dataset not in ['weibo','yelpchi','elliptic'] else False
+        self.visualize=False if dataset not in [] else True
         self.thresh = 0.8
         self.dataset = dataset
         self.anoms_combo = all_anoms
         self.fname = f'batch_data/labels'
-        #self.ranking_thresh = 0.6
         self.min_anom_size=0
         self.min_sil = 0.
         self.norms = norms
         if not os.path.exists(self.fname): os.makedirs(self.fname)
-
-    def check_conn(self,sc_label):
-        """Filter out disconnected anomaly clusters"""
-        conn_check=[]
-        for i in sc_label:
-            try:
-                conn_check.append(nx.is_connected(self.graph.subgraph(i)))
-            except:
-                conn_check.append(False)
-        return conn_check
-
-    def remove_anom_overlap(self,clusts):
-        """For an anomaly group, find cluster it is best associated with. Prioritizes larger clusters """
-
-        anom_clusts,best_rankings = np.full(self.anoms_combo.shape,-1),np.full(self.anoms_combo.shape,-1)
-        max_clust = np.array([np.unique(i,return_counts=True)[-1].max() for i in clusts])
-        for clust_ind,clust in enumerate(clusts):
-            clust_rankings = self.rank_anom_clustering(clust,clust_ind,max_clust[clust_ind])
-            all_rankings = clust_rankings[np.newaxis,...] if clust_ind == 0 else np.vstack((all_rankings,clust_rankings[np.newaxis,...]))
-            anom_clusts[np.where(clust_rankings>best_rankings)] = clust_ind
-            best_rankings = np.maximum(clust_rankings,best_rankings)
-
-        # Assign labels using group_ids and max_context_indices
-        anom_clusts = self.assign_nodes_to_clusters(all_rankings.T,np.stack(clusts).T[self.anoms_combo])
-        print('before thresholding',np.unique(anom_clusts,return_counts=True)[-1])
-        anom_clusts += 1
-        anom_clusts = anom_clusts.astype(int)
-        #anom_clusts[np.where(best_rankings < self.ranking_thresh)] = 0
-        
-        print('after thresholding',np.unique(anom_clusts,return_counts=True)[-1])
-        
-        return anom_clusts,all_rankings
 
     def assign_nodes_to_clusters(self, node_scores, cluster_ids):
         """
@@ -150,9 +117,24 @@ class LabelAnalysis:
         return rankings
 
     def postprocess_anoms(self,clusts):
-        """Remove overlap from detected anomalies in a top-down manner (prioritize LARGER SCALE anomalies)"""
-        sc_label,all_rankings = self.remove_anom_overlap(clusts)
-        return sc_label,all_rankings
+        """For an anomaly group, find cluster it is best associated with. Prioritizes larger clusters """
+
+        anom_clusts,best_rankings = np.full(self.anoms_combo.shape,-1),np.full(self.anoms_combo.shape,-1)
+        max_clust = np.array([np.unique(i,return_counts=True)[-1].max() for i in clusts])
+        for clust_ind,clust in enumerate(clusts):
+            clust_rankings = self.rank_anom_clustering(clust,clust_ind,max_clust[clust_ind])
+            all_rankings = clust_rankings[np.newaxis,...] if clust_ind == 0 else np.vstack((all_rankings,clust_rankings[np.newaxis,...]))
+            anom_clusts[np.where(clust_rankings>best_rankings)] = clust_ind
+            best_rankings = np.maximum(clust_rankings,best_rankings)
+
+        # Assign labels using group_ids and max_context_indices
+        anom_clusts = self.assign_nodes_to_clusters(all_rankings.T,np.stack(clusts).T[self.anoms_combo])
+        #print('before thresholding',np.unique(anom_clusts,return_counts=True)[-1])
+        anom_clusts += 1
+        anom_clusts = anom_clusts.astype(int)
+        #anom_clusts[np.where(best_rankings < self.ranking_thresh)] = 0
+                
+        return anom_clusts,all_rankings
 
     def plot_dend(self,dend,colors,legend_colors,**kwargs):
         ax = plt.figure(figsize=(15, 10))
@@ -273,6 +255,7 @@ class LabelAnalysis:
                 "Number of labels is %d. Valid values are 2 to n_samples - 1 (inclusive)"
                 % n_labels
             )
+        
     def _silhouette_reduce(self,D_chunk, start, labels, label_freqs):
         """Accumulate silhouette statistics for vertical chunk of X.
 
@@ -328,20 +311,6 @@ class LabelAnalysis:
 
     def sil_samples(self,X,labels,metric,**kwds):
         X, labels = sklearn.utils.check_X_y(X, labels, accept_sparse=["csr"])
-        """
-        # Check for non-zero diagonal entries in precomputed distance matrix
-        if metric == "precomputed":
-            error_msg = ValueError(
-                "The precomputed distance matrix contains non-zero "
-                "elements on the diagonal. Use np.fill_diagonal(X, 0)."
-            )
-            if X.dtype.kind == "f":
-                atol = np.finfo(X.dtype).eps * 100
-                if np.any(np.abs(X.diagonal()) > atol):
-                    raise error_msg
-            elif np.any(X.diagonal() != 0):  # integral dtype
-                raise error_msg
-        """
         le = sklearn.preprocessing.LabelEncoder()
         labels = le.fit_transform(labels)
         n_samples = len(labels)
@@ -367,28 +336,26 @@ class LabelAnalysis:
         # nan values are for clusters of size 1, and should be 0
         return np.nan_to_num(sil_samples)
 
-    def run_dend(self,graph,scales,return_clusts=False,return_all=False,load=False):
-        """Partition the graph into multi-scale cluster & """
+    def run_dend(self,graph,scales,load=False):
+        """Partition the graph into multi-scale clusters and anomalies & visualize multi-scale spatial/spectral behavior"""
         sys.setrecursionlimit(1000000) 
         self.graph = graph
         self.scales = scales
         dend = None
-        if False:#load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}.mat'):
-            with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','rb') as fin:
+        if load or os.path.exists(f'{self.fname}/{self.dataset}_labels_{scales}_exp{self.exp}.mat'):
+            with open(f'{self.fname}/{self.dataset}_labels_{scales}_exp{self.exp}.mat','rb') as fin:
                 mat = pkl.load(fin)
             sc_all,clusts = mat['labels'],mat['clusts']
-            
         else:
+            #if True:
             clusts,dend = self.get_clusts(graph,self.scales+1)
             clusts_ = clusts[1:-1]
-            check_gpu_usage('about to make dist')
             dist = nx.adjacency_matrix(graph,weight='weight').astype(np.float).todense() ; dist = 1-dist
             np.fill_diagonal(dist,0)
 
-            check_gpu_usage('calculating silhouette samples')        
             self.sil_samps = [self.sil_samples(dist,clust,metric='precomputed') for clust in clusts_]
             sc_all,all_rankings = self.postprocess_anoms(clusts_)
-            """
+            
             # prints connectivity info of every anomaly and all clusters associated with it across scales
             for clust_ind,clust in enumerate(clusts_):
                 for ind,sc in enumerate(np.unique(sc_all)):
@@ -399,14 +366,14 @@ class LabelAnalysis:
                     all_ = []
                     for gc in group_clusts:
                         all_.append(round(np.where(anom_clusts==gc)[0].shape[0]/np.where(clust==gc)[0].shape[0],3))
-                    print('clust',clust_ind,'anom',ind,all_)
-            """
+                    print('avg. anom composition for clust',clust_ind,'anom',ind,np.array(all_).mean())
+            
             print('anomalous clusters found',[np.unique((clusts_[i-1][self.anoms_combo[np.where(sc_all==i)]])).shape[0] for i in range(np.unique(sc_all).shape[0])])
-            clusts = clusts[2:]
+            clusts = clusts[1:-1]
 
         if self.visualize:
             sc_all_unique = np.unique(sc_all)
-            #clusts,dend = self.get_clusts(graph,self.scales+1)
+            clusts,dend = self.get_clusts(graph,self.scales+1)
             if dend is not None:
                 colors = np.full(int(dend.max()+2),'tab:gray',dtype='object')
                 sc_colors=['tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']
@@ -418,8 +385,8 @@ class LabelAnalysis:
                 self.plot_dend(dend,colors,sc_colors)
             # add opacity based on silhouette score/overral ranking
             sc_colors=['tab:gray','tab:red','tab:orange','tab:pink','tab:purple','tab:green','tab:brown','tab:cyan','tab:olive']
+            
             # plot spectrum
-            #self.plot_spectrum()
             legend_arr = ['No anom. signal','Single node anom.']
             for i in range(1,len(sc_all_unique)):
                 legend_arr.append(f'Anom. scale {i}')
@@ -434,7 +401,7 @@ class LabelAnalysis:
             for j in np.unique(sc_all):
                 sc_all_clusts.append(self.anoms_combo[np.where(sc_all==j)])
             sc_all_clusts.append(self.norms)
-            #import ipdb ; ipdb.set_trace()
+
             for i in range(len(clusts)):
                 print('scale',i)
                 clust_dicts.append({})
@@ -450,7 +417,7 @@ class LabelAnalysis:
                     if jind == 0:
                         clust_dicts[i] = gr_dict
             sc_all = list(sc_all)
-        with open(f'{self.fname}/{self.dataset}_labels_{scales}.mat','wb') as fout:
+        with open(f'{self.fname}/{self.dataset}_labels_{scales}_exp{self.exp}.mat','wb') as fout:
             pkl.dump({'labels':sc_all,'clusts':clusts},fout)
         return list(sc_all),torch.tensor(clusts)
 
@@ -472,16 +439,12 @@ class LabelAnalysis:
         else:
             plt.plot(X_,Y_)
         return X_,y
-        
-        #plt.bar(x,y)
-        return x,y
-        
+    
     def plot_spectrum_graph(self,graph,anoms,img_lbl,feats,legend_arr,color=None):
         lbl = nx.adjacency_matrix(graph).astype(np.float64)
         
         py_g = graphs.MultiScale(lbl)
         if os.path.exists(f'{self.dataset}_eig.mat'):
-            #import ipdb ; ipdb.set_trace()
             mat = sio.loadmat(f'{self.dataset}_eig.mat')
             e,U = mat['e'][0],mat['U']
         else:

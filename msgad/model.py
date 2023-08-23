@@ -43,13 +43,14 @@ class GraphReconstruction(nn.Module):
             self.module_list = nn.ModuleList()
             for i in range(3):
                 self.module_list.append(nn.Linear(in_size*(self.k+1), int(self.hidden_dim)))
-        
-        elif self.model_str == 'dominant':
-            self.conv = DOMINANT_Base(in_size,self.hidden_dim,3,dropout,act)
         elif self.model_str == 'multi-scale-dominant':
             self.module_list = nn.ModuleList()
             for i in range(3):
                 self.module_list.append(DOMINANT_Base(in_size,self.hidden_dim,3,dropout,act))
+        elif self.model_str == 'multi-scale-anomalydae':
+            self.module_list = nn.ModuleList()
+            for i in range(3):
+                self.module_list.append(AnomalyDAE_Base(in_size,int(self.hidden_dim*2),self.hidden_dim,dropout,act))
         else:
             raise('model not found')
 
@@ -59,7 +60,7 @@ class GraphReconstruction(nn.Module):
                 m.bias.data.fill_(0.01)
 
         
-    def forward(self,graph,edges,feats,edge_ids):
+    def forward(self,adj_edges,feats,batch_edges):
         """
         Obtain learned embeddings and corresponding graph reconstructions from
         the input graph.
@@ -76,31 +77,21 @@ class GraphReconstruction(nn.Module):
                 Multi-scale embeddings produced by model
         """
         
-        from utils import check_gpu_usage
         emb,recons_a = None,None
-        check_gpu_usage('about to run')
-        if self.model_str=='multi-scale-dominant':
+        if self.model_str=='multi-scale-dominant' or self.model_str=='multi-scale-anomalydae':
             recons_a=[]
             for ind in range(self.scales):
-                res = self.module_list[ind](feats,edges[ind].T)
-                recons_a.append(self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]])#.unsqueeze(0))
-        
-        elif self.model_str in ['dominant']: #x, e
-            recons_a,emb=[],[]
-            for ind in range(self.scales):
-                res = self.conv(feats,edges[ind].T)
-                emb.append(res)
-                recons_a.append(self.decode_act(res)[0,edge_ids[ind][:,0],edge_ids[ind][:,1]])#.unsqueeze(0))
-                del res ;  torch.cuda.empty_cache()
+                res = self.module_list[ind](feats,adj_edges[ind].T,batch_edges[ind])
+                recons = self.decode_act(res)
+                recons_a.append(self.collect_batch_recons(recons,batch_edges[ind]))
+                del res ; torch.cuda.empty_cache()
+            del recons ; torch.cuda.empty_cache()
 
-        if 'multi-scale-amnet' in self.model_str or 'multi-scale-bwgnn' in self.model_str: # g
-            recons_a,labels,emb = [],[],[]
+        if 'multi-scale-amnet' in self.model_str:
+            recons_a,emb = [],[]
             feats = self.linear_transform_in(feats)
-            check_gpu_usage('about to run model')
             for ind in range(self.scales):
-                check_gpu_usage('before conv')
-                h = self.conv(feats,edges[ind],None)[:,0,:]
-                check_gpu_usage('after conv')
+                h = self.conv(feats,adj_edges[ind],None)[:,0,:]
                 h = self.module_list[ind](h)
 
                 # collect results
@@ -109,30 +100,39 @@ class GraphReconstruction(nn.Module):
             
             self.final_attn = self.attn
             
-            check_gpu_usage('before bmm')
             hs_t=torch.transpose(hs,1,2)
             if 'elliptic' in self.dataset:
                 hs_s = hs[0].to_sparse()
                 hs_t_s = hs_t[0].to_sparse()
-                prod=torch.sparse.mm(hs_s,hs_t_s)
-            recons = torch.bmm(hs,hs_t)
+                recons=torch.sparse.mm(hs_s,hs_t_s)
+            else:
+                recons = torch.bmm(hs,hs_t)
+            
 
             del hs_t ; torch.cuda.empty_cache() ; gc.collect()
-            check_gpu_usage('after bmm')
-            
-            # TODO: check if this can be changed via list comprehension: may be an issue
-            for i in range(self.scales):
-                if i == 0:
-                    recons_f = [torch.sigmoid(recons[i,edge_ids[i][:,0],edge_ids[i][:,1]]) for i in range(self.scales)]
-                else:
-                    recons_f.append(torch.sigmoid(recons[i,edge_ids[i][:,0],edge_ids[i][:,1]]))
+            recons_f = [torch.sigmoid(self.collect_batch_recons(recons[i],batch_edges[i])) for i in range(self.scales)]
             del recons; torch.cuda.empty_cache() ; gc.collect()
-            check_gpu_usage('results collected')
             return recons_f,hs
             
-        check_gpu_usage('collecting')
         torch.cuda.empty_cache()
-        if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','gradate','dominant','multi-scale-dominant']:
+        if self.model_str not in ['multi-scale','multi-scale-amnet','multi-scale-bwgnn','bwgnn','multi-scale-anomalydae','dominant','multi-scale-dominant',]:
             recons_a = [recons[0]]
         
         return recons_a,emb
+
+    def collect_batch_recons(self,recons,batch_edges):
+        n_ids_tensor = torch.arange(batch_edges.unique().shape[0],device='cuda')
+        # Create an array to store the mapping of unique edge IDs to n IDs
+        unique_edge_ids = torch.unique(batch_edges)
+        edge_id_to_n_id = torch.zeros(torch.max(unique_edge_ids) + 1, dtype=torch.int64, device='cuda')
+        edge_id_to_n_id[unique_edge_ids] = n_ids_tensor
+
+        # Relabel the edge list using the n IDs
+        relabeled_edge_list = batch_edges.clone()
+        relabeled_edge_list[:,0] = edge_id_to_n_id[relabeled_edge_list[:,0]]
+        relabeled_edge_list[:,1] = edge_id_to_n_id[relabeled_edge_list[:,1]]
+        
+        recons = recons[relabeled_edge_list[:,0],relabeled_edge_list[:,1]]
+
+        del relabeled_edge_list ; torch.cuda.empty_cache() ; gc.collect()
+        return recons

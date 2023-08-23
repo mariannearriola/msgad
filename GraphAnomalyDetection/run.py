@@ -8,6 +8,8 @@ from iNN_IK import iNN_IK
 import sys
 import scipy
 import scipy.io as sio
+import dgl
+import networkx as nx
 sys.path.append('../../msgad')
 from msgad.anom_detector import *
 
@@ -24,19 +26,23 @@ def generate_scores(scores, M, args):
 
 
 def main(args):
-    attr, adj, label = load_graph(args.dataset)
+    attr, adj, nodes, label = load_graph(args.dataset)
     embedding, M = subgraph_embeddings(attr, adj, args.h)
     kmembeddings = iNN_IK(args.psi, 5).fit_transform(embedding)
     mean_embedding = np.mean(kmembeddings, axis=0)
     scores = kmembeddings.dot(mean_embedding.transpose())
-    final_scores = np.array(generate_scores(scores, M, args))
-    a_clf = anom_classifier(None,args.scales,'output',args.dataset,0,'pygod','pygod')
-    import ipdb ; ipdb.set_trace()
+
+
+    final_scores = np.zeros(label.shape)
+    final_scores[nodes] = np.array(generate_scores(scores, M, args))
+    #final_scores = np.array(generate_scores(scores, M, args))
+
+    a_clf = anom_classifier(None,args.scales,'../msgad/output',args.dataset,0,'gcad','gcad')
     with open(f'../msgad/batch_data/labels/{args.dataset}_labels_{args.scales}.mat','rb') as fin:
         mat = pkl.load(fin)
     sc_all,clusts = mat['labels'],mat['clusts']
     a_clf.calc_prec(-final_scores.T,label,sc_all,clusts)
-
+    
     print(
         f'dataset : {args.dataset}, auc = {roc_auc_score(label, -final_scores)}\n')
 

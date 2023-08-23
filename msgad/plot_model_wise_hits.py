@@ -6,48 +6,58 @@ import glob
 import numpy as np
 
 
-def plot_hits(scale_dicts,metric,dataset):
-    model_names = scale_dicts[0]['hits'].keys()
-    num_groups = scale_dicts[0]['hits'][list(scale_dicts[0]['hits'].keys())[0]].shape[0]
+def plot_hits(scale_dicts,metric,dataset,scale):
+    model_names = list(scale_dicts.keys())
+    num_groups = len(scale_dicts[model_names[0]][0]['hits'])
     for group in range(num_groups):
-        for scale,scale_dict in enumerate(scale_dicts):
-            plt.figure()
-            if group == num_groups-1:
-                plt.title(f'{(metric.capitalize())} @ K for scale all anomalies in {dataset.capitalize()}')
-            else:
-                plt.title(f'{(metric.capitalize())} @ K for scale {group} anomalies in {dataset.capitalize()}')
-            plt.xlabel('# predictions')
-            if metric == 'hits':
-                plt.ylabel(f'# anomalies found')
-            elif metric == 'precision':
-                plt.ylabel(f'% anomalies found')
-            for model,hits in scale_dict['hits'].items():
-                hits_plot = np.cumsum(hits[group])
+        #for scale,scale_dict in enumerate(scale_dicts):
+        plt.figure()
+        if group == 0:
+            plt.title(f'{(metric)} @ K for single-node anomalies in {dataset.capitalize()}')
+        elif group == num_groups-1:
+            plt.title(f'{(metric)} @ K for all anomalies in {dataset.capitalize()}')
+        else:
+            plt.title(f'{(metric)} @ K for scale {group} anomalies in {dataset.capitalize()}')
+        plt.xlabel('# predictions')
+        if metric == 'hits':
+            plt.ylabel(f'# anomalies found')
+        elif metric == 'precision':
+            plt.ylabel(f'% anomalies found')
+        for model,info in scale_dicts.items():
+            try:
+                hits_plot = np.cumsum(info[scale]['hits'][group])
+            except:
+                raise Exception(f'score formatting for {model} failed')
+            if metric == 'precision':
+                hits_plot /= info[scale]['hits'][group].nonzero()[0].shape[0]
+            elif metric != 'hits':
+                raise "hit type not found"
+            plt.plot(np.arange(hits_plot.shape[0]),hits_plot)
+        model_names = [i for i in model_names]
+        plt.legend(model_names,loc='lower right')
+        plt.savefig(f'output/{dataset}/figs/hits_{metric}_totscales_{len(scale_dicts[model_names[0]])}_scale{group}.png')
 
-                if metric == 'precision':
-                    hits_plot /= hits[group].nonzero()[0].shape[0]
-                elif metric != 'hits':
-                    raise "hit type not found"
-                plt.plot(np.arange(hits_plot.shape[0]),hits_plot)
-            model_names = [i.capitalize() for i in model_names]
-            plt.legend(model_names,loc='lower right')
-            plt.savefig(f'output/{dataset}/figs/hits_{metric}_totscales_{len(scale_dicts)}_scale{group}.png')
-
-def plot_bar_charts(scale_dicts,metric,dataset):
-    plt.figure()
-    plt.title(f'{(metric.capitalize())} for {dataset.capitalize()}')
+def plot_bar_charts(scale_dicts,metric,dataset,scale):
+    ax =plt.figure()
+    plt.title(f'Scale {scale+1} {(metric)} for {dataset.capitalize()}')
     plt.xlabel('Anomaly group')
-    plt.ylabel(f'{metric.capitalize()}')
-    model_names = scale_dicts[0][metric].keys() ; model_names = scale_dicts[0]['hits'].keys()
-    width = 0.25
+    plt.ylabel(f'{metric}')
+    
+    model_names = scale_dicts.keys() 
+    width = 0.1
+    
     for idx,model_name in enumerate(model_names):
         # NOTE: last index is the result across all scales
-        bar_data = [scale_dicts[i][metric][model_name][-1] for i in range(len(scale_dicts))]
-
-        plt.bar(np.arange(len(bar_data))+(idx*width),bar_data,label=model_name)
-    model_names = [i.capitalize() for i in model_names]
-    plt.legend(model_names,loc='upper right')
-    plt.savefig(f'output/{dataset}/figs/bar_{metric}_scales{len(scale_dicts)}.png')
+        #bar_data = [scale_dicts[i][metric][model_name] for i in range(len(scale_dicts))]
+        bar_data = scale_dicts[model_name][scale][metric]
+        plt.bar(np.arange(len(bar_data))+(idx*width),bar_data,label=model_name,width=width)
+    model_names = [i for i in model_names]
+    plt.legend(model_names,loc='upper right',fontsize='x-small')
+    xticks = ['Single scale'] + [f'Scale {ind+1}' for ind in range(len(bar_data)-2)] + ['All anoms']
+    plt.xticks(np.arange(len(xticks)),xticks)
+    plt.yticks(np.arange(0.,1.,.1))
+    #import ipdb ; ipdb.set_trace()
+    plt.savefig(f'output/{dataset}/figs/bar_{metric}_scales{len(scale_dicts[model_name])}_scale{scale}.png')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -57,26 +67,32 @@ if __name__ == '__main__':
     
     if not os.path.exists(f'output/{args.dataset}/figs'): os.makedirs(f'output/{args.dataset}/figs')
 
-    fpaths = glob.glob(f'output/{args.dataset}-{args.scales}*')
-    
+
+    all_scale_models = glob.glob(f'output/{args.dataset}/{args.scales}-sc1*')    
     # record all model-wise results across anomaly scales
-    scale_dicts = []
+    scale_dicts = {}
     for scale in range(args.scales):
-        model_rocs,model_precisions,model_hits={},{},{}
-        scale_models = glob.glob(f'output/{args.dataset}/{args.scales}-sc{scale+1}*')
-        if len(scale_models) == 0: break
-        for scale_model in scale_models:
+        #scale_models = glob.glob(f'output/{args.dataset}/{args.scales}-sc{scale+1}*')
+        if len(all_scale_models) == 0: break
+        for model in all_scale_models:
+            scale_model = f'output/{args.dataset}/{args.scales}-sc' + str(scale+1) +  model.split(f'{args.scales}-sc1')[1]
+            if not os.path.exists(scale_model):
+                scale_model = model
             with open(scale_model,'rb') as fin:
                 result_dict = pkl.load(fin)
                 rocauc,precision,hits=result_dict['rocs'],result_dict['precs'],result_dict['hits']
+                full_anom = hits[:-1].nonzero()[0].shape[0]
+                precision = hits[:,:full_anom].sum(1)/hits.sum(1)
+                #import ipdb ; ipdb.set_trace()
                 model_name = scale_model.split("_")[-1].split(".pkl")[0]
-                model_rocs[model_name] = rocauc ; model_precisions[model_name] = precision ; model_hits[model_name] = hits
-        scale_dicts.append({'rocs':model_rocs,'precisions':model_precisions,'hits':model_hits})
+                if model_name.capitalize() not in scale_dicts.keys(): scale_dicts[model_name.capitalize()] = []
+                scale_dicts[model_name.capitalize()].append({'rocs':rocauc,'precisions':precision,'hits':hits})
+    # bar charts of all rocs/aucs/precisions3-sc2_weibo-3scales-nobatching-multiscaledominant-10neighbors-1000e-128hid-clustperst.pkl
+    #for scale,scale_dict in enumerate(scale_dicts):
+    for scale in range(args.scales):
+        plot_bar_charts(scale_dicts,'rocs',args.dataset,scale)
+        plot_bar_charts(scale_dicts,'precisions',args.dataset,scale)
 
-    # bar charts of all rocs/aucs/precisions
-    plot_bar_charts(scale_dicts,'rocs',args.dataset)
-    plot_bar_charts(scale_dicts,'precisions',args.dataset)
-
-    # scale-wise line plots of precision@k/hit@k
-    plot_hits(scale_dicts,'hits',args.dataset)
-    plot_hits(scale_dicts,'precision',args.dataset)
+        # scale-wise line plots of precision@k/hit@k
+        plot_hits(scale_dicts,'hits',args.dataset,scale)
+        plot_hits(scale_dicts,'precision',args.dataset,scale)

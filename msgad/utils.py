@@ -58,11 +58,12 @@ def get_labels(adj,feats,clusts,exp_params):
         pos_edges_full: {array-like}, shape=[k, n, 2]
             Array of edge lists ccorresponding to unique scale-specific clusterings
     """
+    exp = exp_params['EXP']
     dataset = exp_params['DATASET']['NAME']
     dataset_scales, model_scales = exp_params['DATASET']['SCALES'], exp_params['MODEL']['SCALES']
     transform = dgl.AddReverse(copy_edata=True)
     # sample an even number of intra-cluster & inter-cluster edges for each node
-    if not os.path.exists(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat'):
+    if not os.path.exists(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}_exp{exp}.mat'):
         lbls,neg_lbls,pos_edges_full,neg_edges_full = [],[],[],[]
         for clust_ind,clust in enumerate(clusts):
             print(clust_ind)
@@ -98,10 +99,10 @@ def get_labels(adj,feats,clusts,exp_params):
             neg_edges_full.append(torch.vstack((neg_edges,neg_edges.flip(1))))
             
         save_mat = {'lbls':[i for i in lbls],'neg_lbls':[i for i in neg_lbls],'pos_edges':[i.to_sparse() for i in pos_edges_full]}#,'neg_edges':[i.to_sparse() for i in neg_edges_full]}
-        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat','wb') as fout:
+        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}_exp{exp}.mat','wb') as fout:
             pkl.dump(save_mat,fout)
     else:
-        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}.mat','rb') as fin:
+        with open(f'{dataset}_full_adj_{model_scales}_dataset{dataset_scales}_exp{exp}.mat','rb') as fin:
             mat =pkl.load(fin)
         lbls,neg_lbls,pos_edges_full = mat['lbls'],mat['neg_lbls'],[i.to_dense() for i in mat['pos_edges']]#,[i.to_dense() for i in mat['neg_edges']]
     return lbls, neg_lbls, pos_edges_full
@@ -139,7 +140,7 @@ def get_counts(clust,edge_ids):
 
     return intra_edges, pos_counts, neg_counts, pos_clust_counts, neg_clust_counts
 
-def score_multiscale_anoms(clustloss,nonclustloss, clusts, res):
+def score_multiscale_anoms(clustloss,nonclustloss, clusts, res, agg='std'):
     """
     Assign node-wise scores based on intra-cluster residuals
 
@@ -156,21 +157,23 @@ def score_multiscale_anoms(clustloss,nonclustloss, clusts, res):
         scores_all: {array-like}, shape=[k, n]
             Computed scale-wise anomaly scores.
     """
-
-    for sc,sc_clustloss in enumerate(clustloss):
-        score = gather_clust_info(sc_clustloss.detach().cpu(),clusts[sc],'std')
+    struct_loss = clustloss+nonclustloss
+    for sc,sc_loss in enumerate(struct_loss):
+        #score = gather_clust_info(sc_clustloss.detach().cpu(),clusts[sc],agg)
+        score = gather_clust_info(sc_loss.detach().cpu(),clusts[sc],'std')*gather_clust_info(sc_loss.detach().cpu(),clusts[sc],'mean')
         scores_all = score if sc == 0 else torch.vstack((scores_all,score))
         
     return scores_all
 
 class TBWriter:
-    def __init__(self,tb, sc_label,clust,anoms,norms,exp_params):
+    def __init__(self, tb, sc_label,truth,clust,exp_params):
         self.tb = tb
         self.clust = clust
         self.sc_labels = sc_label
-        self.anoms = anoms
-        self.norms = norms
-        self.a_clf = anom_classifier(exp_params,'../output',exp_params['DATASET']['SCALES'])
+        self.truth = truth
+        self.anoms = (truth==1).nonzero()[0]
+        self.norms = (truth==0).nonzero()[0]
+        self.a_clf = anom_classifier(exp_params,exp_params['DATASET']['SCALES'],'output',dataset=exp_params['DATASET']['NAME'],exp_name=exp_params['EXP'],model='msgad')
 
     def collect_clust_loss(self,edge_ids,sc_idx,loss):
         """Get average loss for each cluster, and assign back to edge-wise losses"""
@@ -197,12 +200,11 @@ class TBWriter:
             gr_dict[k].append(v)
         return gr_dict
 
-    def tb_write_anom(self,sc_label,edge_ids,pred,scores_all,loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=True,scores_only=False):
+    def tb_write_anom(self,sc_label,edge_ids,pred,scores_all,loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=True,log=False):
         """Log loss evolution for anomaly group"""
-
-        #self.tb.add_scalar(f'Loss_{sc}', loss, epoch)
-        self.tb.add_scalar(f'ClustLoss_{sc}', clustloss[sc].sum(), epoch)
-        self.tb.add_scalar(f'NonClustLoss_{sc}', nonclustloss[sc].sum(), epoch)
+        self.tb.add_scalar(f'Loss_{sc}', loss[sc].mean(), epoch)
+        self.tb.add_scalar(f'ClustLoss_{sc}', clustloss[sc].mean(), epoch)
+        self.tb.add_scalar(f'NonClustLoss_{sc}', nonclustloss[sc].mean(), epoch)
         clust = clusts[sc]
         intra_edges, pos_counts_dict, neg_counts_dict, _, _ = get_counts(clust,edge_ids[sc])
     
@@ -217,7 +219,7 @@ class TBWriter:
             sil = torch.nan_to_num((1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0)-(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0)))/torch.max(1-torch.nan_to_num(nc.detach().cpu()/neg_counts,posinf=0,neginf=0),(torch.nan_to_num(cl.detach().cpu()/pos_counts,posinf=0,neginf=0))),posinf=0,neginf=0)
             self.tb.add_histogram(f'Sil{ind+1}',sil.mean(), epoch)
             sils = sil if ind == 0 else torch.vstack((sils,sil))
-        
+
         for ind,i in enumerate(sc_labels):
             
             group = torch.tensor(self.anoms[np.where(np.array(sc_label)==i)]) if i != -1 else torch.tensor(self.norms)
@@ -253,6 +255,11 @@ class TBWriter:
                 
                 kname = k + f'_{sc}/Anom{anom_sc}_hist'
                 self.tb.add_histogram(kname,np.array(v[0])[~np.isnan(np.array(v[0]))], epoch)
+        _,prec1,ra1=self.a_clf.calc_anom_stats(scores_all.detach().cpu(),self.truth,sc_label,verbose=log,log=log)
+        for sc in range(len(prec1)):
+            for anom,prec in enumerate(prec1[sc]):
+                self.tb.add_scalar(f'Precsc{sc+1}/anom{anom+1}', prec, epoch)
+                self.tb.add_scalar(f'ROC{sc+1}/anom{anom+1}', ra1[sc][anom], epoch)
         return np.stack(pos_counts_all),np.stack(neg_counts_all)
 
 def gather_clust_info(mat,clust,reduce="mean"):
@@ -307,7 +314,9 @@ def seed_everything(seed=1234):
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
-        
+    torch.backends.cudnn.benchmark = False
+
+
 def init_model(feat_size,exp_params,args):
     """Intialize model with configuration parameters"""
     struct_model,feat_model,params=None,None,None

@@ -10,7 +10,7 @@ for h in "${HS[@]}"; do
     for psi in "${PSIS[@]}"; do
         for lambda in "${LAMBDAS[@]}"; do
             echo "h $h, psi $psi, lambda $lambda"
-            python3 -m run --psi $psi --dataset weibo --h $h --lamda $lambda --scales 3
+            python3 -m run --psi $psi --dataset $1 --h $h --lamda $lambda --scales $2
         done
     done
 done

@@ -128,14 +128,14 @@ def load_msgad_data(args):
     DATA_DIR = args.data_dir
     FILE_NAME = "{}.pkl".format(args.real_world_name)
     FILE_PATH = os.path.join(DATA_DIR, FILE_NAME)
-    data_mat = sio.loadmat(f'{DATA_DIR}/{args.msgad_name}.mat')
-    if 'cora' in args.msgad_name or 'yelp' in args.msgad_name:
+    data_mat = sio.loadmat(f'{DATA_DIR}/{args.dataset}.mat')
+    if 'cora' in args.dataset or 'yelp' in args.dataset:
         feats = torch.FloatTensor(data_mat['Attributes'].toarray())
     else:
         feats = torch.FloatTensor(data_mat['Attributes'])
     adj,edge_idx=None,None
     if 'Edge-index' in data_mat.keys():
-        edge_idx = data_mat['Edge-index']
+        edge_idx = torch.tensor(data_mat['Edge-index'])
     elif 'Network' in data_mat.keys():
         adj = data_mat['Network']
         edge_idx = torch.tensor(np.stack(adj.nonzero()))
@@ -165,7 +165,6 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default='./data')
     parser.add_argument('--results_dir', type=str, default='./results')
     parser.add_argument('--real_world_name', type=str, default='email')
-    parser.add_argument('--msgad_name', type=str, default='weibo')
     parser.add_argument('--dataset', type=str, default='random')
     parser.add_argument('--anomaly_type', type=str, default='chain')
     parser.add_argument('--size', type=int, default=1000)
@@ -216,8 +215,8 @@ if __name__ == '__main__':
         RESULT_FILE_NAME = "{}_{}_{}.txt".format(args.real_world_name, args.embedding_channels, args.num_anchors)
     elif args.data_flag == 'msgad_data':
         data, anomaly_flag = load_msgad_data(args)
-        RESULT_DIR = os.path.join(args.results_dir, str(args.msgad_name))
-        RESULT_FILE_NAME = "{}_{}_{}.txt".format(args.msgad_name, args.embedding_channels, args.num_anchors)
+        RESULT_DIR = os.path.join(args.results_dir, str(args.dataset))
+        RESULT_FILE_NAME = "{}_{}_{}.txt".format(args.dataset, args.embedding_channels, args.num_anchors)
 
     # set results file dir
     if not os.path.exists(RESULT_DIR):
@@ -338,15 +337,12 @@ if __name__ == '__main__':
             sp_loss.backward()
             optimizer_sp.step()
             #print('model.r',model.r)
-                    # NOTE: added anom clf
-        '''
-        a_clf = anom_classifier(None,args.scales,args.msgad_name,args.epochs,'subgraph','subgraph','struct','')
-        mat = sio.loadmat(f'../msgad/batch_data/labels/{args.msgad_name}_labels.mat')
-        sc_all,clusts = mat['labels'][0],mat['clusts']
-        a_clf.calc_prec(continuous_predicted_value[np.newaxis,...].numpy(),anomaly_flag,sc_all,clusts,cluster=False,input_scores=True)
-        for p in model.parameters():
-            p.requires_grad = True
-        '''
+
+        a_clf = anom_classifier(None,args.scales,'../msgad/output',args.dataset,args.epochs,'asgae','asgae')
+        with open(f'../msgad/batch_data/labels/{args.dataset}_labels_{args.scales}.mat','rb') as fin:
+            mat = pkl.load(fin)
+        sc_all,clusts = mat['labels'],mat['clusts']
+        a_clf.calc_anom_stats(continuous_predicted_value[np.newaxis,...],anomaly_flag,sc_all,clusts,log=True)
         print('roc_auc_score:%.3f'%(roc_auc_score(anomaly_flag, continuous_predicted_value.cpu().numpy())))
 
 

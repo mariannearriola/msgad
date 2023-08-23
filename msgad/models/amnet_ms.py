@@ -53,17 +53,9 @@ class BernConv(MessagePassing):
         super(BernConv, self).__init__(**kwargs)
         assert K > 0
         self.K = K
-        #self.att_proj = AttentionProjection(hidden_channels,hidden_channels)
         self.in_channels = hidden_channels
         self.out_channels = hidden_channels
-        #self.weight = nn.Parameter(torch.Tensor(K + 1, 1))
-        #self.weight = nn.Parameter(data=torch.normal(mean=torch.full((K+1,),0.),std=1).to(torch.float64)).requires_grad_(True)
         self.normalization = normalization
-
-        #if bias:
-        #    self.bias = nn.Parameter(torch.Tensor(hidden_channels))
-        #else:
-        #    self.register_parameter('bias', None)
         seed_everything()
 
         self.reset_parameters()
@@ -81,10 +73,6 @@ class BernConv(MessagePassing):
     def __norm__(self, edge_index, num_nodes: Optional[int],
                  edge_weight: OptTensor, normalization: Optional[str],
                  lambda_max, dtype: Optional[int] = None):
-        #edge_index, edge_weight = remove_self_loops(edge_index, edge_weight)
-        #mat = torch_geometric.utils.to_dense_adj(edge_index,edge_attr=edge_weight)[0]#,num_nodes=num_nodes)
-        #edge_weight = 
-        #basis_[basis.edges()] = basis.edata['w'].to(self.graph.device)
         edge_index, edge_weight = get_laplacian(edge_index, edge_weight,
                                                 normalization, dtype,
                                                 num_nodes)
@@ -113,69 +101,21 @@ class BernConv(MessagePassing):
 
         for _ in range(self.K):
             Bx_next = self.propagate(edge_index, x=Bx_next, norm=norm, size=None)
-            #Bx_next = mat @ Bx_next
             Bx.append(Bx_next)
         bern_coeff =  BernConv.get_bern_coeff(self.K)
-        eps = 1e-2
-        #if self.normalization:
-        #    weight = torch.sigmoid(self.weight)
-        #else:
-        #    weight = torch.clamp(self.weight, min = 0. + eps, max = 1. - eps)
-        #print(weight)
-        #import ipdb ; ipdb.set_trace()
-        #out = torch.zeros_like(x)
+        
         for k in range(0, self.K + 1):
             coeff = bern_coeff[k]
             basis = Bx[0] * coeff[0]
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
-            #out += basis * F.softmax(conv_weight)[k]
-            #out += basis * F.softmax(self.weight)[k]
-            '''
             if k == 0:
-                out = basis.unsqueeze(1)
-            else:
-                out = torch.cat((out,basis.unsqueeze(1)),dim=1)
-            '''
-            if k == 0:
-                out = basis
-            else:
-                out = torch.cat((out,basis),dim=1)
+                out = basis if k == 0 else torch.cat((out,basis),dim=1)
             del basis
 
-        del lambda_max
-        #del weight
-        del Bx
-        del bern_coeff
-        del Bx_next
-        del Bx_0
-        del edge_index
-        del norm
+        del lambda_max, Bx, bern_coeff, Bx_next, Bx_0, edge_index, norm
         torch.cuda.empty_cache()
         return out
-        att = self.att_proj(out,x)
-        for i in range(self.K+1):
-            if i == 0:
-                final = att[i] #* out[:,i,:]
-            else:
-                final += att[i] #* out[:,i,:]
-
-        #import ipdb ; ipdb.set_trace()
-        #print(self.weight)
-        # NOTE: out is just epsilon (need to add weights to paramter list of amnet ms)
-        
-        del lambda_max
-        del basis
-        #del weight
-        del Bx
-        del bern_coeff
-        del Bx_next
-        del Bx_0
-        del edge_index
-        del norm
-        torch.cuda.empty_cache()
-        
-        return final
 
     
     @staticmethod
@@ -193,37 +133,15 @@ class BernConv(MessagePassing):
             out.append(Bernstein(degree, i).coef)
 
         return out
-        '''
-        thetas = []
-        x = sympy.symbols('x')
-        for i in range(degree+1):
-            f = sympy.poly((x/2) ** i * (1 - x/2) ** (degree-i) / (scipy.special.beta(i+1, degree+1-i)))
-            coeff = f.all_coeffs()
-            inv_coeff = []
-            for i in range(degree+1):
-                inv_coeff.append(float(coeff[degree-i]))
-            thetas.append(inv_coeff)
-        del x
-        del inv_coeff
-        del coeff
-        del f
-        torch.cuda.empty_cache()
-        '''
-        return thetas
         
         
 class AttentionProjection(nn.Module):
     def __init__(self, in_channels, hid_channels):
         super(AttentionProjection, self).__init__()
         self.attn_fn = nn.Tanh()
-        #self.attn_fn = nn.ReLU()
-        #self.attn_fn = nn.Sigmoid()
         self.filter_proj =  nn.Sequential(nn.Linear(in_channels, in_channels),
                                     self.attn_fn)
         
-        
-        #self.x_proj = nn.Sequential(nn.Linear(hid_channels, in_channels),
-        #                            self.attn_fn)
         self.x_proj = nn.Sequential(nn.Linear(in_channels, in_channels),
                                     self.attn_fn)
         self.lin = nn.Linear(in_channels,1)
@@ -291,15 +209,9 @@ class AMNet_ms(nn.Module):
         Output:
             
         """
-        check_gpu_usage('about to run filters')
-        #h = self.filters[0](x, edge_index, conv_weight[0]).unsqueeze(1)
         h = self.filters[0](x, edge_index, None).unsqueeze(1)
         for i in range(1,len(self.filters)):
-            #h = torch.cat((h,self.filters[i](x, edge_index, conv_weight[i]).unsqueeze(1)),dim=1)
             h = torch.cat((h,self.filters[i](x, edge_index, None).unsqueeze(1)),dim=1)
-
-        check_gpu_usage('filters finished')
-        #torch.cuda.empty_cache()
         return h
 
     @torch.no_grad()

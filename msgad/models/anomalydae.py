@@ -319,31 +319,61 @@ class AnomalyDAE_Base(nn.Module):
 
     def __init__(self,
                  in_node_dim,
-                 in_num_dim,
+                 #in_num_dim,
                  embed_dim,
                  out_dim,
                  dropout,
                  act):
         super(AnomalyDAE_Base, self).__init__()
 
-        self.num_center_nodes = in_num_dim
+        self.num_center_nodes = 0#in_num_dim
         self.structure_ae = StructureAE(in_node_dim,
                                         embed_dim,
                                         out_dim,
                                         dropout,
                                         act)
-        self.attribute_ae = AttributeAE(self.num_center_nodes,
-                                        embed_dim,
-                                        out_dim,
-                                        dropout,
-                                        act)
+        #self.attribute_ae = AttributeAE(self.num_center_nodes,
+        #                                embed_dim,
+        #                                dropout,
+        #                                act)
+        self.act = act
+        self.dropout = dropout
+        self.dense = nn.Linear(in_node_dim, embed_dim)
+        self.attention_layer = GATConv(embed_dim, out_dim)
 
-    def forward(self, x, edge_index, batch_size, dst_nodes):
-        s_, h = self.structure_ae(x, edge_index, dst_nodes)
-        if batch_size < self.num_center_nodes:
-            x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
-        x_ = self.attribute_ae(x[:self.num_center_nodes], h)
-        return x_, s_
+
+    def forward(self, x, edge_index, batch_edges):
+        x = self.act(self.dense(x))
+        x = F.dropout(x, self.dropout)
+        # return_attention_weights=True
+        h = self.attention_layer(x, edge_index)[batch_edges.unique()]
+        hs_t=torch.transpose(h,0,1)
+        #recons = torch.bmm(h_,hs_t)[]
+        recons = torch.mm(h,hs_t)
+        
+        
+        n_ids_tensor = torch.arange(batch_edges.unique().shape[0],device='cuda')
+        # Create an array to store the mapping of unique edge IDs to n IDs
+        unique_edge_ids = torch.unique(batch_edges)
+        edge_id_to_n_id = torch.zeros(torch.max(unique_edge_ids) + 1, dtype=torch.int64, device='cuda')
+        edge_id_to_n_id[unique_edge_ids] = n_ids_tensor
+
+        # Relabel the edge list using the n IDs
+        relabeled_edge_list = batch_edges.clone()
+        relabeled_edge_list[:,0] = edge_id_to_n_id[relabeled_edge_list[:,0]]
+        relabeled_edge_list[:,1] = edge_id_to_n_id[relabeled_edge_list[:,1]]
+        
+        recons = recons[relabeled_edge_list[:,0],relabeled_edge_list[:,1]]
+
+        del hs_t,h,relabeled_edge_list ; torch.cuda.empty_cache() #; gc.collect()
+        return recons
+        
+        #s_ = self.structure_ae(x, edge_index, dst_nodes)
+        #if batch_size < self.num_center_nodes:
+        #    x = F.pad(x, (0, 0, 0, self.num_center_nodes - batch_size))
+        #return s_
+        #x_ = self.attribute_ae(x[:self.num_center_nodes], h)
+        #return x_, s_
 
 
 class StructureAE(nn.Module):
@@ -389,22 +419,32 @@ class StructureAE(nn.Module):
         self.dropout = dropout
         self.act = act
 
-    def forward(self, x_, edge_index, dst_nodes):
+    def forward(self, x_, edge_index, batch_edges):
         # encoder
         x = self.act(self.dense(x_))
         x = F.dropout(x, self.dropout)
         # return_attention_weights=True
-        h = self.attention_layer(x, edge_index)[dst_nodes]
-        # decoder
-        # NOTE: removed because of loss formulation, results in nan feat transformer weights
-        #s_ = torch.sigmoid(h @ h.T)
-        s_ = h@h.T
-        #s_ = h @ h.T
+        h = self.attention_layer(x, edge_index)[batch_edges.unique()]
+        hs_t=torch.transpose(h,0,1)
+        #recons = torch.bmm(h_,hs_t)[]
+        recons = torch.mm(h,hs_t)
+        
+        
+        n_ids_tensor = torch.arange(batch_edges.unique().shape[0],device='cuda')
+        # Create an array to store the mapping of unique edge IDs to n IDs
+        unique_edge_ids = torch.unique(batch_edges)
+        edge_id_to_n_id = torch.zeros(torch.max(unique_edge_ids) + 1, dtype=torch.int64, device='cuda')
+        edge_id_to_n_id[unique_edge_ids] = n_ids_tensor
 
-        if True in torch.isnan(s_):
-            import ipdb ; ipdb.set_trace()
-            print('nan')
-        return s_, h
+        # Relabel the edge list using the n IDs
+        relabeled_edge_list = batch_edges.clone()
+        relabeled_edge_list[:,0] = edge_id_to_n_id[relabeled_edge_list[:,0]]
+        relabeled_edge_list[:,1] = edge_id_to_n_id[relabeled_edge_list[:,1]]
+        
+        recons = recons[relabeled_edge_list[:,0],relabeled_edge_list[:,1]]
+
+        del hs_t,h,relabeled_edge_list ; torch.cuda.empty_cache() #; gc.collect()
+        return recons
 
 
 class AttributeAE(nn.Module):

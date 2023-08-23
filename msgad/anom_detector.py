@@ -15,6 +15,7 @@ class anom_classifier():
         self.title = ""
         self.scales = scales
         self.out_path = out_path
+        self.reverse_scoring = False
     
     def detect_anom(self,errors,sorted_errors, sc_label, label, top_nodes_perc, verbose=True):
         """
@@ -38,8 +39,7 @@ class anom_classifier():
             all_precs.append(hits[:int(full_anom.shape[0]*top_nodes_perc)].nonzero()[0].shape[0]/anom.shape[0])
             all_rocs.append(roc_auc_score(anom_lbl,errors))
             if verbose:
-                print(f'scale {ind} precision',all_precs[-1])
-                print(f'scale {ind} roc',all_rocs[-1])
+                print(f'scale {ind} precision:',np.round(all_precs[-1],4), 'roc:', np.round(all_rocs[-1]),4)
         hits = np.zeros(errors.shape) ; hits[np.intersect1d(full_anom,sorted_errors,return_indices=True)[-1]] = 1
         all_hits.append(hits)
         all_precs.append(hits[:int(full_anom.shape[0]*top_nodes_perc)].nonzero()[0].shape[0]/full_anom.shape[0])
@@ -49,7 +49,7 @@ class anom_classifier():
             print('full roc',all_rocs[-1])
         return np.array(all_hits), np.array(all_precs), np.array(all_rocs)
 
-    def calc_prec(self, scores, label, all_anom, verbose=True, log=True):
+    def calc_anom_stats(self, scores, label, all_anom, verbose=True, log=True):
         """
         Input:
             scores: array-like, shape=[k, n]
@@ -84,23 +84,19 @@ class anom_classifier():
             rev_sorted_errors = np.argsort(node_scores)
             # add plots for scale-specific anomalies
             if verbose:
-                print(f'SCALE {sc+1} loss',node_scores.sum(),node_scores.mean())
-  
+                print(f'SCALE {sc+1}')
+            
             hits,precs,rocs=self.detect_anom(node_scores,sorted_errors, all_anom, label, 1,verbose)
-            if verbose: print('scores reverse sorted')
-            rev_hits,revprec,revrocs=self.detect_anom(-node_scores,rev_sorted_errors, all_anom, label, 1,verbose)
+    
+            if self.reverse_scoring is True:
+                if verbose: print('scores reverse sorted')
+                rev_hits,revprec,revrocs=self.detect_anom(-node_scores,rev_sorted_errors, all_anom, label, 1,verbose)
 
             if verbose: print('')
             all_rocs.append(np.array(rocs)) ; all_precs.append(np.array(precs)) ; all_hits.append(np.array(hits))
 
-            if log and 'multiscale' not in self.exp_name:
+            if log:
                 with open(f'{self.out_path}/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
                     pkl.dump({'rocs':rocs,'precs':precs,'hits':hits},fout)
 
-        all_rocs,all_precs = np.stack(all_rocs),np.stack(all_precs)
-        #if 'multiscale' in self.exp_name: all_rocs = np.stack([all_rocs[i][i] for i in range(len(all_rocs))]) ; all_precs = np.stack([all_precs[i][i] for i in range(len(all_precs))]) ; all_hits = np.stack([all_hits[i][i] for i in range(len(all_hits))])
-        if log and 'multiscale' in self.exp_name:
-            with open(f'{self.out_path}/{self.dataset}/{self.scales}-sc{sc+1}_{self.exp_name}.pkl', 'wb') as fout:
-                pkl.dump({'rocs':all_rocs,'precs':all_precs,'hits':all_hits},fout)
-        
         return all_scores,all_precs,all_rocs
