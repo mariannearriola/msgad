@@ -1,14 +1,15 @@
-EXP: 'yelpchi-allscs3-20split'
+EXP: 'yelpchi-newrank'
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'yelpchi'
     DATADIR: 'batch_data'
     LABEL_TYPE: 'single'
-    BATCH_SIZE: 20
+    BATCH_SIZE: 5
     BATCH_TYPE: 'edge'
     K: 1
     SCALES: 3
+    NUM_NEIGHBORS_SAMP: 10
   
 MODEL:
     IND: None
@@ -17,7 +18,7 @@ MODEL:
     SCALES: 3
     D: 3
     K: 3
-    EPOCH: 500
+    EPOCH: 1000
     HIDDEN_DIM: 128
     LR: 1e-4
     DEBUG: True

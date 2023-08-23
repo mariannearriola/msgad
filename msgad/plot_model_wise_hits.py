@@ -35,7 +35,7 @@ def plot_hits(scale_dicts,metric,dataset,scale):
             plt.plot(np.arange(hits_plot.shape[0]),hits_plot)
         model_names = [i for i in model_names]
         plt.legend(model_names,loc='lower right')
-        plt.savefig(f'output/{dataset}/figs/hits_{metric}_totscales_{len(scale_dicts[model_names[0]])}_scale{group}.png')
+        plt.savefig(f'output/{dataset}/figs/{metric}_at_k_scale{group}_anoms.png')
 
 def plot_bar_charts(scale_dicts,metric,dataset,scale):
     ax =plt.figure()
@@ -57,7 +57,7 @@ def plot_bar_charts(scale_dicts,metric,dataset,scale):
     plt.xticks(np.arange(len(xticks)),xticks)
     plt.yticks(np.arange(0.,1.,.1))
     #import ipdb ; ipdb.set_trace()
-    plt.savefig(f'output/{dataset}/figs/bar_{metric}_scales{len(scale_dicts[model_name])}_scale{scale}.png')
+    plt.savefig(f'output/{dataset}/figs/{metric}_model_scale{scale}.png')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

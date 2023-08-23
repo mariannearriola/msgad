@@ -103,14 +103,12 @@ class BernConv(MessagePassing):
             Bx_next = self.propagate(edge_index, x=Bx_next, norm=norm, size=None)
             Bx.append(Bx_next)
         bern_coeff =  BernConv.get_bern_coeff(self.K)
-        
         for k in range(0, self.K + 1):
             coeff = bern_coeff[k]
             basis = Bx[0] * coeff[0]
             for i in range(1, self.K + 1):
                 basis += Bx[i] * coeff[i]
-            if k == 0:
-                out = basis if k == 0 else torch.cat((out,basis),dim=1)
+            out = basis if k == 0 else torch.cat((out,basis),dim=1)
             del basis
 
         del lambda_max, Bx, bern_coeff, Bx_next, Bx_0, edge_index, norm
@@ -133,41 +131,7 @@ class BernConv(MessagePassing):
             out.append(Bernstein(degree, i).coef)
 
         return out
-        
-        
-class AttentionProjection(nn.Module):
-    def __init__(self, in_channels, hid_channels):
-        super(AttentionProjection, self).__init__()
-        self.attn_fn = nn.Tanh()
-        self.filter_proj =  nn.Sequential(nn.Linear(in_channels, in_channels),
-                                    self.attn_fn)
-        
-        self.x_proj = nn.Sequential(nn.Linear(in_channels, in_channels),
-                                    self.attn_fn)
-        self.lin = nn.Linear(in_channels,1)
-
-        def init_weights(m):
-            if isinstance(m, nn.Linear):
-                torch.nn.init.xavier_uniform(m.weight)
-                m.bias.data.fill_(0.01)
-
-        self.filter_proj.apply(init_weights)
-        self.x_proj.apply(init_weights)
-
-    def forward(self,h,feats):
-        """
-        Calculate learned node-level attention scores across filters for a given scale.
-        Input:
-            h: {array-like, torch tensor}, shape = [n,h]
-            
-        """
-        h_filters_proj = self.filter_proj(h)
-        #h_filters_proj = h_filters_proj.reshape(h_filters_proj.shape[1],h_filters_proj.shape[0],h_filters_proj.shape[-1])
-        x_proj = self.x_proj(feats).T.unsqueeze(-1)
-        attn_scores = torch.bmm(h_filters_proj.T, x_proj).squeeze(-1).T
-        attn_scores=F.softmax(self.lin(attn_scores)[:,0])
-        return attn_scores
-
+    
 class AMNet_ms(nn.Module):
     def __init__(self, in_channels, hid_channels, num_class, K, filter_num=5, dropout=0.3):
         super(AMNet_ms, self).__init__()

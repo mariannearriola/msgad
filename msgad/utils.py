@@ -255,7 +255,9 @@ class TBWriter:
                 
                 kname = k + f'_{sc}/Anom{anom_sc}_hist'
                 self.tb.add_histogram(kname,np.array(v[0])[~np.isnan(np.array(v[0]))], epoch)
-        _,prec1,ra1=self.a_clf.calc_anom_stats(scores_all.detach().cpu(),self.truth,sc_label,verbose=log,log=log)
+
+        _,prec1,ra1=self.a_clf.calc_anom_stats(scores_all.detach().cpu(),self.truth,sc_label,verbose=True,log=log)
+        #_,prec1,ra1=self.a_clf.calc_anom_stats(scores_all.detach().cpu(),self.truth,sc_label,verbose=log,log=log)
         for sc in range(len(prec1)):
             for anom,prec in enumerate(prec1[sc]):
                 self.tb.add_scalar(f'Precsc{sc+1}/anom{anom+1}', prec, epoch)

@@ -39,7 +39,7 @@ class anom_classifier():
             all_precs.append(hits[:int(full_anom.shape[0]*top_nodes_perc)].nonzero()[0].shape[0]/anom.shape[0])
             all_rocs.append(roc_auc_score(anom_lbl,errors))
             if verbose:
-                print(f'scale {ind} precision:',np.round(all_precs[-1],4), 'roc:', np.round(all_rocs[-1]),4)
+                print(f'scale {ind} precision:',np.round(all_precs[-1],4), 'roc:', np.round(all_rocs[-1],4))
         hits = np.zeros(errors.shape) ; hits[np.intersect1d(full_anom,sorted_errors,return_indices=True)[-1]] = 1
         all_hits.append(hits)
         all_precs.append(hits[:int(full_anom.shape[0]*top_nodes_perc)].nonzero()[0].shape[0]/full_anom.shape[0])

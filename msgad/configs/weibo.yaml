@@ -1,4 +1,4 @@
-EXP: 'weibo-3scales-nobatching-multiscaledominant-10neighbors-1000e-128hid-clustperstd-newrank-run2'
+EXP: 'weibo-3scales-newrank'
 DEVICE: 'cuda'
 
 DATASET:
@@ -13,7 +13,7 @@ DATASET:
   
 MODEL:
     IND: None
-    NAME: 'multi-scale-dominant'
+    NAME: 'multi-scale-amnet'
     RECONS: 'struct'
     SCALES: 3
     D: 3

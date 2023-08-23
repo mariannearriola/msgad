@@ -41,7 +41,7 @@ def graph_anomaly_detection(exp_params):
     g = adj.to('cpu')
     g_nx = dgl_to_nx(g)[0] ; nx.set_node_attributes(g_nx,feats,'feats')
 
-    sc_label,clusts=la.run_dend(g_nx,scales,return_all=True)
+    sc_label,clusts=la.run_dend(g_nx,scales)
 
     lbls,neg_lbls,pos_edges_full = get_labels(adj,feats,clusts,exp_params)
     dataloader = [dataloading.fetch_dataloader(lbls[i],neg_lbls[i],pos_edges_full[i],i) for i in range(len(clusts))]

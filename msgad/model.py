@@ -39,6 +39,11 @@ class GraphReconstruction(nn.Module):
                                                 self.act_fn,
                                                 nn.Linear( self.hidden_dim, in_size)
                                                 )
+            def init_weights(m):
+                if isinstance(m, nn.Linear):
+                    torch.nn.init.xavier_uniform(m.weight)
+                    m.bias.data.fill_(0.01)
+
             self.linear_transform_in.apply(init_weights)
             self.module_list = nn.ModuleList()
             for i in range(3):
@@ -54,11 +59,7 @@ class GraphReconstruction(nn.Module):
         else:
             raise('model not found')
 
-        def init_weights(m):
-            if isinstance(m, nn.Linear):
-                torch.nn.init.xavier_uniform(m.weight)
-                m.bias.data.fill_(0.01)
-
+    
         
     def forward(self,adj_edges,feats,batch_edges):
         """
@@ -97,9 +98,7 @@ class GraphReconstruction(nn.Module):
                 # collect results
                 hs = h.unsqueeze(0) if ind == 0 else torch.cat((hs,h.unsqueeze(0)),dim=0)
                 del h ; torch.cuda.empty_cache() ; gc.collect()
-            
-            self.final_attn = self.attn
-            
+                        
             hs_t=torch.transpose(hs,1,2)
             if 'elliptic' in self.dataset:
                 hs_s = hs[0].to_sparse()
