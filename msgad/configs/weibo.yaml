@@ -1,0 +1,26 @@
+EXP: 'weibo-3scales-nobatching-multiscaledominant-10neighbors-1000e-128hid-clustperstd-newrank-run2'
+DEVICE: 'cuda'
+
+DATASET:
+    NAME: 'weibo'
+    DATADIR: 'batch_data'
+    LABEL_TYPE: 'single'
+    BATCH_SIZE: 0
+    BATCH_TYPE: 'edge'
+    K: 1
+    SCALES: 3
+    NUM_NEIGHBORS_SAMP: 10
+  
+MODEL:
+    IND: None
+    NAME: 'multi-scale-dominant'
+    RECONS: 'struct'
+    SCALES: 3
+    D: 3
+    K: 3
+    EPOCH: 1000
+    HIDDEN_DIM: 128
+    LR: 1e-4
+    DEBUG: True
+    SAMPLE_TRAIN: True
+    SAMPLE_TEST: True

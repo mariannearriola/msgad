@@ -1,0 +1,26 @@
+EXP: 'elliptic-allscs3-3split-numneighbors15-batches3-nonorm-shuffle-div2'
+DEVICE: 'cuda'
+
+DATASET:
+    NAME: 'elliptic'
+    DATADIR: 'batch_data'
+    LABEL_TYPE: 'single'
+    BATCH_SIZE: 3
+    BATCH_TYPE: 'edge'
+    K: 1
+    SCALES: 3
+    NUM_NEIGHBORS_SAMP: 15
+  
+MODEL:
+    IND: None
+    NAME: 'multi-scale-dominant'
+    RECONS: 'struct'
+    SCALES: 3
+    D: 3
+    K: 3
+    EPOCH: 200
+    HIDDEN_DIM: 64
+    LR: 1e-4
+    DEBUG: True
+    SAMPLE_TRAIN: True
+    SAMPLE_TEST: True
