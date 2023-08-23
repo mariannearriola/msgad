@@ -1,8 +1,8 @@
 # Unsupervised multi-scale graph anomaly detection
 
-Currently supported datasets: weibo, elliptic, yelpchi, tfinance
+Currently supported datasets: weibo, elliptic, yelpchi (untested), tfinance (untested)
 
-Currently supported models: multi-scale-dominant, dominant, anomalydae, gradate, anemone, asgae, gcad
+Currently supported models: multi-scale-dominant, multi-scale-amnet
 
 ## Cross-model training & anomaly detection:
 ```
@@ -36,6 +36,6 @@ In the folder `msgad`:
 - `label_analysis.py` – Creates hierarchical labels used for multi-scale anomaly classification/learning
 - `model.py` – Main graph reconstruction model
 - `loss_utils.py/` – Contains loss calculations
-- `utils.py` – Contains anomaly detection pipeline & dataloading
+- `utils.py` – Contains anomaly detection pipeline, dataloading, and tensorboard logging class.
 - `plot_model_wise_hits.py` – Plots cross-model results to store in `msgad/output`
 
