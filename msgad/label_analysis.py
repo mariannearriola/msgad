@@ -157,10 +157,9 @@ class LabelAnalysis:
         plt.savefig(f'{fpath}/dend.png')
         
     def get_clusts(self,graph,scales):
-        if self.dataset in 'weibo':
-            resolutions = [.8]
-        elif self.dataset in ['tfinance','elliptic','yelpchi']:
-            resolutions = [.6]
+        if self.dataset in 'weibo': resolutions = [.8]
+        elif self.dataset in ['yelpchi_rtr']: resolutions = [.7]
+        elif self.dataset in ['tfinance','elliptic']: resolutions = [.6]
         else:
             resolutions = np.arange(.5,1.1,.1)
         adj = np.array(nx.adjacency_matrix(graph,weight='weight').todense())
@@ -171,7 +170,6 @@ class LabelAnalysis:
                 print('dasgupta',res,sknetwork.hierarchy.dasgupta_score(adj, dend))
                 print('tree',res,sknetwork.hierarchy.tree_sampling_divergence(adj, dend))
             clusts = [postprocess.cut_straight(dend,threshold=scale) for scale in range(scales+1)]
-
         return clusts, dend
 
     def get_group_stats(self,graph,clusts,group,norms,sc,norm=False):
@@ -349,7 +347,10 @@ class LabelAnalysis:
         else:
             #if True:
             clusts,dend = self.get_clusts(graph,self.scales+1)
-            clusts_ = clusts[1:-1]
+            if 'yelpchi' not in self.dataset:
+                clusts_ = clusts[1:-1]
+            else:
+                clusts_ = clusts[2:]
             dist = nx.adjacency_matrix(graph,weight='weight').astype(np.float).todense() ; dist = 1-dist
             np.fill_diagonal(dist,0)
 
@@ -369,7 +370,10 @@ class LabelAnalysis:
                     print('avg. anom composition for clust',clust_ind,'anom',ind,np.array(all_).mean())
             
             print('anomalous clusters found',[np.unique((clusts_[i-1][self.anoms_combo[np.where(sc_all==i)]])).shape[0] for i in range(np.unique(sc_all).shape[0])])
-            clusts = clusts[1:-1]
+            if 'yelpchi' not in self.dataset:
+                clusts = clusts[1:-1]
+            else:
+                clusts = clusts[2:]
 
         if self.visualize:
             sc_all_unique = np.unique(sc_all)

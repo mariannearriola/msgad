@@ -2,7 +2,7 @@ EXP: 'yelpchi-newrank'
 DEVICE: 'cuda'
 
 DATASET:
-    NAME: 'yelpchi'
+    NAME: 'yelpchi_rtr'
     DATADIR: 'batch_data'
     LABEL_TYPE: 'single'
     BATCH_SIZE: 5

@@ -1,4 +1,4 @@
-EXP: 'weibo-3scales-newrank'
+EXP: 'weibo-3scales-newrank-run150e'
 DEVICE: 'cuda'
 
 DATASET:
@@ -18,7 +18,7 @@ MODEL:
     SCALES: 3
     D: 3
     K: 3
-    EPOCH: 1000
+    EPOCH: 150
     HIDDEN_DIM: 128
     LR: 1e-4
     DEBUG: True

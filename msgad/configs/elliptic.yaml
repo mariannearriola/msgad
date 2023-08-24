@@ -1,4 +1,4 @@
-EXP: 'elliptic-newrank'
+EXP: 'elliptic-newrank-amnet'
 DEVICE: 'cuda'
 
 DATASET:
@@ -13,7 +13,7 @@ DATASET:
   
 MODEL:
     IND: None
-    NAME: 'multi-scale-dominant'
+    NAME: 'multi-scale-amnet'
     RECONS: 'struct'
     SCALES: 3
     D: 3

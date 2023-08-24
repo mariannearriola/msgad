@@ -106,4 +106,4 @@ class loss_func:
         tot_error = torch.zeros(clusts.shape[0]).to(float).to(pred.device)
         tot_error[torch.arange(all_nodes.max()+1).detach().cpu()] = node_errors
 
-        return tot_error.sum(), tot_error, intra_losses_tot, inter_losses_tot
+        return tot_error.mean(), tot_error, intra_losses_tot, inter_losses_tot

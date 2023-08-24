@@ -87,7 +87,8 @@ def graph_anomaly_detection(exp_params):
             torch.cuda.empty_cache() ; gc.collect()
             loss,struct_loss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, edge_ids, clusts, batch_nodes)
             
-            batch_scores_sc = torch.stack([gather_clust_info(torch.nan_to_num(clustloss[i].detach().cpu()),clusts[i],'std') for i in range(len(clustloss))])
+            # anomaly scores
+            batch_scores_sc = score_multiscale_anoms(clustloss,nonclustloss, clusts, res_a)
             batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
             l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
             epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
@@ -111,17 +112,14 @@ def graph_anomaly_detection(exp_params):
         print('epoch done',epoch,loss.detach().cpu())
 
         if epoch == 0 and iter == 1 and exp_params['MODEL']['DEBUG'] is True: tb_writers = TBWriter(tb,sc_label,truth,clusts,exp_params)
-
-        # anomaly scores
-        anom_scores_all = score_multiscale_anoms(clustloss,nonclustloss, clusts, res_a)
         
         # logging detection results (at final training epoch)
         log = True if epoch == int(exp_params['MODEL']['EPOCH'])-1 else False
         if log is True:
-            a_clf.calc_anom_stats(anom_scores_all.detach().cpu(),truth,sc_label,verbose=log,log=log)
+            a_clf.calc_anom_stats(batch_scores.detach().cpu(),truth,sc_label,verbose=log,log=log)
         if exp_params['MODEL']['DEBUG'] is True:
             for sc,l in enumerate(loss):       
-                tb_writers.tb_write_anom(sc_label,edge_ids,A_hat[sc], anom_scores_all, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,log=log)
+                tb_writers.tb_write_anom(sc_label,edge_ids,A_hat[sc], batch_scores, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,log=log)
         epoch_l = torch.sum(epoch_l)
         for name, param in struct_model.named_parameters():
             tb.add_histogram(name, param.flatten(), epoch)

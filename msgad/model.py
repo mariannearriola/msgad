@@ -94,18 +94,15 @@ class GraphReconstruction(nn.Module):
             for ind in range(self.scales):
                 h = self.conv(feats,adj_edges[ind],None)[:,0,:]
                 h = self.module_list[ind](h)
-
+                import ipdb ; ipdb.set_trace()
+                h_t = torch.transpose(h,0,1)
+                h = torch.mm(h,h_t)
                 # collect results
                 hs = h.unsqueeze(0) if ind == 0 else torch.cat((hs,h.unsqueeze(0)),dim=0)
-                del h ; torch.cuda.empty_cache() ; gc.collect()
+                del h, h_t ; torch.cuda.empty_cache() ; gc.collect()
                         
-            hs_t=torch.transpose(hs,1,2)
-            if 'elliptic' in self.dataset:
-                hs_s = hs[0].to_sparse()
-                hs_t_s = hs_t[0].to_sparse()
-                recons=torch.sparse.mm(hs_s,hs_t_s)
-            else:
-                recons = torch.bmm(hs,hs_t)
+            #hs_t=torch.transpose(hs,1,2)
+            #recons = torch.bmm(hs,hs_t)
             
 
             del hs_t ; torch.cuda.empty_cache() ; gc.collect()

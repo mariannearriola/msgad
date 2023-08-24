@@ -38,7 +38,7 @@ def plot_hits(scale_dicts,metric,dataset,scale):
         plt.savefig(f'output/{dataset}/figs/{metric}_at_k_scale{group}_anoms.png')
 
 def plot_bar_charts(scale_dicts,metric,dataset,scale):
-    ax =plt.figure()
+    ax =plt.figure(figsize=(8,5))
     plt.title(f'Scale {scale+1} {(metric)} for {dataset.capitalize()}')
     plt.xlabel('Anomaly group')
     plt.ylabel(f'{metric}')
