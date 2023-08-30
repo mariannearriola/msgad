@@ -30,8 +30,10 @@ Anomaly detection results plotted in ./msgad/output
 ## Code organization
 
 In the folder `msgad`:
-- `run_detection.sh` – Script to run experiments
 - `data/` – Scipy matrix files containing currently supported datasets
+- `output/` – Figures/pickle files used for logging anomaly detection scores/ranking across methods
+- `dgl_graphs/` – DGL graph yamls needed for DGL distributed dataloading
+- `run_detection.sh` – Script to run experiments
 - `run.py` – Script to run model training & anomaly detection
 - `label_analysis.py` – Creates hierarchical labels used for multi-scale anomaly classification/learning
 - `model.py` – Main graph reconstruction model
