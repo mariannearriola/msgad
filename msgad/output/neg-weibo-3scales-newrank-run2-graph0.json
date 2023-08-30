@@ -1,0 +1,35 @@
+{
+    "edge_map": {
+        "_N:_E:_N": [
+            [
+                0,
+                470364
+            ]
+        ]
+    },
+    "etypes": {
+        "_N:_E:_N": 0
+    },
+    "graph_name": "neg-weibo-3scales-newrank-run2-graph0",
+    "halo_hops": 1,
+    "node_map": {
+        "_N": [
+            [
+                0,
+                8405
+            ]
+        ]
+    },
+    "ntypes": {
+        "_N": 0
+    },
+    "num_edges": 470364,
+    "num_nodes": 8405,
+    "num_parts": 1,
+    "part-0": {
+        "edge_feats": "part0/edge_feat.dgl",
+        "node_feats": "part0/node_feat.dgl",
+        "part_graph": "part0/graph.dgl"
+    },
+    "part_method": "metis"
+}
