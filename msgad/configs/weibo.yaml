@@ -1,4 +1,4 @@
-EXP: 'weibo-3scales-newrank-run150e'
+EXP: 'weibo-allscs3-best-redo3'
 DEVICE: 'cuda'
 
 DATASET:

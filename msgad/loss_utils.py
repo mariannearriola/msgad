@@ -13,7 +13,7 @@ class loss_func:
         self.clusts = clusts
         self.regularize=regularize
         
-    def calc_loss(self,lbl,A_hat,edge_ids,clusts, batch_nodes):
+    def calc_loss(self,lbl,A_hat,edge_ids,clusts, batch_nodes, pos_edges_og):
         """
         Calculate reconstruction error given a graph reconstruction and its corresponding reconstruction label
         Input:
@@ -35,13 +35,20 @@ class loss_func:
                 Scale-wise inter-cluster losses for each node
         """
         total_struct_error=torch.tensor(-1.)
-        
         clusts = torch.tensor(clusts)
         for ind, sc_pred in enumerate(A_hat):
             lbl_edges = torch.zeros(edge_ids[ind].shape[0]).to(sc_pred.device).to(torch.float64)
-            edge_idx=lbl.has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]
-            lbl_edges[edge_idx] = lbl.edata['w'][lbl.edge_ids(edge_ids[ind][:,0][edge_idx],edge_ids[ind][:,1][edge_idx])].to(torch.float64)
-            total_struct_error, edge_struct_errors,clustloss,nonclustloss = self.get_sampled_losses(sc_pred,edge_ids[ind],lbl_edges,clusts[ind],batch_nodes)
+            # check_batch(pos_edges,neg_edges,clusts,batch_nodes,neg_batch_nodes)
+            #edge_idx=lbl.has_edges_between(edge_ids[ind][:,0][batch_nodes[ind]],edge_ids[ind][:,1][batch_nodes[ind]]).nonzero().T[0]
+            edge_idx = lbl.has_edges_between(batch_nodes[ind][edge_ids[ind][:,0]],batch_nodes[ind][edge_ids[ind][:,1]]).nonzero().T[0]
+            sampled_true_edges = batch_nodes[ind][edge_ids[ind]][edge_idx]
+
+            # test if sampled edges (in original adjacency) are true edges
+            assert(not (lbl.has_edges_between(sampled_true_edges[:,0],sampled_true_edges[:,1])==0).any())
+
+            lbl_edges[edge_idx] = lbl.edata['w'][lbl.edge_ids(sampled_true_edges[:,0],sampled_true_edges[:,1])].to(torch.float64)
+            #total_struct_error, edge_struct_errors,clustloss,nonclustloss = self.get_sampled_losses(sc_pred,edge_ids[ind][batch_nodes[ind]],lbl_edges,clusts[ind],batch_nodes)
+            total_struct_error, edge_struct_errors,clustloss,nonclustloss = self.get_sampled_losses(sc_pred,batch_nodes[ind][edge_ids[ind]],lbl_edges,clusts[ind],batch_nodes)
             
             del lbl_edges, edge_idx
             torch.cuda.empty_cache()

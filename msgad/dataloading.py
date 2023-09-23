@@ -47,19 +47,44 @@ class DataLoading:
         if self.dataload:
             return np.arange(len(os.listdir(f'{self.datadir}/{self.exp_name}/{self.dataset}/train')))
         if self.batch_type == 'edge':
-            edge_weights = adj.edata['w'].detach().cpu() ; adj = adj.cpu() ; adj_nodes = adj.nodes().detach().cpu()
+            edge_weights = adj.edata['w'] ; adj = adj.cpu() ; all_nodes = adj.nodes()
             transform = dgl.transforms.AddSelfLoop()
             dgl.distributed.initialize(f'{self.exp_name}-graph')
-            part_g=dgl.distributed.partition_graph(adj.to('cpu'), f'{self.exp_name}-graph_{ind}', 1, num_hops=1, part_method='metis',out_path='output/')
-            dist_g = dgl.distributed.DistGraph(f'{self.exp_name}-graph_{ind}', part_config=f'output/{self.exp_name}-graph_{ind}.json')
-            neg_g=dgl.distributed.partition_graph(neg_adj.to('cpu'), f'neg-{self.exp_name}-graph{ind}', 1, num_hops=1, part_method='metis',out_path='output/')
-            neg_g = dgl.distributed.DistGraph(f'neg-{self.exp_name}-graph{ind}', part_config=f'output/neg-{self.exp_name}-graph{ind}.json')
+            part_g=dgl.distributed.partition_graph(adj.to('cpu'), f'{self.exp_name}-graph_{ind}', 1, num_hops=1, part_method='metis',out_path='dgl_graphs/')
+            dist_g = dgl.distributed.DistGraph(f'{self.exp_name}-graph_{ind}', part_config=f'dgl_graphs/{self.exp_name}-graph_{ind}.json')
+            neg_g=dgl.distributed.partition_graph(neg_adj.to('cpu'), f'neg-{self.exp_name}-graph{ind}', 1, num_hops=1, part_method='metis',out_path='dgl_graphs/')
+            neg_g = dgl.distributed.DistGraph(f'neg-{self.exp_name}-graph{ind}', part_config=f'dgl_graphs/neg-{self.exp_name}-graph{ind}.json')
             
+
             def sample_(seeds):
+                '''
+                for each node (seed), sample nodes in the same cluster, create positive subgraph
+                for negative edges, sample nodes in separate clusters, create negative subgraph
+                '''
                 seeds = torch.LongTensor(np.asarray(seeds))
+
+
+                # sample nodes in the same cluster
+                # pos_clusts_samp = clust[seeds]
+                # import ipdb ; ipdb.set_trace()
+                # pos_nodes_samp = torch.nonzero(clust==pos_clusts_samp[:,None])[:,1]
+                # pos_nodes_samp = pos_nodes_samp[~pos_nodes_samp.isin(seeds)]
+                # pos_nodes_samp = pos_nodes_samp.view(seeds.shape[0],-1).split(self.num_neighbors, dim=1)
+                # frontier = dist_g.subgraph(pos_nodes_samp)
+                # block = dgl.to_block(frontier, seeds).to(self.device)
+
+                # sample nodes in separate clusters
+                # choose (num_neighbors) clusters (sampling with repeats), randomly sample (uniquely) from each cluster
+                # neg_clusts_samp = clust[seeds]
+                # neg_nodes_samp = torch.nonzero(clust!=neg_clusts_samp[:,None])[:,1]
+                # neg_nodes_samp = neg_nodes_samp[~neg_nodes_samp.isin(seeds)]
+                # neg_nodes_samp = neg_nodes_samp.view(seeds.shape[0],-1).split(self.num_neighbors, dim=1)
+                # frontier = dist_g.subgraph(neg_nodes_samp)
+                # neg_block = dgl.to_block(frontier, seeds).to(self.device)
+
                 #frontier = dgl.sampling.sample_neighbors(adj, adj_nodes, 10, exclude_edges=adj.edges('eid')[:adj.number_of_edges()//2])
                 frontier = dgl.distributed.sample_neighbors(dist_g, seeds, self.num_neighbors)
-                block = dgl.to_block(frontier, seeds)
+                block = dgl.to_block(frontier, seeds).to(self.device)
                 batch_nodes = block.ndata['_ID']['_N']
                 
                 #pos_edges_samp = batch_nodes[torch.stack(block.edges()).T]
@@ -68,7 +93,7 @@ class DataLoading:
                     neg_frontier = dgl.distributed.sample_neighbors(neg_g, seeds, self.num_neighbors//2)
                 else:
                     neg_frontier = dgl.distributed.sample_neighbors(neg_g, seeds, self.num_neighbors)
-                neg_block = dgl.to_block(neg_frontier, seeds)
+                neg_block = dgl.to_block(neg_frontier, seeds).to(self.device)
                 neg_edges_samp = torch.stack(neg_block.edges()).T
                 neg_batch_nodes = neg_block.ndata['_ID']['_N']
                 assert(torch.where(neg_edges_samp[:,0]==neg_edges_samp[:,1])[0].shape[0]==0)
@@ -84,9 +109,11 @@ class DataLoading:
                 #neg_edges_samp = neg_edges_full[indices_in_full]
                 block.edata['w'] = edge_weights[indices_in_full]
                 # Find the indices of the subsampled edge list in the original edge list
+                #return block, pos_edges_samp, neg_edges_samp, batch_nodes, neg_batch_nodes
                 return block, batch_nodes[pos_edges_samp], neg_batch_nodes[neg_edges_samp], batch_nodes
             
             batch_size = adj.number_of_nodes() if self.batch_size == 0 else int(adj.number_of_nodes()/self.batch_size)
+            # TODO: CHANGE ONCE BATCHING ISSUES FIXED
             dataloader = dgl.distributed.DistDataLoader(dataset=adj.nodes(), batch_size=batch_size,collate_fn=sample_, shuffle=False)
         return dataloader
 
@@ -106,9 +133,10 @@ class DataLoading:
         dirpath = f'{self.datadir}/{self.exp_name}/{self.dataset}/{setting}'
         if not os.path.exists(dirpath):
             os.makedirs(dirpath)
+        # g_batch,pos_edges,neg_edges,batch_nodes
         with open (f'{dirpath}/{iter}.pkl','wb') as fout:
             pkl.dump({'loaded_input':loaded_input},fout)
-
+            
         torch.cuda.empty_cache()
 
     def load_batch(self,iter,setting):

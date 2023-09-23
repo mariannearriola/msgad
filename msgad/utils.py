@@ -23,15 +23,15 @@ from anom_detector import *
 from sklearn.ensemble import IsolationForest
 from itertools import combinations
 
-def check_batch(pos_edges,neg_edges,clusts):
+def check_batch(pos_edges,neg_edges,clusts,batch_nodes,neg_batch_nodes):
     """Ensure that intra-cluster & inter-cluster edges selected align with cluster assignments"""
     try:
         for i in range(len(pos_edges)):
-            attract_e=torch.where(clusts[i][pos_edges[i]][:,0]==clusts[i][pos_edges[i][:,1]])[0]
+            attract_e=torch.where(clusts[i][batch_nodes[i][pos_edges[i]]][:,0]==clusts[i][batch_nodes[i][pos_edges[i]]][:,1])[0]
             
             assert(attract_e.shape[0]==pos_edges[i].shape[0])
-            repel_e=torch.where(clusts[i][pos_edges[i]][:,0]!=clusts[i][pos_edges[i][:,1]])[0]
-            attract_e_neg=torch.where(clusts[i][neg_edges[i]][:,0]==clusts[i][neg_edges[i][:,1]])[0]
+            repel_e=torch.where(clusts[i][batch_nodes[i][pos_edges[i]]][:,0]!=clusts[i][batch_nodes[i][pos_edges[i]][:,1]])[0]
+            attract_e_neg=torch.where(clusts[i][neg_batch_nodes[i][neg_edges[i]]][:,0]==clusts[i][neg_batch_nodes[i][neg_edges[i]][:,1]])[0]
             assert(attract_e_neg.shape[0]==0)
             assert(repel_e.shape[0]==0)
             del attract_e,repel_e,attract_e_neg
@@ -140,7 +140,7 @@ def get_counts(clust,edge_ids):
 
     return intra_edges, pos_counts, neg_counts, pos_clust_counts, neg_clust_counts
 
-def score_multiscale_anoms(clustloss,nonclustloss, clusts, res, agg='std'):
+def score_multiscale_anoms(clustloss,nonclustloss, clusts, res, batch_edges, agg='std'):
     """
     Assign node-wise scores based on intra-cluster residuals
 

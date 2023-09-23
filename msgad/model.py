@@ -92,20 +92,25 @@ class GraphReconstruction(nn.Module):
             recons_a,emb = [],[]
             feats = self.linear_transform_in(feats)
             for ind in range(self.scales):
-                h = self.conv(feats,adj_edges[ind],None)[:,0,:]
+                h = self.conv(feats[batch_edges[ind].unique()],adj_edges[ind],None)[:,0,:]
                 h = self.module_list[ind](h)
-                import ipdb ; ipdb.set_trace()
+                '''
+                # TODO: needed for yelpchi
+                if ind == 0: hs = [h]
+                else: hs.append(h)
                 h_t = torch.transpose(h,0,1)
                 h = torch.mm(h,h_t)
+                if ind == 0: recons = [h]
+                else: recons.append(h)
+                '''
                 # collect results
                 hs = h.unsqueeze(0) if ind == 0 else torch.cat((hs,h.unsqueeze(0)),dim=0)
-                del h, h_t ; torch.cuda.empty_cache() ; gc.collect()
+                del h ; torch.cuda.empty_cache() ; gc.collect()
                         
-            #hs_t=torch.transpose(hs,1,2)
-            #recons = torch.bmm(hs,hs_t)
-            
+            hs_t=torch.transpose(hs,1,2)
+            recons = torch.bmm(hs,hs_t)
 
-            del hs_t ; torch.cuda.empty_cache() ; gc.collect()
+            #del hs_t ; torch.cuda.empty_cache() ; gc.collect()
             recons_f = [torch.sigmoid(self.collect_batch_recons(recons[i],batch_edges[i])) for i in range(self.scales)]
             del recons; torch.cuda.empty_cache() ; gc.collect()
             return recons_f,hs

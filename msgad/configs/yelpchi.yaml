@@ -1,11 +1,11 @@
-EXP: 'yelpchi-newrank'
+EXP: 'yelpchi-newrank-batchsize10'
 DEVICE: 'cuda'
 
 DATASET:
     NAME: 'yelpchi_rtr'
     DATADIR: 'batch_data'
     LABEL_TYPE: 'single'
-    BATCH_SIZE: 5
+    BATCH_SIZE: 50
     BATCH_TYPE: 'edge'
     K: 1
     SCALES: 3

@@ -65,43 +65,56 @@ def graph_anomaly_detection(exp_params):
             import ipdb ; ipdb.set_trace()
             pass
             #break
-        edge_ids=[]
-        # unpack each of the dataloaders
+        all_edges=[]
+        # unpack easave_batchch of the dataloaders
         for batch,data_inds in enumerate(zip(*dataloader)):
             loaded_input=dataloading.load_batch(batch,'train') if load_data else data_inds
-            g_batch,pos_edges,neg_edges,batch_nodes = zip(*loaded_input)
+            #g_batch,pos_edges,neg_edges,pos_batch_nodes, neg_batch_nodes = zip(*loaded_input)
+            g_batch,pos_edges,neg_edges = zip(*loaded_input) ; pos_batch_nodes = [g_batch[i].ndata['_ID']['_N'].to(device) for i in range(len(g_batch))]
+            #g_batch,pos_edges,neg_edges,pos_batch_nodes = zip(*loaded_input)
+            #all_batch_nodes = [torch.cat((pos_batch_nodes[i],neg_batch_nodes[i])).unique() for i in range(len(pos_batch_nodes))]
+            all_batch_nodes = pos_batch_nodes
             if load_data: pos_edges = [i.to(device) for i in pos_edges] ; neg_edges = [i.to(device) for i in neg_edges] ; lbls = [i.to(device) for i in lbls]
-            edge_ids = [torch.cat((pos_edges[i],neg_edges[i]),axis=0) for i in range(len(pos_edges))]
-            
-            check_batch(pos_edges,neg_edges,clusts)
+            all_edges = [torch.cat((pos_edges[i],neg_edges[i]),axis=0) for i in range(len(pos_edges))]
+            #check_batch(pos_edges,neg_edges,clusts,pos_batch_nodes,neg_batch_nodes)
+            #check_batch(pos_edges,neg_edges,clusts,all_batch_nodes,all_batch_nodes)
             
             if exp_params['DATASET']['DATASAVE']:
-                dataloading.save_batch(loaded_input,iter,'train') ; continue
+                dataloading.save_batch(loaded_input,batch,'train') ; continue
             optimizer.zero_grad()
             for i in loaded_input: del i
             torch.cuda.empty_cache() ; gc.collect()
 
-            pos_edges_og = [edge_ids[ind][adj.has_edges_between(edge_ids[ind][:,0],edge_ids[ind][:,1]).nonzero().T[0]] for ind in range(len(edge_ids))]
-            A_hat,res_a = struct_model(pos_edges_og,feats,edge_ids)
-            
+            #pos_edges_og = [all_edges[ind][adj.has_edges_between(all_edges[ind][:,0],all_edges[ind][:,1]).nonzero().T[0]] for ind in range(len(all_edges))]
+            # double check this indexing approach works
+            #pos_edges_og = [all_edges[ind][adj.has_edges_between(all_edges[ind][:,0][all_batch_nodes[ind]],all_edges[ind][:,1][all_batch_nodes[ind]]).nonzero().T[0]] for ind in range(len(all_edges))]
+            #import ipdb ; ipdb.set_trace()
+            pos_edges_og = [all_edges[ind][adj.has_edges_between(all_batch_nodes[ind][all_edges[ind][:,0]],all_batch_nodes[ind][all_edges[ind][:,1]]).nonzero().T[0]] for ind in range(len(all_edges))]
+            A_hat,res_a = struct_model(pos_edges_og,feats,all_edges)
             torch.cuda.empty_cache() ; gc.collect()
-            loss,struct_loss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, edge_ids, clusts, batch_nodes)
+            #loss,struct_loss,clustloss,nonclustloss = LossFunc.calc_loss(g_batch, A_hat, all_edges, clusts, batch_nodes)
+            loss,struct_loss,clustloss,nonclustloss = LossFunc.calc_loss(adj, A_hat, all_edges, clusts, all_batch_nodes, pos_edges_og)
             
+            # TODO: FIX
             # anomaly scores
-            batch_scores_sc = score_multiscale_anoms(clustloss,nonclustloss, clusts, res_a)
+            batch_scores_sc = score_multiscale_anoms(clustloss, nonclustloss, clusts, res_a, all_edges)
             batch_scores = batch_scores_sc if batch == 0 else batch_scores + batch_scores_sc
             l = torch.sum(loss) if 'multi-scale' in exp_params['MODEL']['NAME'] else torch.mean(loss)
-            epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,l.unsqueeze(0)))
+            epoch_l = loss.unsqueeze(0) if iter == 0 else torch.cat((epoch_l,loss.unsqueeze(0)))
             if exp_params['MODEL']['DEBUG'] and iter % 100 == 0:
                 print(f'Batch: {round(iter/dataloader.__len__()*100, 3)}%', 'train_loss=', round(l.item(),3))
                 
             iter += 1
             
-            l.backward()
-            optimizer.step()
+            #l.backward()
+            #optimizer.step()
             #del pos_edges, neg_edges, l
             torch.cuda.empty_cache() ; gc.collect()
-            
+        import ipdb ; ipdb.set_trace()
+        epoch_l = torch.sum(epoch_l)
+        epoch_l.backward()
+        optimizer.step()
+
         print("Seconds since epoch =", (time.time()-seconds)/60)
         seconds = time.time()
         print("Epoch:", '%04d' % (epoch), "train_loss=", torch.round(torch.sum(loss),decimals=3).detach().cpu().item(), "losses=",torch.round(loss,decimals=4).detach().cpu())
@@ -111,7 +124,7 @@ def graph_anomaly_detection(exp_params):
                 
         print('epoch done',epoch,loss.detach().cpu())
 
-        if epoch == 0 and iter == 1 and exp_params['MODEL']['DEBUG'] is True: tb_writers = TBWriter(tb,sc_label,truth,clusts,exp_params)
+        if epoch == 0 and exp_params['MODEL']['DEBUG'] is True: tb_writers = TBWriter(tb,sc_label,truth,clusts,exp_params)
         
         # logging detection results (at final training epoch)
         log = True if epoch == int(exp_params['MODEL']['EPOCH'])-1 else False
@@ -119,8 +132,8 @@ def graph_anomaly_detection(exp_params):
             a_clf.calc_anom_stats(batch_scores.detach().cpu(),truth,sc_label,verbose=log,log=log)
         if exp_params['MODEL']['DEBUG'] is True:
             for sc,l in enumerate(loss):       
-                tb_writers.tb_write_anom(sc_label,edge_ids,A_hat[sc], batch_scores, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,log=log)
-        epoch_l = torch.sum(epoch_l)
+                tb_writers.tb_write_anom(sc_label,all_edges,A_hat[sc], batch_scores, struct_loss,sc,epoch,clustloss,nonclustloss,clusts,anom_wise=False,log=log)
+        
         for name, param in struct_model.named_parameters():
             tb.add_histogram(name, param.flatten(), epoch)
 
